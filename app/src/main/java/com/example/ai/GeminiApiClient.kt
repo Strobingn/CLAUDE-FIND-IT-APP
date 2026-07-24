@@ -1,5 +1,6 @@
 package com.example.ai
 
+import android.content.Context
 import android.util.Base64
 import com.example.BuildConfig
 import java.io.IOException
@@ -26,16 +27,19 @@ internal data class GeminiImageInput(
 
 /** Lightweight Gemini REST client with optional inline terrain-image analysis. */
 internal class GeminiApiClient(
+    context: Context,
     private val httpClient: OkHttpClient = defaultHttpClient(),
 ) {
+    private val appContext = context.applicationContext
+
     suspend fun generate(
         conversation: List<GeminiConversationTurn>,
         systemContext: String,
         image: GeminiImageInput? = null,
     ): String = withContext(Dispatchers.IO) {
-        val apiKey = configuredApiKey()
+        val apiKey = configuredApiKey(appContext)
         require(apiKey.isNotBlank()) {
-            "Gemini is not configured. Add GEMINI_API_KEY to the project .env file and rebuild the app."
+            "Gemini is not configured. Add a Gemini API key in the app or configure GEMINI_API_KEY for the build."
         }
 
         val model = configuredModel()
@@ -131,17 +135,56 @@ internal class GeminiApiClient(
     companion object {
         private const val DEFAULT_MODEL = "gemini-2.5-flash"
         private const val MAX_HISTORY_TURNS = 16
+        private const val PREFS_NAME = "gemini_credentials"
+        private const val PREF_API_KEY = "api_key"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
-        fun isConfigured(): Boolean = configuredApiKey().isNotBlank()
+        fun isConfigured(context: Context): Boolean = configuredApiKey(context).isNotBlank()
+
+        fun hasDeviceApiKey(context: Context): Boolean =
+            sanitizeApiKey(context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(PREF_API_KEY, null))
+                .isNotBlank()
+
+        fun saveDeviceApiKey(context: Context, value: String): Boolean {
+            val cleaned = sanitizeApiKey(value)
+            if (cleaned.isBlank()) return false
+            context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(PREF_API_KEY, cleaned)
+                .apply()
+            return true
+        }
+
+        fun clearDeviceApiKey(context: Context) {
+            context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(PREF_API_KEY)
+                .apply()
+        }
 
         fun configuredModel(): String = BuildConfig.GEMINI_MODEL.trim().ifBlank { DEFAULT_MODEL }
 
-        private fun configuredApiKey(): String {
-            val value = BuildConfig.GEMINI_API_KEY.trim()
-            val upper = value.uppercase()
-            return value.takeUnless {
-                it.isBlank() || upper.startsWith("YOUR_") || upper.startsWith("MY_") || upper.contains("PLACEHOLDER")
+        private fun configuredApiKey(context: Context): String {
+            val deviceKey = context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(PREF_API_KEY, null)
+            return sanitizeApiKey(deviceKey).ifBlank {
+                sanitizeApiKey(BuildConfig.GEMINI_API_KEY)
+            }
+        }
+
+        private fun sanitizeApiKey(value: String?): String {
+            val cleaned = value?.trim().orEmpty()
+            val upper = cleaned.uppercase()
+            return cleaned.takeUnless {
+                it.length < 20 ||
+                    upper.startsWith("YOUR_") ||
+                    upper.startsWith("MY_") ||
+                    upper.contains("PLACEHOLDER")
             }.orEmpty()
         }
 
