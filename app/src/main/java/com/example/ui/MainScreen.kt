@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -35,12 +36,12 @@ import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.WbSunny
+import androidx.compose.material.icons.filled.ZoomInMap
+import androidx.compose.material.icons.filled.ZoomOutMap
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -106,14 +107,11 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
             if (!terrainFocusMode.value) {
                 CenterAlignedTopAppBar(
                     title = {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(activeTab.title, fontWeight = FontWeight.Bold)
-                            Text(
-                                activeTab.subtitle,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        Text(
+                            activeTab.title,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                        )
                     },
                     actions = {
                         if (selectedTab.intValue == 0) {
@@ -131,11 +129,12 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
         bottomBar = {
             if (!terrainFocusMode.value) {
                 Surface(
-                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                    shadowElevation = 14.dp,
-                    tonalElevation = 4.dp,
+                    shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                    shadowElevation = 10.dp,
+                    tonalElevation = 3.dp,
                 ) {
                     NavigationBar(
+                        modifier = Modifier.height(68.dp),
                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
                         tonalElevation = 0.dp,
                     ) {
@@ -209,7 +208,6 @@ private fun TerrainTab(
     val canRefine by viewModel.canRefineTerrain.collectAsStateWithLifecycle()
     val isRefining by viewModel.isRefiningTerrain.collectAsStateWithLifecycle()
     val isDetailed by viewModel.isDetailedTerrain.collectAsStateWithLifecycle()
-    val detailMessage by viewModel.terrainDetailMessage.collectAsStateWithLifecycle()
     val gpsEnabled by viewModel.gpsEnabled.collectAsStateWithLifecycle()
     val hasLocationPermission by viewModel.hasLocationPermission.collectAsStateWithLifecycle()
     val devicePosition by viewModel.deviceGridPosition.collectAsStateWithLifecycle()
@@ -273,35 +271,42 @@ private fun TerrainTab(
             deviceGridPosition = devicePosition,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(if (focusMode) 0.dp else 8.dp)
+                .padding(if (focusMode) 0.dp else 6.dp)
                 .testTag("terrain_workspace"),
         )
 
         Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-            tonalElevation = 8.dp,
-            shadowElevation = 10.dp,
-            modifier = Modifier.align(Alignment.TopCenter).padding(12.dp).fillMaxWidth(0.97f),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            tonalElevation = 4.dp,
+            shadowElevation = 6.dp,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(8.dp)
+                .fillMaxWidth(0.98f),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 8.dp),
+                ) {
                     Icon(
                         Icons.Default.WbSunny,
-                        contentDescription = null,
+                        contentDescription = "Sun direction",
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.rotate(azimuth),
+                        modifier = Modifier.width(20.dp).rotate(azimuth),
                     )
+                    Spacer(Modifier.width(5.dp))
                     Text(
                         "${compassLabel(azimuth)} ${azimuth.roundToInt()}°",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
                     )
@@ -309,8 +314,19 @@ private fun TerrainTab(
                 TerrainQuickAction("Light -", Icons.Default.RotateLeft) { viewModel.rotateSunAzimuth(-45f) }
                 TerrainQuickAction("Light +", Icons.Default.RotateRight) { viewModel.rotateSunAzimuth(45f) }
                 TerrainQuickAction("Fit", Icons.Default.CenterFocusStrong) { localViewportResetKey.intValue++ }
+                if (canRefine) {
+                    TerrainQuickAction(
+                        label = if (isRefining) "Loading" else if (isDetailed) "Refresh" else "Detail",
+                        icon = Icons.Default.ZoomInMap,
+                        active = isDetailed,
+                        enabled = !isRefining,
+                    ) { viewModel.refineTerrain(visibleBounds.value) }
+                    if (isDetailed) {
+                        TerrainQuickAction("Whole", Icons.Default.ZoomOutMap) { viewModel.showWholeTerrain() }
+                    }
+                }
                 TerrainQuickAction(
-                    label = if (showControls.value) "Close tools" else "Analyze",
+                    label = if (showControls.value) "Close" else "Analyze",
                     icon = Icons.Default.Tune,
                     active = showControls.value,
                 ) { showControls.value = !showControls.value }
@@ -329,69 +345,41 @@ private fun TerrainTab(
                     viewModel.toggleGpsTracking(!gpsEnabled)
                 }
                 TerrainQuickAction(
-                    label = if (focusMode) "Exit full" else "Full screen",
+                    label = if (focusMode) "Exit" else "Full",
                     icon = if (focusMode) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                 ) { onFocusModeChanged(!focusMode) }
             }
         }
 
         Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
-            tonalElevation = 4.dp,
-            modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+            tonalElevation = 3.dp,
+            modifier = Modifier.align(Alignment.BottomStart).padding(10.dp),
         ) {
             val widthMeters = (elevationGrid.width - 1).coerceAtLeast(1) * elevationGrid.cellSizeMeters
             val heightMeters = (elevationGrid.height - 1).coerceAtLeast(1) * elevationGrid.cellSizeMeters
-            Column(modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp)) {
-                Text(
-                    String.format(
-                        Locale.US,
-                        "%d×%d · %.0f×%.0f m · %.2f m/cell",
-                        elevationGrid.width,
-                        elevationGrid.height,
-                        widthMeters,
-                        heightMeters,
-                        elevationGrid.cellSizeMeters,
-                    ),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                )
-                Text(
-                    if (showControls.value) "Analysis controls open" else "Pinch to zoom · drag to pan",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-
-        if (canRefine) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                tonalElevation = 4.dp,
-                modifier = Modifier.align(Alignment.CenterEnd).padding(12.dp),
-            ) {
-                Column(modifier = Modifier.padding(11.dp)) {
-                    Text(if (isDetailed) "Detailed terrain" else "Detail available", fontWeight = FontWeight.Bold)
-                    Text(detailMessage.orEmpty(), style = MaterialTheme.typography.bodySmall)
-                    TextButton(
-                        onClick = { viewModel.refineTerrain(visibleBounds.value) },
-                        enabled = !isRefining,
-                    ) {
-                        Text(if (isRefining) "Loading…" else "Load detail here")
-                    }
-                    TextButton(onClick = viewModel::showWholeTerrain) {
-                        Text("Show whole terrain")
-                    }
-                }
-            }
+            Text(
+                String.format(
+                    Locale.US,
+                    "%d×%d · %.0f×%.0f m · %.2f m/cell · %s",
+                    elevationGrid.width,
+                    elevationGrid.height,
+                    widthMeters,
+                    heightMeters,
+                    elevationGrid.cellSizeMeters,
+                    if (showControls.value) "tools open" else "pinch / drag",
+                ),
+                modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
 
         AnimatedVisibility(
             visible = showControls.value,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp),
         ) {
             LidarControlPanel(
                 selectedSiteIndex = site,
@@ -443,20 +431,28 @@ private fun TerrainQuickAction(
     label: String,
     icon: ImageVector,
     active: Boolean = false,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        FilledTonalIconButton(onClick = onClick) {
-            Icon(
-                icon,
-                contentDescription = label,
-                tint = if (active) MaterialTheme.colorScheme.primary else LocalContentColor.current,
-            )
-        }
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(12.dp),
+        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 5.dp),
+    ) {
+        val contentColor = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = contentColor,
+            modifier = Modifier.width(20.dp),
+        )
+        Spacer(Modifier.width(5.dp))
         Text(
             label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            color = contentColor,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1,
         )
     }
