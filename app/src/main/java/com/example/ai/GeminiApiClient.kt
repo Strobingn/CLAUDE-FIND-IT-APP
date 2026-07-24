@@ -68,10 +68,11 @@ internal class GeminiApiClient(
 
         val systemText = buildString {
             append(systemContext)
+            append("\n\nUse advanced reasoning, rank uncertainty, and give field-verifiable observations.")
             if (image != null) {
                 append("\n\nAttached image: ")
                 append(image.description)
-                append(". Treat it as a rendered visualization of the measured terrain, not proof of buried objects.")
+                append(". Treat it as a rendered visualization of measured terrain, not proof of buried objects.")
             }
         }
         val requestJson = JSONObject()
@@ -86,9 +87,13 @@ internal class GeminiApiClient(
             .put(
                 "generationConfig",
                 JSONObject()
-                    .put("temperature", 0.2)
-                    .put("topP", 0.9)
-                    .put("maxOutputTokens", 4_096),
+                    .put("temperature", 1.0)
+                    .put("topP", 0.95)
+                    .put("maxOutputTokens", 8_192)
+                    .put(
+                        "thinkingConfig",
+                        JSONObject().put("thinkingLevel", "high"),
+                    ),
             )
 
         val request = Request.Builder()
@@ -133,7 +138,7 @@ internal class GeminiApiClient(
     }
 
     companion object {
-        private const val DEFAULT_MODEL = "gemini-2.5-flash"
+        private const val DEFAULT_MODEL = "gemini-3.1-pro-preview"
         private const val MAX_HISTORY_TURNS = 16
         private const val PREFS_NAME = "gemini_credentials"
         private const val PREF_API_KEY = "api_key"
@@ -142,10 +147,11 @@ internal class GeminiApiClient(
         fun isConfigured(context: Context): Boolean = configuredApiKey(context).isNotBlank()
 
         fun hasDeviceApiKey(context: Context): Boolean =
-            sanitizeApiKey(context.applicationContext
-                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getString(PREF_API_KEY, null))
-                .isNotBlank()
+            sanitizeApiKey(
+                context.applicationContext
+                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getString(PREF_API_KEY, null),
+            ).isNotBlank()
 
         fun saveDeviceApiKey(context: Context, value: String): Boolean {
             val cleaned = sanitizeApiKey(value)
@@ -190,9 +196,9 @@ internal class GeminiApiClient(
 
         private fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(120, TimeUnit.SECONDS)
-            .callTimeout(150, TimeUnit.SECONDS)
+            .writeTimeout(90, TimeUnit.SECONDS)
+            .readTimeout(180, TimeUnit.SECONDS)
+            .callTimeout(210, TimeUnit.SECONDS)
             .build()
     }
 }
