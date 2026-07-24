@@ -34,8 +34,12 @@ fun projectSecret(name: String): String =
     }
   }
 
+val openAiApiKey = projectSecret("OPENAI_API_KEY")
+val openAiModel = projectSecret("OPENAI_MODEL").ifBlank { "gpt-5.2" }
+val openAiBaseUrl = projectSecret("OPENAI_BASE_URL").ifBlank { "https://api.openai.com/v1/responses" }
+val openAiProxyToken = projectSecret("OPENAI_PROXY_TOKEN").ifBlank { projectSecret("PROXY_AUTH_TOKEN") }
 val geminiApiKey = projectSecret("GEMINI_API_KEY").ifBlank { projectSecret("GOOGLE_API_KEY") }
-val geminiModel = projectSecret("GEMINI_MODEL").ifBlank { "gemini-2.5-flash" }
+val geminiModel = projectSecret("GEMINI_MODEL").ifBlank { "gemini-3.1-pro-preview" }
 val mapsApiKey = projectSecret("MAPS_API_KEY")
 
 val releaseKeystorePath = System.getenv("KEYSTORE_PATH")
@@ -63,10 +67,14 @@ android {
     applicationId = "com.aistudio.lidardetector.pkrxtz"
     minSdk = 24
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.1"
+    versionCode = 3
+    versionName = "2.0"
     multiDexEnabled = true
 
+    buildConfigField("String", "OPENAI_API_KEY", quotedBuildConfig(openAiApiKey))
+    buildConfigField("String", "OPENAI_MODEL", quotedBuildConfig(openAiModel))
+    buildConfigField("String", "OPENAI_BASE_URL", quotedBuildConfig(openAiBaseUrl))
+    buildConfigField("String", "OPENAI_PROXY_TOKEN", quotedBuildConfig(openAiProxyToken))
     buildConfigField("String", "GEMINI_API_KEY", quotedBuildConfig(geminiApiKey))
     buildConfigField("String", "GEMINI_MODEL", quotedBuildConfig(geminiModel))
     buildConfigField("String", "MAPS_API_KEY", quotedBuildConfig(mapsApiKey))
@@ -116,14 +124,12 @@ android {
   }
 }
 
-// Give the APK a self-identifying filename so downloads can't be confused
-// with other apps' app-debug.apk artifacts.
 androidComponents {
   onVariants(selector().all()) { variant ->
     variant.outputs.forEach { output ->
       output.javaClass.methods
         .firstOrNull { it.name == "setOutputFileName" && it.parameterCount == 1 }
-        ?.invoke(output, "findit-${variant.buildType}.apk")
+        ?.invoke(output, "findit-v2-${variant.buildType}.apk")
     }
   }
 }
