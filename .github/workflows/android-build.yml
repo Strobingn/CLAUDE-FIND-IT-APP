@@ -29,6 +29,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Verify AI provider secrets
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_PROXY_TOKEN: ${{ secrets.OPENAI_PROXY_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ] && [ -z "$OPENAI_PROXY_TOKEN" ]; then
+            echo "::error::OpenAI primary is missing. Add OPENAI_API_KEY or OPENAI_PROXY_TOKEN in repository Actions secrets."
+            exit 1
+          fi
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::Gemini fallback is missing. Add GEMINI_API_KEY in repository Actions secrets."
+            exit 1
+          fi
+          echo "OpenAI primary secret: configured"
+          echo "Gemini 3.1 Pro fallback secret: configured"
+
       - name: Create local.properties before Gradle setup
         shell: bash
         env:
