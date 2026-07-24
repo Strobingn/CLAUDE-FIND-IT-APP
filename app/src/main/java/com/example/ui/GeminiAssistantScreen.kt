@@ -1,5 +1,6 @@
 package com.example.ui
 
+import android.app.Application
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -42,8 +44,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -77,11 +80,13 @@ data class GeminiAssistantState(
     val messages: List<GeminiMessage> = emptyList(),
     val isSending: Boolean = false,
     val error: String? = null,
-    val isConfigured: Boolean = GeminiApiClient.isConfigured(),
+    val isConfigured: Boolean = false,
+    val hasDeviceApiKey: Boolean = false,
 )
 
-class GeminiAssistantViewModel : ViewModel() {
-    private val client = GeminiApiClient()
+class GeminiAssistantViewModel(application: Application) : AndroidViewModel(application) {
+    private val appContext = application.applicationContext
+    private val client = GeminiApiClient(appContext)
     private val ids = AtomicLong(1L)
     private val _state = MutableStateFlow(
         GeminiAssistantState(
@@ -92,9 +97,29 @@ class GeminiAssistantViewModel : ViewModel() {
                     text = "Gemini is ready. Attach the visible terrain viewport so I can inspect the rendered LiDAR image as well as its terrain metadata.",
                 ),
             ),
+            isConfigured = GeminiApiClient.isConfigured(appContext),
+            hasDeviceApiKey = GeminiApiClient.hasDeviceApiKey(appContext),
         ),
     )
     val state: StateFlow<GeminiAssistantState> = _state.asStateFlow()
+
+    fun saveApiKey(value: String) {
+        val saved = GeminiApiClient.saveDeviceApiKey(appContext, value)
+        _state.value = _state.value.copy(
+            isConfigured = GeminiApiClient.isConfigured(appContext),
+            hasDeviceApiKey = GeminiApiClient.hasDeviceApiKey(appContext),
+            error = if (saved) null else "Enter a valid Gemini API key.",
+        )
+    }
+
+    fun clearDeviceApiKey() {
+        GeminiApiClient.clearDeviceApiKey(appContext)
+        _state.value = _state.value.copy(
+            isConfigured = GeminiApiClient.isConfigured(appContext),
+            hasDeviceApiKey = false,
+            error = null,
+        )
+    }
 
     fun send(
         prompt: String,
@@ -104,9 +129,9 @@ class GeminiAssistantViewModel : ViewModel() {
     ) {
         val cleaned = prompt.trim()
         if (cleaned.isBlank() || _state.value.isSending) return
-        if (!GeminiApiClient.isConfigured()) {
+        if (!GeminiApiClient.isConfigured(appContext)) {
             _state.value = _state.value.copy(
-                error = "Add a real GEMINI_API_KEY to .env or local.properties, then rebuild the app.",
+                error = "Add your Gemini API key using the Key button above.",
                 isConfigured = false,
             )
             return
@@ -176,7 +201,8 @@ class GeminiAssistantViewModel : ViewModel() {
                     text = "Conversation cleared. Ask me about the active terrain or attach the visible viewport for image analysis.",
                 ),
             ),
-            isConfigured = GeminiApiClient.isConfigured(),
+            isConfigured = GeminiApiClient.isConfigured(appContext),
+            hasDeviceApiKey = GeminiApiClient.hasDeviceApiKey(appContext),
         )
     }
 }
@@ -192,6 +218,8 @@ fun GeminiAssistantScreen(
     val state by assistantViewModel.state.collectAsStateWithLifecycle()
     val viewport by TerrainVisionSession.snapshot.collectAsStateWithLifecycle()
     var draft by rememberSaveable { mutableStateOf("") }
+    var keyDraft by rememberSaveable { mutableStateOf("") }
+    var showKeyEditor by rememberSaveable { mutableStateOf(!state.isConfigured) }
     var attachViewportImage by rememberSaveable { mutableStateOf(true) }
     val listState = rememberLazyListState()
     val imageReady = viewport.bitmap?.let { !it.isRecycled && it.width > 0 && it.height > 0 } == true
@@ -204,6 +232,9 @@ fun GeminiAssistantScreen(
     }
     LaunchedEffect(state.messages.size) {
         if (state.messages.isNotEmpty()) listState.animateScrollToItem(state.messages.lastIndex)
+    }
+    LaunchedEffect(state.isConfigured) {
+        if (state.isConfigured) showKeyEditor = false
     }
 
     Column(
@@ -236,14 +267,68 @@ fun GeminiAssistantScreen(
                         if (state.isConfigured) {
                             "Using ${GeminiApiClient.configuredModel()} · text and viewport-image analysis ready"
                         } else {
-                            "API key missing · add GEMINI_API_KEY and rebuild"
+                            "API key missing · tap Add key"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = if (state.isConfigured) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                     )
                 }
+                TextButton(onClick = { showKeyEditor = !showKeyEditor }) {
+                    Text(if (state.isConfigured) "Key" else "Add key")
+                }
                 IconButton(onClick = assistantViewModel::clearConversation) {
                     Icon(Icons.Default.DeleteSweep, contentDescription = "Clear Gemini conversation")
+                }
+            }
+        }
+
+        if (showKeyEditor) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text("Gemini API key", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Paste the key once. It is stored privately in this app on this device and is never displayed again.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = keyDraft,
+                        onValueChange = { keyDraft = it.trim().take(256) },
+                        label = { Text("API key") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (state.hasDeviceApiKey) {
+                            TextButton(
+                                onClick = {
+                                    assistantViewModel.clearDeviceApiKey()
+                                    keyDraft = ""
+                                },
+                            ) { Text("Remove device key") }
+                        }
+                        if (state.isConfigured) {
+                            TextButton(onClick = { showKeyEditor = false }) { Text("Cancel") }
+                        }
+                        Button(
+                            onClick = {
+                                assistantViewModel.saveApiKey(keyDraft)
+                                keyDraft = ""
+                            },
+                            enabled = keyDraft.length >= 20,
+                        ) { Text("Save key") }
+                    }
                 }
             }
         }
