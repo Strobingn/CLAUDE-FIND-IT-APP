@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - CHATGPTV2.0
       - grok
       - grok-v7
       - mistral-v18
@@ -32,14 +33,22 @@ jobs:
         shell: bash
         env:
           MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_PROXY_TOKEN: ${{ secrets.OPENAI_PROXY_TOKEN }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
         run: |
           {
             printf 'sdk.dir=%s\n' "$ANDROID_HOME"
             printf 'MAPS_API_KEY=%s\n' "$MAPS_API_KEY"
+            printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY"
+            printf 'OPENAI_PROXY_TOKEN=%s\n' "$OPENAI_PROXY_TOKEN"
+            printf 'OPENAI_BASE_URL=%s\n' "${OPENAI_BASE_URL:-https://api.openai.com/v1/responses}"
+            printf 'OPENAI_MODEL=%s\n' "${OPENAI_MODEL:-gpt-5.2}"
             printf 'GEMINI_API_KEY=%s\n' "$GEMINI_API_KEY"
-            printf 'GEMINI_MODEL=%s\n' "${GEMINI_MODEL:-gemini-2.5-flash}"
+            printf 'GEMINI_MODEL=%s\n' "${GEMINI_MODEL:-gemini-3.1-pro-preview}"
           } > "$GITHUB_WORKSPACE/local.properties"
           test -f "$GITHUB_WORKSPACE/local.properties"
 
