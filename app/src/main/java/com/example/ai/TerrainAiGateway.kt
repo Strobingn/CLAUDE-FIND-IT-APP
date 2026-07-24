@@ -1,6 +1,8 @@
 package com.example.ai
 
 import android.content.Context
+import java.io.IOException
+import kotlinx.coroutines.CancellationException
 
 enum class TerrainAiProvider(val label: String) {
     OPENAI("OpenAI"),
@@ -14,7 +16,7 @@ data class TerrainAiAnswer(
 )
 
 /**
- * Provider order is intentional: OpenAI first, Gemini second.
+ * Provider order is intentional: OpenAI first, Gemini 3.1 Pro second.
  * Local terrain intelligence is separate and never depends on either cloud provider.
  */
 internal class TerrainAiGateway(context: Context) {
@@ -27,28 +29,63 @@ internal class TerrainAiGateway(context: Context) {
         systemContext: String,
         image: GeminiImageInput? = null,
     ): TerrainAiAnswer {
-        if (OpenAiApiClient.isConfigured(appContext)) {
+        val openAiConfigured = OpenAiApiClient.isConfigured(appContext)
+        val geminiConfigured = GeminiApiClient.isConfigured(appContext)
+
+        if (openAiConfigured) {
             try {
                 return TerrainAiAnswer(
                     text = openAi.generate(conversation, systemContext, image),
                     provider = TerrainAiProvider.OPENAI,
                 )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (openAiError: Throwable) {
-                if (!GeminiApiClient.isConfigured(appContext)) throw openAiError
+                val openAiReason = openAiError.localizedMessage ?: "OpenAI request failed"
+                if (!geminiConfigured) {
+                    throw IOException(
+                        "OpenAI failed: $openAiReason. Gemini fallback is unavailable because no Gemini API key is configured in this APK or on this device.",
+                        openAiError,
+                    )
+                }
+                try {
+                    return TerrainAiAnswer(
+                        text = gemini.generate(conversation, systemContext, image),
+                        provider = TerrainAiProvider.GEMINI,
+                        fallbackReason = openAiReason,
+                    )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (geminiError: Throwable) {
+                    val geminiReason = geminiError.localizedMessage ?: "Gemini fallback failed"
+                    throw IOException(
+                        "Both cloud providers failed. OpenAI: $openAiReason. Gemini 3.1 Pro fallback: $geminiReason",
+                        geminiError,
+                    )
+                }
+            }
+        }
+
+        if (geminiConfigured) {
+            try {
                 return TerrainAiAnswer(
                     text = gemini.generate(conversation, systemContext, image),
                     provider = TerrainAiProvider.GEMINI,
-                    fallbackReason = openAiError.localizedMessage ?: "OpenAI request failed",
+                    fallbackReason = "OpenAI was not configured",
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (geminiError: Throwable) {
+                throw IOException(
+                    "OpenAI is not configured and Gemini 3.1 Pro failed: ${geminiError.localizedMessage ?: "unknown Gemini error"}",
+                    geminiError,
                 )
             }
         }
-        if (GeminiApiClient.isConfigured(appContext)) {
-            return TerrainAiAnswer(
-                text = gemini.generate(conversation, systemContext, image),
-                provider = TerrainAiProvider.GEMINI,
-            )
-        }
-        error("No cloud AI provider is configured. Add an OpenAI key first or a Gemini fallback key.")
+
+        error(
+            "No cloud AI provider is configured. Add OPENAI_API_KEY for the primary provider and GEMINI_API_KEY for automatic fallback. Offline terrain analysis still works without either key.",
+        )
     }
 
     companion object {
@@ -56,6 +93,13 @@ internal class TerrainAiGateway(context: Context) {
             OpenAiApiClient.isConfigured(context) -> TerrainAiProvider.OPENAI
             GeminiApiClient.isConfigured(context) -> TerrainAiProvider.GEMINI
             else -> null
+        }
+
+        fun providerStatus(context: Context): String = buildString {
+            append("OpenAI=")
+            append(if (OpenAiApiClient.isConfigured(context)) "configured" else "missing")
+            append(" · Gemini 3.1 Pro=")
+            append(if (GeminiApiClient.isConfigured(context)) "configured" else "missing")
         }
     }
 }
