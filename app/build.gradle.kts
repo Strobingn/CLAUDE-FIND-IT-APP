@@ -1,3 +1,47 @@
+import java.util.Properties
+
+fun parseDotEnv(file: File): Map<String, String> {
+  if (!file.isFile) return emptyMap()
+  return file.readLines().mapNotNull { rawLine ->
+    val line = rawLine.trim()
+    if (line.isBlank() || line.startsWith("#") || !line.contains('=')) return@mapNotNull null
+    val key = line.substringBefore('=').removePrefix("export ").trim()
+    val value = line.substringAfter('=').trim().removeSurrounding("\"").removeSurrounding("'")
+    key.takeIf { it.isNotBlank() }?.let { it to value }
+  }.toMap()
+}
+
+fun quotedBuildConfig(value: String): String =
+  "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+fun usableSecret(value: String?): String {
+  val cleaned = value?.trim().orEmpty()
+  if (cleaned.isBlank()) return ""
+  val upper = cleaned.uppercase()
+  if (upper.startsWith("YOUR_") || upper.startsWith("MY_") || upper.contains("PLACEHOLDER")) return ""
+  return cleaned
+}
+
+val localProperties = Properties().apply {
+  val file = rootProject.file("local.properties")
+  if (file.isFile) file.inputStream().use(::load)
+}
+val dotEnv = parseDotEnv(rootProject.file(".env"))
+fun projectSecret(name: String): String =
+  usableSecret(System.getenv(name)).ifBlank {
+    usableSecret(localProperties.getProperty(name)).ifBlank {
+      usableSecret(dotEnv[name])
+    }
+  }
+
+val openAiApiKey = projectSecret("OPENAI_API_KEY")
+val openAiModel = projectSecret("OPENAI_MODEL").ifBlank { "gpt-5.2" }
+val openAiBaseUrl = projectSecret("OPENAI_BASE_URL").ifBlank { "https://api.openai.com/v1/responses" }
+val openAiProxyToken = projectSecret("OPENAI_PROXY_TOKEN").ifBlank { projectSecret("PROXY_AUTH_TOKEN") }
+val geminiApiKey = projectSecret("GEMINI_API_KEY").ifBlank { projectSecret("GOOGLE_API_KEY") }
+val geminiModel = projectSecret("GEMINI_MODEL").ifBlank { "gemini-3.1-pro-preview" }
+val mapsApiKey = projectSecret("MAPS_API_KEY")
+
 val releaseKeystorePath = System.getenv("KEYSTORE_PATH")
 val releaseKeystoreFile = releaseKeystorePath?.takeIf { it.isNotBlank() }?.let { file(it) }
 val releaseStorePassword = System.getenv("STORE_PASSWORD")
@@ -11,8 +55,8 @@ val hasReleaseSigning =
 
 plugins {
   alias(libs.plugins.android.application)
+  alias(libs.plugins.legacy.kapt)
   alias(libs.plugins.kotlin.compose)
-  alias(libs.plugins.google.devtools.ksp)
 }
 
 android {
@@ -23,8 +67,18 @@ android {
     applicationId = "com.aistudio.lidardetector.pkrxtz"
     minSdk = 24
     targetSdk = 36
-    versionCode = 2
-    versionName = "1.1"
+    versionCode = 3
+    versionName = "2.0"
+    multiDexEnabled = true
+
+    buildConfigField("String", "OPENAI_API_KEY", quotedBuildConfig(openAiApiKey))
+    buildConfigField("String", "OPENAI_MODEL", quotedBuildConfig(openAiModel))
+    buildConfigField("String", "OPENAI_BASE_URL", quotedBuildConfig(openAiBaseUrl))
+    buildConfigField("String", "OPENAI_PROXY_TOKEN", quotedBuildConfig(openAiProxyToken))
+    buildConfigField("String", "GEMINI_API_KEY", quotedBuildConfig(geminiApiKey))
+    buildConfigField("String", "GEMINI_MODEL", quotedBuildConfig(geminiModel))
+    buildConfigField("String", "MAPS_API_KEY", quotedBuildConfig(mapsApiKey))
+    manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -70,14 +124,12 @@ android {
   }
 }
 
-// Give the APK a self-identifying filename so downloads can't be confused
-// with other apps' app-debug.apk artifacts.
 androidComponents {
   onVariants(selector().all()) { variant ->
     variant.outputs.forEach { output ->
       output.javaClass.methods
         .firstOrNull { it.name == "setOutputFileName" && it.parameterCount == 1 }
-        ?.invoke(output, "findit-${variant.buildType}.apk")
+        ?.invoke(output, "findit-v2-${variant.buildType}.apk")
     }
   }
 }
@@ -103,6 +155,7 @@ dependencies {
   implementation(libs.laszip4j)
   implementation(libs.nga.tiff)
   implementation(libs.okhttp)
+  implementation(libs.play.services.maps)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
@@ -116,5 +169,5 @@ dependencies {
   androidTestImplementation(libs.androidx.runner)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
-  "ksp"(libs.androidx.room.compiler)
+  add("kapt", libs.androidx.room.compiler)
 }
