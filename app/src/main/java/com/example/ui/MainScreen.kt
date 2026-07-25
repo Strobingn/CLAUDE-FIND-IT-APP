@@ -64,6 +64,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -222,6 +223,7 @@ private fun TerrainTab(
     val localViewportResetKey = rememberSaveable { mutableIntStateOf(0) }
     val viewportResetKey = vmViewportReset + localViewportResetKey.intValue
     val context = LocalContext.current
+    val bottomControlLift = with(LocalDensity.current) { 100.toDp() }
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> viewModel.onLocationPermissionResult(granted) }
@@ -433,7 +435,7 @@ private fun TerrainTab(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .navigationBarsPadding()
-                    .padding(end = 8.dp, bottom = 8.dp),
+                    .padding(end = 8.dp, bottom = bottomControlLift + 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 IconButton(onClick = { onOpenTab(1) }) {
