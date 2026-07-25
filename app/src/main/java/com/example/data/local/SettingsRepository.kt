@@ -4,7 +4,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
 class SettingsRepository(private val settingDao: SettingDao) {
-    
+
     // Predefined setting keys
     object Keys {
         const val SUN_AZIMUTH = "sun_azimuth"
@@ -27,8 +27,8 @@ class SettingsRepository(private val settingDao: SettingDao) {
         const val HEATMAP_ENABLED = "heatmap_enabled"
         const val BASEMAP_ENABLED = "basemap_enabled"
         const val BASEMAP_OPACITY = "basemap_opacity"
-        
-        // New keys for viewport persistence
+
+        // Viewport persistence
         const val VIEWPORT_ZOOM = "viewport_zoom"
         const val VIEWPORT_PAN_X = "viewport_pan_x"
         const val VIEWPORT_PAN_Y = "viewport_pan_y"
@@ -55,7 +55,12 @@ class SettingsRepository(private val settingDao: SettingDao) {
     }
 
     suspend fun getInt(key: String, defaultValue: Int = 0): Int {
-        return settingDao.getValue(key)?.toIntOrNull() ?: defaultValue
+        val storedValue = settingDao.getValue(key)?.toIntOrNull()
+        return when {
+            storedValue != null -> storedValue
+            key == Keys.PALETTE_TYPE -> 0 // Clay is the product default for new installs.
+            else -> defaultValue
+        }
     }
 
     suspend fun getFloat(key: String, defaultValue: Float = 0f): Float {

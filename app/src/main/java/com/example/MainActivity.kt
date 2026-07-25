@@ -6,8 +6,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.ui.FindItAppRoot
 import com.example.ui.HillshadeViewModel
-import com.example.ui.MainScreen
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
@@ -19,9 +19,8 @@ class MainActivity : ComponentActivity() {
     setContent {
       MyApplicationTheme(darkTheme = true) {
         val vm: HillshadeViewModel = viewModel()
-        MainScreen(viewModel = vm)
+        FindItAppRoot(viewModel = vm)
       }
     }
   }
 }
-

@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -82,16 +84,15 @@ import kotlinx.coroutines.delay
 private data class AppTab(
     val label: String,
     val title: String,
-    val subtitle: String,
     val icon: ImageVector,
 )
 
 private val tabs = listOf(
-    AppTab("Terrain", "Terrain workspace", "Render and analyze the active LiDAR layer", Icons.Default.Landscape),
-    AppTab("Map", "Google Maps overlay", "Align the rendered LAZ layer with real-world imagery", Icons.Default.Layers),
-    AppTab("Gemini", "Gemini field assistant", "Ask questions using the active terrain context", Icons.Default.AutoAwesome),
-    AppTab("Finds", "Field finds", "Log, review, and manage survey targets", Icons.Default.Flag),
-    AppTab("Import", "Terrain library", "Download NOAA LAZ or open local terrain files", Icons.Default.UploadFile),
+    AppTab("Terrain", "Terrain workspace", Icons.Default.Landscape),
+    AppTab("Map", "Google Maps overlay", Icons.Default.Layers),
+    AppTab("Gemini", "Gemini field assistant", Icons.Default.AutoAwesome),
+    AppTab("Finds", "Field finds", Icons.Default.Flag),
+    AppTab("Import", "Terrain library", Icons.Default.UploadFile),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -99,12 +100,13 @@ private val tabs = listOf(
 fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
     val selectedTab = rememberSaveable { mutableIntStateOf(0) }
     val terrainFocusMode = rememberSaveable { mutableStateOf(false) }
+    val terrainSelected = selectedTab.intValue == 0
     val activeTab = tabs[selectedTab.intValue]
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
-            if (!terrainFocusMode.value) {
+            if (!terrainSelected && !terrainFocusMode.value) {
                 CenterAlignedTopAppBar(
                     title = {
                         Text(
@@ -113,13 +115,6 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
                             fontWeight = FontWeight.Bold,
                         )
                     },
-                    actions = {
-                        if (selectedTab.intValue == 0) {
-                            IconButton(onClick = { terrainFocusMode.value = true }) {
-                                Icon(Icons.Default.Fullscreen, contentDescription = "Open terrain full screen")
-                            }
-                        }
-                    },
                     colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
                     ),
@@ -127,7 +122,9 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
             }
         },
         bottomBar = {
-            if (!terrainFocusMode.value) {
+            // Terrain is a full-screen working surface. Keeping the app navigation here
+            // covered the lower-left raster information and reduced the usable map area.
+            if (!terrainSelected && !terrainFocusMode.value) {
                 Surface(
                     shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
                     shadowElevation = 10.dp,
@@ -158,21 +155,20 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
         when (selectedTab.intValue) {
             0 -> TerrainTab(
                 viewModel = viewModel,
-                padding = padding,
                 focusMode = terrainFocusMode.value,
                 onFocusModeChanged = { terrainFocusMode.value = it },
-            )
-            1 -> GoogleMapTab(viewModel = viewModel, padding = padding)
-            2 -> GeminiTab(viewModel = viewModel, padding = padding)
-            3 -> FindsTab(viewModel = viewModel, padding = padding)
-            else -> ImportTab(
-                viewModel = viewModel,
-                padding = padding,
-                onImported = {
-                    selectedTab.intValue = 0
+                onOpenTab = {
+                    selectedTab.intValue = it
                     terrainFocusMode.value = false
                 },
             )
+            1 -> GoogleMapTab(viewModel, padding)
+            2 -> GeminiTab(viewModel, padding)
+            3 -> FindsTab(viewModel, padding)
+            else -> ImportTab(viewModel, padding) {
+                selectedTab.intValue = 0
+                terrainFocusMode.value = false
+            }
         }
     }
 }
@@ -180,9 +176,9 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
 @Composable
 private fun TerrainTab(
     viewModel: HillshadeViewModel,
-    padding: PaddingValues,
     focusMode: Boolean,
     onFocusModeChanged: (Boolean) -> Unit,
+    onOpenTab: (Int) -> Unit,
 ) {
     val site by viewModel.currentSiteIndex.collectAsStateWithLifecycle()
     val bitmap by viewModel.hillshadeBitmap.collectAsStateWithLifecycle()
@@ -237,11 +233,9 @@ private fun TerrainTab(
         }
     }
 
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(if (focusMode) PaddingValues(0.dp) else padding),
-    ) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        // Reserve a narrow, explicit lane for the top controls and lower status card.
+        // This prevents the canvas-owned metadata from rendering underneath either one.
         LidarMapCanvas(
             bitmap = bitmap,
             isRendering = isRendering,
@@ -271,37 +265,38 @@ private fun TerrainTab(
             deviceGridPosition = devicePosition,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(if (focusMode) 0.dp else 6.dp)
+                .padding(top = 76.dp, bottom = 58.dp)
                 .testTag("terrain_workspace"),
         )
 
         Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            shape = RoundedCornerShape(15.dp),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
             tonalElevation = 4.dp,
-            shadowElevation = 6.dp,
+            shadowElevation = 7.dp,
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(8.dp)
-                .fillMaxWidth(0.98f),
+                .statusBarsPadding()
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+                .fillMaxWidth(),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                    .padding(horizontal = 5.dp, vertical = 3.dp),
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(horizontal = 8.dp),
+                    modifier = Modifier.padding(horizontal = 7.dp),
                 ) {
                     Icon(
                         Icons.Default.WbSunny,
                         contentDescription = "Sun direction",
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.width(20.dp).rotate(azimuth),
+                        modifier = Modifier.width(19.dp).rotate(azimuth),
                     )
                     Spacer(Modifier.width(5.dp))
                     Text(
@@ -316,8 +311,8 @@ private fun TerrainTab(
                 TerrainQuickAction("Fit", Icons.Default.CenterFocusStrong) { localViewportResetKey.intValue++ }
                 if (canRefine) {
                     TerrainQuickAction(
-                        label = if (isRefining) "Loading" else if (isDetailed) "Refresh" else "Detail",
-                        icon = Icons.Default.ZoomInMap,
+                        if (isRefining) "Loading" else if (isDetailed) "Refresh" else "Detail",
+                        Icons.Default.ZoomInMap,
                         active = isDetailed,
                         enabled = !isRefining,
                     ) { viewModel.refineTerrain(visibleBounds.value) }
@@ -326,36 +321,40 @@ private fun TerrainTab(
                     }
                 }
                 TerrainQuickAction(
-                    label = if (showControls.value) "Close" else "Analyze",
-                    icon = Icons.Default.Tune,
+                    if (showControls.value) "Close" else "Analyze",
+                    Icons.Default.Tune,
                     active = showControls.value,
                 ) { showControls.value = !showControls.value }
                 TerrainQuickAction(
-                    label = if (gpsEnabled) "GPS on" else "GPS",
-                    icon = if (gpsEnabled && hasLocationPermission) Icons.Default.GpsFixed else Icons.Default.GpsNotFixed,
+                    if (gpsEnabled) "GPS on" else "GPS",
+                    if (gpsEnabled && hasLocationPermission) Icons.Default.GpsFixed else Icons.Default.GpsNotFixed,
                     active = gpsEnabled && hasLocationPermission,
                 ) {
-                    val alreadyGranted = ContextCompat.checkSelfPermission(
+                    val granted = ContextCompat.checkSelfPermission(
                         context,
                         Manifest.permission.ACCESS_FINE_LOCATION,
                     ) == PackageManager.PERMISSION_GRANTED
-                    if (!alreadyGranted && !gpsEnabled) {
+                    if (!granted && !gpsEnabled) {
                         locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                     }
                     viewModel.toggleGpsTracking(!gpsEnabled)
                 }
                 TerrainQuickAction(
-                    label = if (focusMode) "Exit" else "Full",
-                    icon = if (focusMode) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                    if (focusMode) "Exit" else "Full",
+                    if (focusMode) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                 ) { onFocusModeChanged(!focusMode) }
             }
         }
 
         Surface(
             shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
             tonalElevation = 3.dp,
-            modifier = Modifier.align(Alignment.BottomStart).padding(10.dp),
+            shadowElevation = 4.dp,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .navigationBarsPadding()
+                .padding(start = 10.dp, end = 10.dp, bottom = 8.dp),
         ) {
             val widthMeters = (elevationGrid.width - 1).coerceAtLeast(1) * elevationGrid.cellSizeMeters
             val heightMeters = (elevationGrid.height - 1).coerceAtLeast(1) * elevationGrid.cellSizeMeters
@@ -379,7 +378,10 @@ private fun TerrainTab(
 
         AnimatedVisibility(
             visible = showControls.value,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(10.dp),
         ) {
             LidarControlPanel(
                 selectedSiteIndex = site,
@@ -419,9 +421,28 @@ private fun TerrainTab(
                 basemapStatus = basemapStatus,
                 modifier = Modifier
                     .fillMaxWidth(0.92f)
-                    .heightIn(max = maxHeight * 0.82f)
+                    .heightIn(max = maxHeight * 0.76f)
                     .verticalScroll(rememberScrollState()),
             )
+        }
+
+        // Compact escape/navigation row. It replaces the large bottom NavigationBar that
+        // previously covered the lower-left terrain readout.
+        if (!focusMode && !showControls.value) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(end = 8.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                IconButton(onClick = { onOpenTab(1) }) {
+                    Icon(Icons.Default.Layers, contentDescription = "Open map")
+                }
+                IconButton(onClick = { onOpenTab(4) }) {
+                    Icon(Icons.Default.UploadFile, contentDescription = "Import terrain")
+                }
+            }
         }
     }
 }
@@ -438,16 +459,11 @@ private fun TerrainQuickAction(
         onClick = onClick,
         enabled = enabled,
         shape = RoundedCornerShape(12.dp),
-        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 5.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
     ) {
         val contentColor = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = contentColor,
-            modifier = Modifier.width(20.dp),
-        )
-        Spacer(Modifier.width(5.dp))
+        Icon(icon, contentDescription = label, tint = contentColor, modifier = Modifier.width(19.dp))
+        Spacer(Modifier.width(4.dp))
         Text(
             label,
             color = contentColor,
@@ -489,7 +505,6 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val sweepX by viewModel.sweepX.collectAsStateWithLifecycle()
     val sweepY by viewModel.sweepY.collectAsStateWithLifecycle()
-
     TargetLoggerPanel(
         loggedSignals = signals,
         currentSweepX = sweepX,
