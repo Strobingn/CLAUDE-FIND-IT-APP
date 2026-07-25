@@ -190,14 +190,14 @@ private fun FindItHomeScreen(
                         title = "Coverage",
                         value = String.format(Locale.US, "%.0f × %.0f m", widthMeters, heightMeters),
                         subtitle = if (isDetailed) "Detailed viewport" else "Current raster",
-                        icon = CenterFocusStrong,
+                        icon = Icons.Default.CenterFocusStrong,
                         modifier = Modifier.weight(1f),
                     )
                     MetricCard(
                         title = "Finds",
                         value = signals.size.toString(),
                         subtitle = if (signals.isEmpty()) "No targets logged" else "Saved field targets",
-                        icon = Flag,
+                        icon = Icons.Default.Flag,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -212,7 +212,7 @@ private fun FindItHomeScreen(
                         title = "Image style",
                         value = paletteName,
                         subtitle = if (palette == 0) "Default relief palette" else "Selected palette",
-                        icon = Landscape,
+                        icon = Icons.Default.Landscape,
                         modifier = Modifier.weight(1f),
                     )
                     MetricCard(
@@ -225,7 +225,7 @@ private fun FindItHomeScreen(
                         subtitle = currentLat?.let { lat ->
                             currentLon?.let { lon -> String.format(Locale.US, "%.4f, %.4f", lat, lon) }
                         } ?: "No active position",
-                        icon = GpsFixed,
+                        icon = Icons.Default.GpsFixed,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -250,14 +250,14 @@ private fun FindItHomeScreen(
                     ActionCard(
                         title = "Terrain",
                         subtitle = "Inspect relief, slope, curvature and disturbance",
-                        icon = Landscape,
+                        icon = Icons.Default.Landscape,
                         onClick = onOpenWorkspace,
                         modifier = Modifier.weight(1f),
                     )
                     ActionCard(
                         title = "Import",
                         subtitle = "Open LAZ, LAS, GeoTIFF and local terrain",
-                        icon = UploadFile,
+                        icon = Icons.Default.UploadFile,
                         onClick = onOpenWorkspace,
                         modifier = Modifier.weight(1f),
                     )
@@ -272,14 +272,14 @@ private fun FindItHomeScreen(
                     ActionCard(
                         title = "Map",
                         subtitle = "Align terrain with geographic imagery",
-                        icon = Layers,
+                        icon = Icons.Default.Layers,
                         onClick = onOpenWorkspace,
                         modifier = Modifier.weight(1f),
                     )
                     ActionCard(
                         title = "AI analysis",
                         subtitle = "Review the active terrain with cloud or local context",
-                        icon = AutoAwesome,
+                        icon = Icons.Default.AutoAwesome,
                         onClick = onOpenWorkspace,
                         modifier = Modifier.weight(1f),
                     )
@@ -376,7 +376,7 @@ private fun HeroCard(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Landscape,
+                            imageVector = Icons.Default.Landscape,
                             contentDescription = null,
                             tint = ClayHighlight,
                             modifier = Modifier.size(28.dp),
@@ -395,7 +395,7 @@ private fun HeroCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
             ) {
-                Icon(Landscape, contentDescription = null)
+                Icon(Icons.Default.Landscape, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("Open terrain workspace", fontWeight = FontWeight.Bold)
             }
