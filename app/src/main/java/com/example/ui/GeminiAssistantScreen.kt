@@ -70,8 +70,11 @@ import com.example.analysis.TerrainFeatureCandidate
 import com.example.analysis.TerrainIntelligenceEngine
 import com.example.analysis.TerrainIntelligenceRenderer
 import com.example.analysis.TerrainIntelligenceResult
+import com.example.analysis.VerifiedFeedback
+import com.example.analysis.VerifiedFeedbackPoint
 import com.example.data.AppMemoryBudget
 import com.example.data.ElevationGrid
+import com.example.data.TargetSignal
 import com.example.geospatial.GeoSpatialLibrary.GeoSpatialMetadata
 import java.io.File
 import java.util.Locale
@@ -109,6 +112,8 @@ data class AiTerrainState(
     val localResult: TerrainIntelligenceResult? = null,
     val selectedLayer: TerrainDerivedLayer = TerrainDerivedLayer.LOCAL_RELIEF,
     val localLayerBitmap: Bitmap? = null,
+    /** Field-verified points for the current dataset, derived from logged finds - see [VerifiedFeedback]. */
+    val verifiedFeedback: List<VerifiedFeedbackPoint> = emptyList(),
 )
 
 class AiTerrainViewModel(application: Application) : AndroidViewModel(application) {
@@ -155,7 +160,13 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         _state.value = _state.value.withProviderStatus().copy(cloudError = null)
     }
 
-    fun runLocalAnalysis(grid: ElevationGrid, terrainSummary: String) {
+    /**
+     * Runs the offline detectors, feeding in any field-verified outcomes logged for this exact
+     * dataset so both [TerrainIntelligenceEngine]'s candidates and [MetalDetectingTargetRefiner]'s
+     * targets (via [AiTerrainState.verifiedFeedback], applied by the caller) benefit from real
+     * confirmed/rejected field checks instead of only ever seeing an empty feedback list.
+     */
+    fun runLocalAnalysis(grid: ElevationGrid, terrainSummary: String, loggedSignals: List<TargetSignal> = emptyList()) {
         if (_state.value.isLocalAnalyzing) return
         _state.value = _state.value.copy(
             isLocalAnalyzing = true,
@@ -164,9 +175,12 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         )
         viewModelScope.launch {
             try {
+                val datasetKey = TerrainIntelligenceEngine.terrainSignature(grid)
+                val verifiedPoints = VerifiedFeedback.derive(loggedSignals, datasetKey)
                 val result = localEngine.analyze(
                     grid = grid,
                     terrainSummary = terrainSummary,
+                    feedback = VerifiedFeedback.toTerrainFeedbackRecords(datasetKey, verifiedPoints),
                     onStage = { stage -> _state.value = _state.value.copy(localStage = stage) },
                 )
                 val layer = _state.value.selectedLayer
@@ -179,6 +193,7 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                     localResult = result,
                     localLayerBitmap = bitmap,
                     localError = null,
+                    verifiedFeedback = verifiedPoints,
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled

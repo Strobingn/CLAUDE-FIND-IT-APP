@@ -58,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.TargetSignal
+import com.example.data.VerificationOutcome
 import com.example.data.export.buildCsv
 import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
@@ -290,6 +291,17 @@ private fun SignalCard(signal: TargetSignal, onEdit: () -> Unit, onDelete: () ->
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
+                if (signal.outcome != VerificationOutcome.UNVERIFIED) {
+                    Text(
+                        signal.outcome.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = when (signal.outcome) {
+                            VerificationOutcome.CONFIRMED_FEATURE -> MaterialTheme.colorScheme.tertiary
+                            VerificationOutcome.REJECTED_FALSE_POSITIVE -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
                 if (signal.notes.isNotBlank()) {
                     Text(signal.notes, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
@@ -332,6 +344,7 @@ private fun EditSignalDialog(
     }
     var notes by remember(signal.id) { mutableStateOf(signal.notes) }
     var status by remember(signal.id) { mutableStateOf(signal.status) }
+    var outcome by remember(signal.id) { mutableStateOf(signal.outcome) }
     val statuses = listOf("Logged", "Excavated", "Anomalous", "Trash")
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -392,12 +405,43 @@ private fun EditSignalDialog(
                         }
                     }
                 }
+                Text("Field verification", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Checked this location? Your answer feeds back into how future terrain analysis of this dataset scores similar candidates.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                VerificationOutcome.entries.chunked(2).forEach { rowOutcomes ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        rowOutcomes.forEach { item ->
+                            val selected = outcome == item
+                            if (selected) {
+                                Button(
+                                    onClick = { outcome = item },
+                                    modifier = Modifier.weight(1f).height(48.dp).testTag("outcome_${item.name}"),
+                                ) { Text(item.label, maxLines = 2, style = MaterialTheme.typography.labelMedium) }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { outcome = item },
+                                    modifier = Modifier.weight(1f).height(48.dp).testTag("outcome_${item.name}"),
+                                ) { Text(item.label, maxLines = 2, style = MaterialTheme.typography.labelMedium) }
+                            }
+                        }
+                    }
+                }
+                if (signal.datasetKey == null && outcome != VerificationOutcome.UNVERIFIED) {
+                    Text(
+                        "This find isn't linked to a specific analyzed dataset, so this verification won't influence future scoring.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(signal.copy(notes = notes.trim(), photoUris = photoUris, status = status))
+                    onSave(signal.copy(notes = notes.trim(), photoUris = photoUris, status = status, outcome = outcome))
                 },
             ) {
                 Text("Save")

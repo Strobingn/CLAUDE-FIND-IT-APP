@@ -26,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -90,6 +91,7 @@ private val tabs = listOf(
     AppTab("Terrain", "Terrain workspace", Icons.Default.Landscape),
     AppTab("Map", "Google Maps overlay", Icons.Default.Layers),
     AppTab("Gemini", "Gemini field assistant", Icons.Default.AutoAwesome),
+    AppTab("Compare", "Layer comparison", Icons.Default.Compare),
     AppTab("Finds", "Field finds", Icons.Default.Flag),
     AppTab("Import", "Terrain library", Icons.Default.UploadFile),
 )
@@ -170,7 +172,8 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
             )
             1 -> GoogleMapTab(viewModel, padding)
             2 -> GeminiTab(viewModel, padding)
-            3 -> FindsTab(viewModel, padding)
+            3 -> CompareTab(viewModel, padding)
+            4 -> FindsTab(viewModel, padding)
             else -> ImportTab(viewModel, padding) {
                 selectedTab.intValue = 0
                 terrainFocusMode.value = false
@@ -218,8 +221,10 @@ private fun TerrainTab(
     val basemapBitmap by viewModel.basemapBitmap.collectAsStateWithLifecycle()
     val basemapStatus by viewModel.basemapStatus.collectAsStateWithLifecycle()
     val vmViewportReset by viewModel.viewportResetKey.collectAsStateWithLifecycle()
-    val viewportPanX by viewModel.viewportPanX.collectAsStateWithLifecycle()
-    val viewportPanY by viewModel.viewportPanY.collectAsStateWithLifecycle()
+    val vmViewportZoom by viewModel.viewportZoom.collectAsStateWithLifecycle()
+    val vmViewportPanX by viewModel.viewportPanX.collectAsStateWithLifecycle()
+    val vmViewportPanY by viewModel.viewportPanY.collectAsStateWithLifecycle()
+    val vmViewportRestoreToken by viewModel.viewportRestoreToken.collectAsStateWithLifecycle()
 
     val visibleBounds = remember { mutableStateOf(NormalizedRasterBounds.Full) }
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
@@ -255,10 +260,14 @@ private fun TerrainTab(
             viewportResetKey = viewportResetKey,
             showSurveyCursor = false,
             showCoordinateHud = false,
-            onViewportChanged = { bounds, zoom ->
+            initialZoom = vmViewportZoom,
+            initialPanX = vmViewportPanX,
+            initialPanY = vmViewportPanY,
+            viewportRestoreToken = vmViewportRestoreToken,
+            onViewportChanged = { bounds, zoom, panX, panY ->
                 visibleBounds.value = bounds
                 zoomLevel.value = zoom
-                viewModel.updateViewport(zoom, viewportPanX, viewportPanY)
+                viewModel.updateViewport(zoom, panX, panY)
             },
             showHeatmap = heatmapEnabled,
             basemapBitmap = basemapBitmap,
@@ -312,16 +321,19 @@ private fun TerrainTab(
                 TerrainQuickAction("Light -", Icons.Default.RotateLeft) { viewModel.rotateSunAzimuth(-45f) }
                 TerrainQuickAction("Light +", Icons.Default.RotateRight) { viewModel.rotateSunAzimuth(45f) }
                 TerrainQuickAction("Fit", Icons.Default.CenterFocusStrong) { localViewportResetKey.intValue++ }
-                if (canRefine) {
-                    TerrainQuickAction(
-                        if (isRefining) "Loading" else if (isDetailed) "Refresh" else "Detail",
-                        Icons.Default.ZoomInMap,
-                        active = isDetailed,
-                        enabled = !isRefining,
-                    ) { viewModel.refineTerrain(visibleBounds.value) }
-                    if (isDetailed) {
-                        TerrainQuickAction("Whole", Icons.Default.ZoomOutMap) { viewModel.showWholeTerrain() }
-                    }
+                TerrainQuickAction(
+                    when {
+                        !canRefine -> "No LAZ source"
+                        isRefining -> "Loading"
+                        isDetailed -> "Refresh"
+                        else -> "Detail"
+                    },
+                    Icons.Default.ZoomInMap,
+                    active = isDetailed,
+                    enabled = canRefine && !isRefining,
+                ) { viewModel.refineTerrain(visibleBounds.value) }
+                if (canRefine && isDetailed) {
+                    TerrainQuickAction("Whole", Icons.Default.ZoomOutMap) { viewModel.showWholeTerrain() }
                 }
                 TerrainQuickAction(
                     if (showControls.value) "Close" else "Analyze",
@@ -474,6 +486,11 @@ private fun GoogleMapTab(viewModel: HillshadeViewModel, padding: PaddingValues) 
 @Composable
 private fun GeminiTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
     AiAnalysisWorkspace(viewModel = viewModel, padding = padding)
+}
+
+@Composable
+private fun CompareTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
+    LayerComparisonWorkspace(viewModel = viewModel, padding = padding)
 }
 
 @Composable

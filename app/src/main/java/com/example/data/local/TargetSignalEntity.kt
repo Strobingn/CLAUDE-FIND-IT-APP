@@ -5,6 +5,7 @@ import androidx.room.PrimaryKey
 import com.example.data.DetectionSource
 import com.example.data.MetalType
 import com.example.data.TargetSignal
+import com.example.data.VerificationOutcome
 
 @Entity(tableName = "target_signals")
 data class TargetSignalEntity(
@@ -21,6 +22,8 @@ data class TargetSignalEntity(
     val notes: String,
     val photoUris: String,
     val status: String,
+    val outcome: String = VerificationOutcome.UNVERIFIED.name,
+    val datasetKey: String? = null,
 )
 
 fun TargetSignal.toEntity() = TargetSignalEntity(
@@ -37,6 +40,8 @@ fun TargetSignal.toEntity() = TargetSignalEntity(
     notes = notes,
     photoUris = photoUris.joinToString("\n") { it.replace("\n", "") },
     status = status,
+    outcome = outcome.name,
+    datasetKey = datasetKey,
 )
 
 fun TargetSignalEntity.toDomain() = TargetSignal(
@@ -53,6 +58,8 @@ fun TargetSignalEntity.toDomain() = TargetSignal(
     notes = notes,
     photoUris = photoUris.lineSequence().filter { it.isNotBlank() }.toList(),
     status = status,
+    outcome = enumValueOrDefault(outcome, VerificationOutcome.UNVERIFIED),
+    datasetKey = datasetKey,
 )
 
 private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String, fallback: T): T =
