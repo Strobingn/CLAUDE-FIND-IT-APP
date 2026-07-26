@@ -43,7 +43,6 @@ import androidx.compose.material.icons.filled.ZoomOutMap
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -123,8 +122,6 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
             }
         },
         bottomBar = {
-            // Terrain is a full-screen working surface. Keeping the app navigation here
-            // covered the lower-left raster information and reduced the usable map area.
             if (!terrainSelected && !terrainFocusMode.value) {
                 Surface(
                     shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
@@ -236,8 +233,6 @@ private fun TerrainTab(
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        // Reserve a narrow, explicit lane for the top controls and lower status card.
-        // This prevents the canvas-owned metadata from rendering underneath either one.
         LidarMapCanvas(
             bitmap = bitmap,
             isRendering = isRendering,
@@ -427,7 +422,6 @@ private fun TerrainTab(
                     .verticalScroll(rememberScrollState()),
             )
         }
-
         // Compact escape/navigation row. It replaces the large bottom NavigationBar that
         // previously covered the lower-left terrain readout.
         if (!focusMode && !showControls.value) {
@@ -491,15 +485,7 @@ private fun GoogleMapTab(viewModel: HillshadeViewModel, padding: PaddingValues) 
 
 @Composable
 private fun GeminiTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
-    val summary by viewModel.activeTerrainSummary.collectAsStateWithLifecycle()
-    val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
-    val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
-    GeminiAssistantScreen(
-        terrainSummary = summary,
-        grid = grid,
-        metadata = metadata,
-        modifier = Modifier.fillMaxSize().padding(padding),
-    )
+    AiAnalysisWorkspace(viewModel = viewModel, padding = padding)
 }
 
 @Composable
