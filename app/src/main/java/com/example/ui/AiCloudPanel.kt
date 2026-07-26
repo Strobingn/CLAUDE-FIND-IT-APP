@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -91,7 +92,10 @@ fun AiCloudPanel(
     }
 
     LazyColumn(
-        modifier = modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 6.dp),
+        modifier = modifier
+            .imePadding()
+            .fillMaxSize()
+            .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {

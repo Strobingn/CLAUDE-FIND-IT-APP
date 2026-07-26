@@ -1,6 +1,9 @@
 package com.example.ui.components
 
 import android.graphics.Bitmap
+import android.graphics.Paint as NativePaint
+import android.graphics.RectF
+import android.graphics.Typeface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
@@ -52,13 +56,20 @@ import com.example.data.TargetSignal
 import com.example.data.TerrainPerformanceSession
 import com.example.data.computeDigPriorityHeatmap
 import com.example.geospatial.GeoSpatialLibrary
-import kotlin.math.max
+import kotlin.math.min
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 
 enum class LidarCanvasMode { SURVEY, EXPLORE }
+
+data class LidarOverlayTarget(
+    val xPercent: Float,
+    val yPercent: Float,
+    val label: String,
+    val colorHex: Long = 0xFF29B6F6,
+)
 
 @OptIn(FlowPreview::class)
 @Composable
@@ -89,6 +100,7 @@ fun LidarMapCanvas(
     basemapOpacity: Float = 0.6f,
     basemapStatus: String? = null,
     deviceGridPosition: Pair<Float, Float>? = null,
+    overlayTargets: List<LidarOverlayTarget> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
     val imageBitmap = remember(bitmap) {
@@ -109,6 +121,18 @@ fun LidarMapCanvas(
     var zoom by remember { mutableFloatStateOf(initialZoom) }
     var pan by remember { mutableStateOf(Offset(initialPanX, initialPanY)) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
+    val overlayLabelPaint = remember {
+        NativePaint(NativePaint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            textSize = 26f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+    }
+    val overlayLabelBackgroundPaint = remember {
+        NativePaint(NativePaint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.argb(210, 13, 14, 18)
+        }
+    }
 
     LaunchedEffect(gpuScene) {
         if (gpuScene == null) useGpuTerrain = false
@@ -138,7 +162,7 @@ fun LidarMapCanvas(
             .collect { (currentZoom, currentPan, currentSize) ->
                 val viewportWidth = currentSize.width.toFloat().coerceAtLeast(1f)
                 val viewportHeight = currentSize.height.toFloat().coerceAtLeast(1f)
-                val fit = coverScale(viewportWidth, viewportHeight, image.width.toFloat(), image.height.toFloat())
+                val fit = containScale(viewportWidth, viewportHeight, image.width.toFloat(), image.height.toFloat())
                 val displayWidth = image.width * fit * currentZoom
                 val displayHeight = image.height * fit * currentZoom
                 val imageLeft = (viewportWidth - displayWidth) * 0.5f + currentPan.x
@@ -161,7 +185,7 @@ fun LidarMapCanvas(
             val viewportHeight = viewportSize.height.toFloat().coerceAtLeast(1f)
             val sourceWidth = imageBitmap?.width?.toFloat()?.coerceAtLeast(1f) ?: viewportWidth
             val sourceHeight = imageBitmap?.height?.toFloat()?.coerceAtLeast(1f) ?: viewportHeight
-            val fit = coverScale(viewportWidth, viewportHeight, sourceWidth, sourceHeight)
+            val fit = containScale(viewportWidth, viewportHeight, sourceWidth, sourceHeight)
             val maxPanX = ((sourceWidth * fit * nextZoom - viewportWidth) * 0.5f).coerceAtLeast(0f)
             val maxPanY = ((sourceHeight * fit * nextZoom - viewportHeight) * 0.5f).coerceAtLeast(0f)
             zoom = nextZoom
@@ -204,7 +228,7 @@ fun LidarMapCanvas(
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val canvasWidth = size.width.toFloat().coerceAtLeast(1f)
                         val canvasHeight = size.height.toFloat().coerceAtLeast(1f)
-                        val fit = coverScale(canvasWidth, canvasHeight, bitmap.width.toFloat(), bitmap.height.toFloat())
+                        val fit = containScale(canvasWidth, canvasHeight, bitmap.width.toFloat(), bitmap.height.toFloat())
                         val imageWidth = bitmap.width * fit
                         val imageHeight = bitmap.height * fit
                         val imageLeft = (canvasWidth - imageWidth) * 0.5f
@@ -239,7 +263,7 @@ fun LidarMapCanvas(
             ) {
                 val canvasWidth = size.width.coerceAtLeast(1f)
                 val canvasHeight = size.height.coerceAtLeast(1f)
-                val fit = coverScale(canvasWidth, canvasHeight, imageBitmap.width.toFloat(), imageBitmap.height.toFloat())
+                val fit = containScale(canvasWidth, canvasHeight, imageBitmap.width.toFloat(), imageBitmap.height.toFloat())
                 val displayWidth = imageBitmap.width * fit * zoom
                 val displayHeight = imageBitmap.height * fit * zoom
                 val imageLeft = (canvasWidth - displayWidth) * 0.5f + pan.x
@@ -306,6 +330,33 @@ fun LidarMapCanvas(
                     drawCircle(color = Color.White, radius = 4f, center = Offset(px, py))
                     drawCircle(color = pinColor, radius = 18f, center = Offset(px, py), style = Stroke(width = 2f))
                 }
+                for (target in overlayTargets) {
+                    val px = imageLeft + (target.xPercent.coerceIn(0f, 100f) / 100f) * displayWidth
+                    val py = imageTop + (target.yPercent.coerceIn(0f, 100f) / 100f) * displayHeight
+                    val pinColor = runCatching { Color(target.colorHex) }.getOrDefault(Color(0xFF29B6F6))
+                    val marker = Offset(px, py)
+                    drawCircle(color = Color.Black, radius = 17f, center = marker, alpha = 0.72f)
+                    drawCircle(color = pinColor, radius = 13f, center = marker)
+                    drawCircle(color = Color.White, radius = 13f, center = marker, style = Stroke(width = 2.5f))
+
+                    val label = target.label.take(52)
+                    val textWidth = overlayLabelPaint.measureText(label)
+                    val textHeight = overlayLabelPaint.textSize
+                    val labelX = (px + 20f).coerceIn(8f, (canvasWidth - textWidth - 12f).coerceAtLeast(8f))
+                    val labelBaseline = (py - 16f).coerceIn(textHeight + 8f, canvasHeight - 8f)
+                    drawContext.canvas.nativeCanvas.drawRoundRect(
+                        RectF(
+                            labelX - 7f,
+                            labelBaseline - textHeight - 6f,
+                            labelX + textWidth + 7f,
+                            labelBaseline + 7f,
+                        ),
+                        8f,
+                        8f,
+                        overlayLabelBackgroundPaint,
+                    )
+                    drawContext.canvas.nativeCanvas.drawText(label, labelX, labelBaseline, overlayLabelPaint)
+                }
                 if (showSurveyCursor) {
                     val sx = imageLeft + (sweepX.coerceIn(0f, 100f) / 100f) * displayWidth
                     val sy = imageTop + (sweepY.coerceIn(0f, 100f) / 100f) * displayHeight
@@ -324,41 +375,6 @@ fun LidarMapCanvas(
                     drawCircle(color = Color(0xFF2196F3), radius = 26f, center = here, alpha = 0.25f)
                     drawCircle(color = Color(0xFF2196F3), radius = 10f, center = here)
                     drawCircle(color = Color.White, radius = 10f, center = here, style = Stroke(width = 2.5f))
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xE60D0E12))
-                    .border(0.5.dp, Color(0xFF2C2E35), RoundedCornerShape(6.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-            ) {
-                Column {
-                    Text(
-                        text = geoMetadata.siteName.uppercase(),
-                        color = Color(0xFFFFD700),
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace,
-                        letterSpacing = 0.5.sp,
-                    )
-                    Text(
-                        text = "${geoMetadata.crs} • ${geoMetadata.datum}",
-                        color = Color.LightGray,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                    if (showBasemap && basemapStatus != null) {
-                        Text(
-                            text = basemapStatus,
-                            color = Color(0xFF64B5F6),
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                        )
-                    }
                 }
             }
 
@@ -443,12 +459,12 @@ fun LidarMapCanvas(
     }
 }
 
-private fun coverScale(
+private fun containScale(
     viewportWidth: Float,
     viewportHeight: Float,
     imageWidth: Float,
     imageHeight: Float,
-): Float = max(
+): Float = min(
     viewportWidth / imageWidth.coerceAtLeast(1f),
     viewportHeight / imageHeight.coerceAtLeast(1f),
 )

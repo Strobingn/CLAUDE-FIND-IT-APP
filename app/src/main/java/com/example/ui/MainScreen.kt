@@ -64,7 +64,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -76,6 +75,7 @@ import com.example.ui.components.CustomFileLoader
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarControlPanel
 import com.example.ui.components.LidarMapCanvas
+import com.example.ui.components.NysLazTilePicker
 import com.example.ui.components.TargetLoggerPanel
 import com.example.ui.components.TerrainGoogleMapScreen
 import java.util.Locale
@@ -104,7 +104,6 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
     val terrainFocusMode = rememberSaveable { mutableStateOf(false) }
     val terrainSelected = selectedTab.intValue == 0
     val activeTab = tabs[selectedTab.intValue]
-
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
@@ -124,14 +123,13 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
             }
         },
         bottomBar = {
-            if (!terrainSelected && !terrainFocusMode.value) {
+            if (!terrainFocusMode.value) {
                 Surface(
                     shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
                     shadowElevation = 14.dp,
                     tonalElevation = 5.dp,
                 ) {
                     NavigationBar(
-                        modifier = Modifier.height(200.dp),
                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
                         tonalElevation = 0.dp,
                     ) {
@@ -170,10 +168,6 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
                 viewModel = viewModel,
                 focusMode = terrainFocusMode.value,
                 onFocusModeChanged = { terrainFocusMode.value = it },
-                onOpenTab = {
-                    selectedTab.intValue = it
-                    terrainFocusMode.value = false
-                },
             )
             1 -> GoogleMapTab(viewModel, padding)
             2 -> GeminiTab(viewModel, padding)
@@ -192,7 +186,6 @@ private fun TerrainTab(
     viewModel: HillshadeViewModel,
     focusMode: Boolean,
     onFocusModeChanged: (Boolean) -> Unit,
-    onOpenTab: (Int) -> Unit,
 ) {
     val site by viewModel.currentSiteIndex.collectAsStateWithLifecycle()
     val bitmap by viewModel.hillshadeBitmap.collectAsStateWithLifecycle()
@@ -238,7 +231,6 @@ private fun TerrainTab(
     val localViewportResetKey = rememberSaveable { mutableIntStateOf(0) }
     val viewportResetKey = vmViewportReset + localViewportResetKey.intValue
     val context = LocalContext.current
-    val bottomControlLift = with(LocalDensity.current) { 100.toDp() }
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> viewModel.onLocationPermissionResult(granted) }
@@ -447,24 +439,6 @@ private fun TerrainTab(
                     .verticalScroll(rememberScrollState()),
             )
         }
-        // Compact escape/navigation row. It replaces the large bottom NavigationBar that
-        // previously covered the lower-left terrain readout.
-        if (!focusMode && !showControls.value) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .navigationBarsPadding()
-                    .padding(end = 8.dp, bottom = bottomControlLift + 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                IconButton(onClick = { onOpenTab(1) }) {
-                    Icon(Icons.Default.Layers, contentDescription = "Open map")
-                }
-                IconButton(onClick = { onOpenTab(4) }) {
-                    Icon(Icons.Default.UploadFile, contentDescription = "Import terrain")
-                }
-            }
-        }
     }
 }
 
@@ -500,10 +474,12 @@ private fun GoogleMapTab(viewModel: HillshadeViewModel, padding: PaddingValues) 
     val bitmap by viewModel.hillshadeBitmap.collectAsStateWithLifecycle()
     val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
     val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
+    val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
     TerrainGoogleMapScreen(
         terrainBitmap = bitmap,
         grid = grid,
         metadata = metadata,
+        terrainKey = terrainKey,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }
@@ -548,6 +524,16 @@ private fun ImportTab(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        NysLazTilePicker(
+            onCustomTerrainLoaded = { result, source ->
+                viewModel.setCustomTerrain(result, source)
+                onImported()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+        )
+
         CustomFileLoader(
             onCustomTerrainLoaded = { result, source ->
                 viewModel.setCustomTerrain(result, source)

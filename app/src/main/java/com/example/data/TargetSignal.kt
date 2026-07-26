@@ -31,7 +31,15 @@ data class TargetSignal(
      * instead of any dataset that happens to have a candidate at a similar grid position.
      */
     val datasetKey: String? = null,
+    /**
+     * Stable identity of the imported LiDAR source that owns this marker. Unlike [datasetKey],
+     * this remains unchanged when the same file is re-rendered or refined at another resolution.
+     */
+    val terrainKey: String? = null,
 ) : Serializable
+
+fun targetsForTerrain(signals: List<TargetSignal>, terrainKey: String): List<TargetSignal> =
+    signals.filter { it.terrainKey == terrainKey }
 
 /**
  * Field-verified outcome of a logged find, used as ground truth to adjust future candidate

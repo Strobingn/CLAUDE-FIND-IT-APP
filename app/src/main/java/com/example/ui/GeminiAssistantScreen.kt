@@ -207,6 +207,17 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /**
+     * Rehydrates the AI workspace after process death. Derived layers are already stored in the
+     * disk cache, so reopening the same terrain restores the result without repeating extraction.
+     */
+    fun restoreLocalAnalysis(grid: ElevationGrid, terrainSummary: String) {
+        if (_state.value.isLocalAnalyzing) return
+        val datasetKey = TerrainIntelligenceEngine.terrainSignature(grid)
+        if (_state.value.localResult?.datasetKey == datasetKey) return
+        runLocalAnalysis(grid, terrainSummary)
+    }
+
     fun selectLocalLayer(layer: TerrainDerivedLayer) {
         val result = _state.value.localResult ?: return
         _state.value = _state.value.copy(selectedLayer = layer)
@@ -319,7 +330,7 @@ fun GeminiAssistantScreen(
     grid: ElevationGrid,
     metadata: GeoSpatialMetadata,
     modifier: Modifier = Modifier,
-    assistantViewModel: AiTerrainViewModel = viewModel(),
+    assistantViewModel: AiTerrainViewModel = viewModel(key = "gemini_assistant_screen"),
 ) {
     val state by assistantViewModel.state.collectAsStateWithLifecycle()
     val viewport by TerrainVisionSession.snapshot.collectAsStateWithLifecycle()

@@ -48,6 +48,7 @@ import com.example.data.local.buildAnalyzedDatasetEntity
 import com.example.geospatial.GeoSpatialLibrary
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarMapCanvas
+import com.example.ui.components.LidarOverlayTarget
 import kotlinx.coroutines.delay
 
 private const val AI_REFINE_ZOOM_THRESHOLD = 1.5f
@@ -62,7 +63,7 @@ private const val MAX_AI_MARKERS = 8
 fun AiAnalysisWorkspace(
     viewModel: HillshadeViewModel,
     padding: PaddingValues,
-    assistantViewModel: AiTerrainViewModel = viewModel(),
+    assistantViewModel: AiTerrainViewModel = viewModel(key = "ai_analysis_workspace"),
 ) {
     val summary by viewModel.activeTerrainSummary.collectAsStateWithLifecycle()
     val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
@@ -72,6 +73,7 @@ fun AiAnalysisWorkspace(
     val isRefining by viewModel.isRefiningTerrain.collectAsStateWithLifecycle()
     val canRefine by viewModel.canRefineTerrain.collectAsStateWithLifecycle()
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
+    val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
     val gridSpacing by viewModel.gridSpacing.collectAsStateWithLifecycle()
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
 
@@ -91,6 +93,17 @@ fun AiAnalysisWorkspace(
         val feedbackPoints = VerifiedFeedback.derive(signals, result.datasetKey)
         MetalDetectingTargetRefiner.refine(result, feedbackPoints)
     }
+    val targetOverlays = remember(historicTargets) {
+        historicTargets
+            .sortedByDescending { it.score }
+            .mapIndexed { index, target ->
+                LidarOverlayTarget(
+                    xPercent = target.xPercent,
+                    yPercent = target.yPercent,
+                    label = "${index + 1}. ${target.type.label} · ${(target.score * 100f).toInt()}%",
+                )
+            }
+    }
 
     // Persists a stable (feedback-free) snapshot of this dataset's targets whenever a fresh
     // analysis result arrives, so it can later be cross-compared against a different dataset -
@@ -107,6 +120,14 @@ fun AiAnalysisWorkspace(
                 targets = rawTargets,
             ),
         )
+    }
+
+    LaunchedEffect(grid, summary, isRendering) {
+        // The ViewModel is recreated after an update or process death, but the expensive derived
+        // layers remain in the on-disk cache. Restore them as soon as the real terrain is ready.
+        if (!isRendering && grid.width > 2 && grid.height > 2) {
+            assistantViewModel.restoreLocalAnalysis(grid, summary)
+        }
     }
 
     LaunchedEffect(visibleBounds.value, zoomLevel.value, canRefine, centerMarkerMode.value) {
@@ -143,6 +164,7 @@ fun AiAnalysisWorkspace(
                 // (confirmed/rejected in the Finds tab) feeds back into re-scoring this dataset's
                 // candidates instead of being unattributable.
                 datasetKey = aiState.localResult?.datasetKey,
+                terrainKey = terrainKey,
             ),
         )
     }
@@ -321,13 +343,14 @@ fun AiAnalysisWorkspace(
             viewportResetKey = 0,
             showSurveyCursor = false,
             showCoordinateHud = false,
+            overlayTargets = targetOverlays,
             onViewportChanged = { bounds, zoom, _, _ ->
                 visibleBounds.value = bounds
                 zoomLevel.value = zoom
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(390.dp)
+                .weight(1f)
                 .testTag("ai_single_analysis_map"),
         )
 

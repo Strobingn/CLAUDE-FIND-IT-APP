@@ -8,10 +8,17 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.DemGenerator
 import com.example.data.DetectionSource
 import com.example.data.ElevationGrid
+import com.example.data.GroundSurfaceMode
+import com.example.data.LazDatasetStore
+import com.example.data.LazTerrainDiskCache
+import com.example.data.LidarImportOptions
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
+import com.example.data.TerrainGpuSceneBuilder
 import com.example.data.TerrainImportSource
+import com.example.data.TerrainPerformanceSession
 import com.example.data.TargetSignal
+import com.example.data.targetsForTerrain
 import com.example.data.local.AnalyzedDatasetEntity
 import com.example.data.local.AppDatabase
 import com.example.data.local.SettingsRepository
@@ -21,6 +28,7 @@ import com.example.geospatial.GeoSpatialLibrary
 import com.example.geospatial.GeoSpatialLibrary.GeoSpatialMetadata
 import com.example.geospatial.LocationTracker
 import com.example.geospatial.OsmTileRepository
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,10 +50,22 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     // Guard flag to prevent saveSettings() from overwriting DB values with defaults before loading completes
     private var isSettingsLoaded = false
+    private var restoreImportedTerrainOnStart = false
 
     private val _currentSiteIndex = MutableStateFlow(0)
     val currentSiteIndex: StateFlow<Int> = _currentSiteIndex.asStateFlow()
-    private val _elevationGrid = MutableStateFlow(DemGenerator.generateSite(0))
+    private val _activeTerrainKey = MutableStateFlow("builtin:0")
+    val activeTerrainKey: StateFlow<String> = _activeTerrainKey.asStateFlow()
+    // Keep ViewModel construction cheap so Compose can produce its first frame immediately.
+    // The real demo terrain is generated on Dispatchers.Default from loadSettings().
+    private val _elevationGrid = MutableStateFlow(
+        ElevationGrid(
+            width = 2,
+            height = 2,
+            bareEarth = FloatArray(4),
+            canopySpikes = FloatArray(4),
+        ),
+    )
     val elevationGrid: StateFlow<ElevationGrid> = _elevationGrid.asStateFlow()
     private var customGrid: ElevationGrid? = null
 
@@ -91,10 +111,12 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _hillshadeBitmap = MutableStateFlow<Bitmap?>(null)
     val hillshadeBitmap = _hillshadeBitmap.asStateFlow()
-    private val _isRendering = MutableStateFlow(false)
+    // Starts true because the lightweight placeholder is replaced and rendered during init.
+    private val _isRendering = MutableStateFlow(true)
     val isRendering = _isRendering.asStateFlow()
     private val renderMutex = Mutex()
     private var renderJob: Job? = null
+    private var siteGenerationJob: Job? = null
     private var renderGeneration = 0L
 
     // Viewport persistence
@@ -117,6 +139,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _sweepY = MutableStateFlow(50f)
     val sweepY = _sweepY.asStateFlow()
 
+    private var allLoggedSignals: List<TargetSignal> = emptyList()
     private val _loggedSignals = MutableStateFlow<List<TargetSignal>>(emptyList())
     val loggedSignals = _loggedSignals.asStateFlow()
 
@@ -159,10 +182,12 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             loadSettings()
             updateCoordinates()
             scheduleRender(immediate = true)
+            if (restoreImportedTerrainOnStart) restoreLastCachedTerrain()
         }
         viewModelScope.launch {
             signalDao.observeAll().collect { stored ->
-                _loggedSignals.value = stored.map { it.toDomain() }
+                allLoggedSignals = stored.map { it.toDomain() }
+                refreshVisibleSignals()
             }
         }
         viewModelScope.launch {
@@ -316,15 +341,31 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         if (index !in 0..3 || index == 3 && customGrid == null) return
         _currentSiteIndex.value = index
         if (index in 0..2) {
-            _elevationGrid.value = DemGenerator.generateSite(index)
-            _activeGeoMetadata.value = GeoSpatialLibrary.SITES_METADATA[index]
-            _activeTerrainSummary.value = "Built-in simulated terrain"
+            setActiveTerrainKey("builtin:$index")
+        }
+        siteGenerationJob?.cancel()
+        if (index in 0..2) {
+            siteGenerationJob = viewModelScope.launch {
+                _isRendering.value = true
+                val generatedGrid = withContext(Dispatchers.Default) {
+                    DemGenerator.generateSite(index)
+                }
+                // Ignore an obsolete result if the user selected another site while this
+                // terrain was being generated.
+                if (_currentSiteIndex.value != index) return@launch
+                _elevationGrid.value = generatedGrid
+                _activeGeoMetadata.value = GeoSpatialLibrary.SITES_METADATA[index]
+                _activeTerrainSummary.value = "Built-in simulated terrain"
+                updateCoordinates()
+                scheduleRender(immediate = true)
+                if (_basemapEnabled.value) refreshBasemapTiles()
+            }
         } else {
             _elevationGrid.value = requireNotNull(customGrid)
+            updateCoordinates()
+            scheduleRender(immediate = true)
+            if (_basemapEnabled.value) refreshBasemapTiles()
         }
-        updateCoordinates()
-        scheduleRender(immediate = true)
-        if (_basemapEnabled.value) refreshBasemapTiles()
     }
 
     fun setCustomTerrain(
@@ -332,6 +373,10 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         source: TerrainImportSource? = null,
     ) {
         terrainSource = source
+        setActiveTerrainKey(
+            source?.let { "lidar:${it.uri}" }
+                ?: "custom:${com.example.analysis.TerrainIntelligenceEngine.terrainSignature(result.grid)}",
+        )
         overviewTerrain = result.takeIf { source != null }
         currentSourceBounds = NormalizedRasterBounds.Full
         _canRefineTerrain.value = source != null
@@ -341,6 +386,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun applyCustomTerrain(result: DemGenerator.TerrainLoadResult, resetViewport: Boolean = false) {
+        siteGenerationJob?.cancel()
         val grid = result.grid
         customGrid = result.grid
         _elevationGrid.value = result.grid
@@ -489,6 +535,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             latitude = _currentLat.value,
             longitude = _currentLon.value,
             source = DetectionSource.MANUAL,
+            terrainKey = _activeTerrainKey.value,
         )
         viewModelScope.launch { signalDao.upsert(signal.toEntity()) }
     }
@@ -502,7 +549,17 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun clearLoggedSignals() {
-        viewModelScope.launch { signalDao.deleteAll() }
+        val terrainKey = _activeTerrainKey.value
+        viewModelScope.launch { signalDao.deleteByTerrainKey(terrainKey) }
+    }
+
+    private fun setActiveTerrainKey(terrainKey: String) {
+        _activeTerrainKey.value = terrainKey
+        refreshVisibleSignals()
+    }
+
+    private fun refreshVisibleSignals() {
+        _loggedSignals.value = targetsForTerrain(allLoggedSignals, _activeTerrainKey.value)
     }
 
     private suspend fun loadSettings() {
@@ -520,16 +577,23 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _analysisSensitivity.value = settingsRepo.getFloat(SettingsRepository.Keys.ANALYSIS_SENSITIVITY, 1.2f)
         _contourIntervalMeters.value = settingsRepo.getFloat(SettingsRepository.Keys.CONTOUR_INTERVAL_METERS, 0f)
         
-        val site = settingsRepo.getInt(SettingsRepository.Keys.CURRENT_SITE_INDEX, 0)
-        if (site in 0..2) {
-            _currentSiteIndex.value = site
-            _elevationGrid.value = DemGenerator.generateSite(site)
-            _activeGeoMetadata.value = GeoSpatialLibrary.SITES_METADATA[site]
+        val savedSite = settingsRepo.getInt(SettingsRepository.Keys.CURRENT_SITE_INDEX, 0)
+        val recoveryPreferences = getApplication<Application>().getSharedPreferences(
+            "terrain_recovery",
+            0,
+        )
+        val needsLegacyRecovery = !recoveryPreferences.getBoolean("checked_cached_terrain_v1", false)
+        restoreImportedTerrainOnStart = savedSite == 3 || needsLegacyRecovery
+        recoveryPreferences.edit().putBoolean("checked_cached_terrain_v1", true).apply()
+        val site = savedSite.takeIf { it in 0..2 } ?: 0
+        _currentSiteIndex.value = site
+        _elevationGrid.value = withContext(Dispatchers.Default) {
+            DemGenerator.generateSite(site)
+        }
+        _activeGeoMetadata.value = GeoSpatialLibrary.SITES_METADATA[site]
+        if (savedSite in 0..2) {
             _activeTerrainSummary.value = "Built-in simulated terrain"
         } else {
-            _currentSiteIndex.value = 0
-            _elevationGrid.value = DemGenerator.generateSite(0)
-            _activeGeoMetadata.value = GeoSpatialLibrary.SITES_METADATA[0]
             _activeTerrainSummary.value = "Built-in demonstration terrain"
         }
 
@@ -551,6 +615,44 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
         if (_gpsEnabled.value && _hasLocationPermission.value) startLocationUpdates()
         if (_basemapEnabled.value) refreshBasemapTiles()
+    }
+
+    /**
+     * Restores the most recently imported LAZ/LAS after process death, but only from an existing
+     * decoded cache. Startup never reparses a multi-hundred-megabyte point cloud unexpectedly.
+     */
+    private suspend fun restoreLastCachedTerrain() {
+        val application = getApplication<Application>()
+        val storageRoot = application.getExternalFilesDir(null) ?: application.filesDir
+        val dataset = withContext(Dispatchers.IO) {
+            LazDatasetStore(File(storageRoot, "lidar")).list().firstOrNull()
+        } ?: return
+        val diskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
+        val optionCandidates = listOf(512, 1_024, 320).map { resolution ->
+            LidarImportOptions(
+                groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
+                rasterResolution = resolution,
+                smoothingRadius = 0,
+            )
+        }
+        val cached = withContext(Dispatchers.IO) {
+            optionCandidates.firstNotNullOfOrNull { options ->
+                diskCache.get(dataset.file, options)?.let { terrain -> options to terrain }
+            }
+        } ?: return
+        val (options, terrain) = cached
+        val scene = withContext(Dispatchers.Default) {
+            TerrainGpuSceneBuilder.build(terrain.grid)
+        }
+        TerrainPerformanceSession.publish(scene)
+        setCustomTerrain(
+            result = terrain,
+            source = TerrainImportSource(
+                uri = Uri.fromFile(dataset.file).toString(),
+                displayName = dataset.displayName,
+                options = options,
+            ),
+        )
     }
 
     private fun saveSettings() {

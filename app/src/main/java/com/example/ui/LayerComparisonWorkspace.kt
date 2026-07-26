@@ -40,6 +40,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -52,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.analysis.TerrainDerivedLayer
+import com.example.analysis.TerrainIntelligenceEngine
 import com.example.analysis.TerrainIntelligenceRenderer
 import com.example.data.NormalizedRasterBounds
 import kotlin.math.max
@@ -65,7 +67,7 @@ import kotlin.math.max
 fun LayerComparisonWorkspace(
     viewModel: HillshadeViewModel,
     padding: PaddingValues,
-    assistantViewModel: AiTerrainViewModel = viewModel(),
+    assistantViewModel: AiTerrainViewModel = viewModel(key = "layer_comparison_workspace"),
 ) {
     val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
     val summary by viewModel.activeTerrainSummary.collectAsStateWithLifecycle()
@@ -74,6 +76,7 @@ fun LayerComparisonWorkspace(
     val isRefining by viewModel.isRefiningTerrain.collectAsStateWithLifecycle()
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
     val result = aiState.localResult
+    val currentDatasetKey = remember(grid) { TerrainIntelligenceEngine.terrainSignature(grid) }
 
     var leftLayer by rememberSaveable { mutableStateOf(TerrainDerivedLayer.LOCAL_RELIEF) }
     var rightLayer by rememberSaveable { mutableStateOf(TerrainDerivedLayer.SLOPE) }
@@ -88,6 +91,15 @@ fun LayerComparisonWorkspace(
     LaunchedEffect(result) {
         zoom = 1f
         pan = Offset.Zero
+    }
+
+    LaunchedEffect(isRefining, currentDatasetKey, result?.datasetKey) {
+        // Refinement replaces the active elevation grid. The comparison panes are derived from
+        // the AI result, so regenerate that result once the refined grid is ready; otherwise both
+        // panes continue pointing at the pre-refinement layers and never redraw the new viewport.
+        if (!isRefining && result != null && result.datasetKey != currentDatasetKey) {
+            assistantViewModel.runLocalAnalysis(grid, summary, signals)
+        }
     }
 
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
@@ -145,7 +157,7 @@ fun LayerComparisonWorkspace(
                                 val imageHeight = (leftBitmap?.height ?: 1).toFloat()
                                 viewModel.refineTerrain(currentViewportBounds(paneSize, zoom, pan, imageWidth, imageHeight))
                             },
-                            enabled = canRefine && !isRefining,
+                            enabled = canRefine && !isRefining && !aiState.isLocalAnalyzing,
                             modifier = Modifier.testTag("comparison_refine_button"),
                         ) { Text(if (!canRefine) "No LAZ source" else if (isRefining) "Refining…" else "Refine") }
                     }
@@ -251,6 +263,7 @@ private fun ComparisonPane(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
+                .clipToBounds()
                 .testTag("comparison_canvas_${layer.name}"),
         ) {
             if (imageBitmap == null) return@Canvas

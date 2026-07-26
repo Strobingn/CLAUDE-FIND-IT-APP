@@ -18,4 +18,7 @@ interface TargetSignalDao {
 
     @Query("DELETE FROM target_signals")
     suspend fun deleteAll()
+
+    @Query("DELETE FROM target_signals WHERE terrainKey = :terrainKey")
+    suspend fun deleteByTerrainKey(terrainKey: String)
 }

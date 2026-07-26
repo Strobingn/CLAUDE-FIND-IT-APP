@@ -16,6 +16,8 @@ class TargetSignalEntityTest {
             metalType = MetalType.MANUAL_MARKER,
             signalStrength = 0f,
             source = DetectionSource.MANUAL,
+            datasetKey = "analysis-42",
+            terrainKey = "lidar:file:///terrain-42.laz",
             photoUris = listOf(
                 "content://media/picker/first",
                 "content://media/picker/second",
@@ -25,6 +27,8 @@ class TargetSignalEntityTest {
         val restored = signal.toEntity().toDomain()
 
         assertEquals(signal.photoUris, restored.photoUris)
+        assertEquals(signal.datasetKey, restored.datasetKey)
+        assertEquals(signal.terrainKey, restored.terrainKey)
     }
 
     @Test
