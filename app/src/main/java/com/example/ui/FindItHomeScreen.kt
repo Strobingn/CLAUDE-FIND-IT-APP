@@ -60,12 +60,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ui.theme.Grey200
+import com.example.ui.theme.Grey400
+import com.example.ui.theme.Grey700
+import com.example.ui.theme.Grey900
 import java.util.Locale
 
-private val ClayDark = Color(0xFF2A1A14)
-private val ClayMid = Color(0xFF694634)
-private val ClayLight = Color(0xFFC79470)
-private val ClayHighlight = Color(0xFFF0C8A8)
+// Grayscale accents for the home screen's header/badge decoration - no hue anywhere in the UI
+// chrome. Distinct from the "Clay"/"Copper"/"Terrain" strings below, which name the *data*
+// color palettes available for rendering the hillshade itself (a deliberately colorful terrain
+// visualization choice, not app chrome).
+private val HomeAccentDark = Grey900
+private val HomeAccentMid = Grey700
+private val HomeAccentLight = Grey400
+private val HomeAccentHighlight = Grey200
 
 /**
  * App-level landing experience. The Android back button returns here from the full workspace.
@@ -342,7 +350,7 @@ private fun HeroCard(
                 .fillMaxWidth()
                 .background(
                     Brush.linearGradient(
-                        colors = listOf(ClayDark, ClayMid, ClayLight),
+                        colors = listOf(HomeAccentDark, HomeAccentMid, HomeAccentLight),
                     ),
                 )
                 .padding(20.dp),
@@ -356,7 +364,7 @@ private fun HeroCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "READ THE GROUND",
-                        color = ClayHighlight,
+                        color = HomeAccentHighlight,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.2.sp,
@@ -378,7 +386,7 @@ private fun HeroCard(
                         Icon(
                             imageVector = Icons.Default.Landscape,
                             contentDescription = null,
-                            tint = ClayHighlight,
+                            tint = HomeAccentHighlight,
                             modifier = Modifier.size(28.dp),
                         )
                     }
@@ -426,7 +434,7 @@ private fun TerrainPreviewCard(
                     .clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
                     .background(
                         Brush.linearGradient(
-                            listOf(Color(0xFF241914), Color(0xFF684531), Color(0xFFB8815B)),
+                            listOf(HomeAccentDark, HomeAccentMid, HomeAccentLight),
                         ),
                     ),
             ) {
@@ -527,7 +535,7 @@ private fun MetricCard(
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = ClayLight,
+                    tint = HomeAccentLight,
                     modifier = Modifier.size(19.dp),
                 )
                 Spacer(Modifier.width(7.dp))
@@ -576,14 +584,14 @@ private fun ActionCard(
         ) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = ClayMid.copy(alpha = 0.2f),
+                color = HomeAccentMid.copy(alpha = 0.2f),
                 modifier = Modifier.size(42.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
-                        tint = ClayLight,
+                        tint = HomeAccentLight,
                         modifier = Modifier.size(22.dp),
                     )
                 }

@@ -75,7 +75,6 @@ import com.example.ui.components.CustomFileLoader
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarControlPanel
 import com.example.ui.components.LidarMapCanvas
-import com.example.ui.components.NysLazTilePicker
 import com.example.ui.components.TargetLoggerPanel
 import com.example.ui.components.TerrainGoogleMapScreen
 import java.util.Locale
@@ -322,16 +321,19 @@ private fun TerrainTab(
                 TerrainQuickAction("Light -", Icons.Default.RotateLeft) { viewModel.rotateSunAzimuth(-45f) }
                 TerrainQuickAction("Light +", Icons.Default.RotateRight) { viewModel.rotateSunAzimuth(45f) }
                 TerrainQuickAction("Fit", Icons.Default.CenterFocusStrong) { localViewportResetKey.intValue++ }
-                if (canRefine) {
-                    TerrainQuickAction(
-                        if (isRefining) "Loading" else if (isDetailed) "Refresh" else "Detail",
-                        Icons.Default.ZoomInMap,
-                        active = isDetailed,
-                        enabled = !isRefining,
-                    ) { viewModel.refineTerrain(visibleBounds.value) }
-                    if (isDetailed) {
-                        TerrainQuickAction("Whole", Icons.Default.ZoomOutMap) { viewModel.showWholeTerrain() }
-                    }
+                TerrainQuickAction(
+                    when {
+                        !canRefine -> "No LAZ source"
+                        isRefining -> "Loading"
+                        isDetailed -> "Refresh"
+                        else -> "Detail"
+                    },
+                    Icons.Default.ZoomInMap,
+                    active = isDetailed,
+                    enabled = canRefine && !isRefining,
+                ) { viewModel.refineTerrain(visibleBounds.value) }
+                if (canRefine && isDetailed) {
+                    TerrainQuickAction("Whole", Icons.Default.ZoomOutMap) { viewModel.showWholeTerrain() }
                 }
                 TerrainQuickAction(
                     if (showControls.value) "Close" else "Analyze",
@@ -521,12 +523,6 @@ private fun ImportTab(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        NysLazTilePicker(
-            onCustomTerrainLoaded = { result, source ->
-                viewModel.setCustomTerrain(result, source)
-                onImported()
-            },
-        )
         CustomFileLoader(
             onCustomTerrainLoaded = { result, source ->
                 viewModel.setCustomTerrain(result, source)

@@ -186,7 +186,7 @@ fun AiAnalysisWorkspace(
                         },
                         enabled = canRefine && !isRefining && !centerMarkerMode.value,
                         modifier = Modifier.testTag("ai_refine_now_button"),
-                    ) { Text(if (isRefining) "Refining…" else "Refine") }
+                    ) { Text(if (!canRefine) "No LAZ source" else if (isRefining) "Refining…" else "Refine") }
                     Button(
                         onClick = { assistantViewModel.runLocalAnalysis(grid, summary, signals) },
                         enabled = !aiState.isLocalAnalyzing,
@@ -338,7 +338,12 @@ fun AiAnalysisWorkspace(
             grid = grid,
             metadata = metadata,
             assistantViewModel = assistantViewModel,
-            modifier = Modifier.fillMaxSize(),
+            // weight(1f), not fillMaxSize(): this Column isn't scrollable, and the header +
+            // map above already claim their own height, so a fillMaxSize() panel here asked
+            // for the full column height on top of that and pushed its own internal chat
+            // list - including the text input at the bottom of it - past the visible screen
+            // with no way to scroll to it. weight(1f) bounds it to the actual remaining space.
+            modifier = Modifier.weight(1f),
         )
     }
 

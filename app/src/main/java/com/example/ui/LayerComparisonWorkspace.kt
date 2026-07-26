@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CenterFocusStrong
@@ -51,6 +53,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.analysis.TerrainDerivedLayer
 import com.example.analysis.TerrainIntelligenceRenderer
+import com.example.data.NormalizedRasterBounds
 import kotlin.math.max
 
 /**
@@ -67,6 +70,8 @@ fun LayerComparisonWorkspace(
     val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
     val summary by viewModel.activeTerrainSummary.collectAsStateWithLifecycle()
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
+    val canRefine by viewModel.canRefineTerrain.collectAsStateWithLifecycle()
+    val isRefining by viewModel.isRefiningTerrain.collectAsStateWithLifecycle()
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
     val result = aiState.localResult
 
@@ -106,49 +111,61 @@ fun LayerComparisonWorkspace(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Layer comparison", fontWeight = FontWeight.Bold)
-                    Text(
-                        if (result == null) {
-                            "Run local analysis to compare derived layers side by side"
-                        } else {
-                            "${"%.1f".format(zoom)}× · pinch and drag - both panes move together"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (result != null) {
-                    OutlinedButton(
-                        onClick = { zoom = 1f; pan = Offset.Zero },
-                        modifier = Modifier.testTag("comparison_reset_view_button"),
-                    ) {
-                        Icon(Icons.Default.CenterFocusStrong, contentDescription = null, modifier = Modifier.width(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Fit")
-                    }
-                }
-                Button(
-                    onClick = { assistantViewModel.runLocalAnalysis(grid, summary, signals) },
-                    enabled = !aiState.isLocalAnalyzing,
-                    modifier = Modifier.testTag("comparison_run_analysis_button"),
-                ) {
-                    if (aiState.isLocalAnalyzing) {
-                        CircularProgressIndicator(modifier = Modifier.height(16.dp), strokeWidth = 2.dp)
+                Text("Layer comparison", fontWeight = FontWeight.Bold)
+                Text(
+                    if (result == null) {
+                        "Run local analysis to compare derived layers side by side"
                     } else {
-                        Text(if (result == null) "Analyze" else "Re-run")
+                        "${"%.1f".format(zoom)}× · pinch and drag - both panes move together"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (result != null) {
+                        OutlinedButton(
+                            onClick = { zoom = 1f; pan = Offset.Zero },
+                            modifier = Modifier.testTag("comparison_reset_view_button"),
+                        ) {
+                            Icon(Icons.Default.CenterFocusStrong, contentDescription = null, modifier = Modifier.width(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Fit")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                val imageWidth = (leftBitmap?.width ?: 1).toFloat()
+                                val imageHeight = (leftBitmap?.height ?: 1).toFloat()
+                                viewModel.refineTerrain(currentViewportBounds(paneSize, zoom, pan, imageWidth, imageHeight))
+                            },
+                            enabled = canRefine && !isRefining,
+                            modifier = Modifier.testTag("comparison_refine_button"),
+                        ) { Text(if (!canRefine) "No LAZ source" else if (isRefining) "Refining…" else "Refine") }
+                    }
+                    Button(
+                        onClick = { assistantViewModel.runLocalAnalysis(grid, summary, signals) },
+                        enabled = !aiState.isLocalAnalyzing,
+                        modifier = Modifier.testTag("comparison_run_analysis_button"),
+                    ) {
+                        if (aiState.isLocalAnalyzing) {
+                            CircularProgressIndicator(modifier = Modifier.height(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text(if (result == null) "Analyze" else "Re-run")
+                        }
                     }
                 }
             }
         }
 
         if (result == null) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(
                     if (aiState.isLocalAnalyzing) aiState.localStage else "No local analysis yet for this terrain.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -159,7 +176,8 @@ fun LayerComparisonWorkspace(
         } else {
             Row(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .transformable(transformState)
                     .onSizeChanged { paneSize = IntSize(it.width / 2, it.height) }
                     .testTag("layer_comparison_row"),
@@ -271,3 +289,26 @@ private fun comparisonCoverScale(
     viewportWidth / imageWidth.coerceAtLeast(1f),
     viewportHeight / imageHeight.coerceAtLeast(1f),
 )
+
+/** Converts this workspace's shared zoom/pan into the same normalized-bounds shape [LidarMapCanvas] reports, so "Refine" can reload detail for exactly what's currently visible. */
+private fun currentViewportBounds(
+    paneSize: IntSize,
+    zoom: Float,
+    pan: Offset,
+    imageWidth: Float,
+    imageHeight: Float,
+): NormalizedRasterBounds {
+    val viewportWidth = paneSize.width.toFloat().coerceAtLeast(1f)
+    val viewportHeight = paneSize.height.toFloat().coerceAtLeast(1f)
+    val fit = comparisonCoverScale(viewportWidth, viewportHeight, imageWidth, imageHeight)
+    val displayWidth = imageWidth * fit * zoom
+    val displayHeight = imageHeight * fit * zoom
+    val imageLeft = (viewportWidth - displayWidth) * 0.5f + pan.x
+    val imageTop = (viewportHeight - displayHeight) * 0.5f + pan.y
+    return NormalizedRasterBounds(
+        left = ((-imageLeft) / displayWidth).toDouble().coerceIn(0.0, 1.0),
+        top = ((-imageTop) / displayHeight).toDouble().coerceIn(0.0, 1.0),
+        right = ((viewportWidth - imageLeft) / displayWidth).toDouble().coerceIn(0.0, 1.0),
+        bottom = ((viewportHeight - imageTop) / displayHeight).toDouble().coerceIn(0.0, 1.0),
+    ).sanitized()
+}
