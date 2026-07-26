@@ -357,13 +357,10 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     fun refineTerrain(viewport: NormalizedRasterBounds) {
         val source = terrainSource ?: return
         if (_isRefiningTerrain.value) return
+        // Refine works at any zoom level, including the full extent - it always re-reads the
+        // requested viewport from the original point cloud, so there's no reason to force the
+        // user to pinch in first even when that viewport happens to be the whole dataset.
         val absoluteBounds = viewport.sanitized().inside(currentSourceBounds)
-        val widthFraction = absoluteBounds.right - absoluteBounds.left
-        val heightFraction = absoluteBounds.bottom - absoluteBounds.top
-        if (widthFraction >= 0.98 && heightFraction >= 0.98) {
-            _terrainDetailMessage.value = "Zoom farther in before loading detail."
-            return
-        }
         _isRefiningTerrain.value = true
         _terrainDetailMessage.value = "Reading original returns for this viewport…"
         viewModelScope.launch(Dispatchers.IO) {

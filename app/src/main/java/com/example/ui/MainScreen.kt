@@ -26,6 +26,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -74,6 +75,7 @@ import com.example.ui.components.CustomFileLoader
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarControlPanel
 import com.example.ui.components.LidarMapCanvas
+import com.example.ui.components.NysLazTilePicker
 import com.example.ui.components.TargetLoggerPanel
 import com.example.ui.components.TerrainGoogleMapScreen
 import java.util.Locale
@@ -90,6 +92,7 @@ private val tabs = listOf(
     AppTab("Terrain", "Terrain workspace", Icons.Default.Landscape),
     AppTab("Map", "Google Maps overlay", Icons.Default.Layers),
     AppTab("Gemini", "Gemini field assistant", Icons.Default.AutoAwesome),
+    AppTab("Compare", "Layer comparison", Icons.Default.Compare),
     AppTab("Finds", "Field finds", Icons.Default.Flag),
     AppTab("Import", "Terrain library", Icons.Default.UploadFile),
 )
@@ -170,7 +173,8 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
             )
             1 -> GoogleMapTab(viewModel, padding)
             2 -> GeminiTab(viewModel, padding)
-            3 -> FindsTab(viewModel, padding)
+            3 -> CompareTab(viewModel, padding)
+            4 -> FindsTab(viewModel, padding)
             else -> ImportTab(viewModel, padding) {
                 selectedTab.intValue = 0
                 terrainFocusMode.value = false
@@ -483,6 +487,11 @@ private fun GeminiTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
 }
 
 @Composable
+private fun CompareTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
+    LayerComparisonWorkspace(viewModel = viewModel, padding = padding)
+}
+
+@Composable
 private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val sweepX by viewModel.sweepX.collectAsStateWithLifecycle()
@@ -512,6 +521,12 @@ private fun ImportTab(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        NysLazTilePicker(
+            onCustomTerrainLoaded = { result, source ->
+                viewModel.setCustomTerrain(result, source)
+                onImported()
+            },
+        )
         CustomFileLoader(
             onCustomTerrainLoaded = { result, source ->
                 viewModel.setCustomTerrain(result, source)
