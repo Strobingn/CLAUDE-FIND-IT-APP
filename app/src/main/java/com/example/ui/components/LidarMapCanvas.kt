@@ -78,7 +78,11 @@ fun LidarMapCanvas(
     viewportResetKey: Int = 0,
     showSurveyCursor: Boolean = true,
     showCoordinateHud: Boolean = true,
-    onViewportChanged: (NormalizedRasterBounds, Float) -> Unit = { _, _ -> },
+    onViewportChanged: (NormalizedRasterBounds, Float, Float, Float) -> Unit = { _, _, _, _ -> },
+    initialZoom: Float = 1f,
+    initialPanX: Float = 0f,
+    initialPanY: Float = 0f,
+    viewportRestoreToken: Int = 0,
     showHeatmap: Boolean = false,
     basemapBitmap: Bitmap? = null,
     showBasemap: Boolean = false,
@@ -102,8 +106,8 @@ fun LidarMapCanvas(
     }
     val gpuScene by TerrainPerformanceSession.gpuScene.collectAsStateWithLifecycle()
     var useGpuTerrain by rememberSaveable { mutableStateOf(false) }
-    var zoom by remember { mutableFloatStateOf(1f) }
-    var pan by remember { mutableStateOf(Offset.Zero) }
+    var zoom by remember { mutableFloatStateOf(initialZoom) }
+    var pan by remember { mutableStateOf(Offset(initialPanX, initialPanY)) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
 
     LaunchedEffect(gpuScene) {
@@ -112,6 +116,15 @@ fun LidarMapCanvas(
     LaunchedEffect(viewportResetKey, mode) {
         zoom = 1f
         pan = Offset.Zero
+    }
+    // Restores a persisted viewport exactly once, when the caller signals settings finished
+    // loading (token goes from 0 to a positive value). Not keyed to every zoom/pan change, so it
+    // doesn't fight with live user interaction or with the reset-on-tab-switch behavior above.
+    LaunchedEffect(viewportRestoreToken) {
+        if (viewportRestoreToken > 0) {
+            zoom = initialZoom.coerceIn(1f, 32f)
+            pan = Offset(initialPanX, initialPanY)
+        }
     }
     LaunchedEffect(bitmap) {
         if (bitmap == null) TerrainVisionSession.clear()
@@ -137,7 +150,7 @@ fun LidarMapCanvas(
                     bottom = ((viewportHeight - imageTop) / displayHeight).toDouble().coerceIn(0.0, 1.0),
                 ).sanitized()
                 TerrainVisionSession.publish(sourceBitmap, bounds, currentZoom)
-                onViewportChanged(bounds, currentZoom)
+                onViewportChanged(bounds, currentZoom, currentPan.x, currentPan.y)
             }
     }
 

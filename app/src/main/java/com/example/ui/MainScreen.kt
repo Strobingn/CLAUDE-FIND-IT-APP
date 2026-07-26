@@ -218,8 +218,10 @@ private fun TerrainTab(
     val basemapBitmap by viewModel.basemapBitmap.collectAsStateWithLifecycle()
     val basemapStatus by viewModel.basemapStatus.collectAsStateWithLifecycle()
     val vmViewportReset by viewModel.viewportResetKey.collectAsStateWithLifecycle()
-    val viewportPanX by viewModel.viewportPanX.collectAsStateWithLifecycle()
-    val viewportPanY by viewModel.viewportPanY.collectAsStateWithLifecycle()
+    val vmViewportZoom by viewModel.viewportZoom.collectAsStateWithLifecycle()
+    val vmViewportPanX by viewModel.viewportPanX.collectAsStateWithLifecycle()
+    val vmViewportPanY by viewModel.viewportPanY.collectAsStateWithLifecycle()
+    val vmViewportRestoreToken by viewModel.viewportRestoreToken.collectAsStateWithLifecycle()
 
     val visibleBounds = remember { mutableStateOf(NormalizedRasterBounds.Full) }
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
@@ -255,10 +257,14 @@ private fun TerrainTab(
             viewportResetKey = viewportResetKey,
             showSurveyCursor = false,
             showCoordinateHud = false,
-            onViewportChanged = { bounds, zoom ->
+            initialZoom = vmViewportZoom,
+            initialPanX = vmViewportPanX,
+            initialPanY = vmViewportPanY,
+            viewportRestoreToken = vmViewportRestoreToken,
+            onViewportChanged = { bounds, zoom, panX, panY ->
                 visibleBounds.value = bounds
                 zoomLevel.value = zoom
-                viewModel.updateViewport(zoom, viewportPanX, viewportPanY)
+                viewModel.updateViewport(zoom, panX, panY)
             },
             showHeatmap = heatmapEnabled,
             basemapBitmap = basemapBitmap,

@@ -102,6 +102,11 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     val viewportPanX: StateFlow<Float> = _viewportPanX.asStateFlow()
     private val _viewportPanY = MutableStateFlow(0f)
     val viewportPanY: StateFlow<Float> = _viewportPanY.asStateFlow()
+    // Bumped exactly once, right after loadSettings() finishes reading the persisted viewport,
+    // so the terrain canvas can seed itself from the restored zoom/pan a single time rather than
+    // fighting with live user interaction on every subsequent update.
+    private val _viewportRestoreToken = MutableStateFlow(0)
+    val viewportRestoreToken: StateFlow<Int> = _viewportRestoreToken.asStateFlow()
 
     private var saveSettingsJob: Job? = null
 
@@ -443,11 +448,13 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         updateCoordinates()
     }
 
-    // Update viewport zoom and pan
+    // Update viewport zoom and pan. Persists (debounced) but intentionally does not trigger a
+    // hillshade re-render - re-rendering on every pinch/pan tick is what caused zoom jank before.
     fun updateViewport(zoom: Float, panX: Float, panY: Float) {
         _viewportZoom.value = zoom
         _viewportPanX.value = panX
         _viewportPanY.value = panY
+        saveSettings()
     }
 
     private fun updateCoordinates() {
@@ -525,6 +532,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _viewportZoom.value = settingsRepo.getFloat(SettingsRepository.Keys.VIEWPORT_ZOOM, 1f)
         _viewportPanX.value = settingsRepo.getFloat(SettingsRepository.Keys.VIEWPORT_PAN_X, 0f)
         _viewportPanY.value = settingsRepo.getFloat(SettingsRepository.Keys.VIEWPORT_PAN_Y, 0f)
+        _viewportRestoreToken.value = _viewportRestoreToken.value + 1
 
         // Mark settings as loaded so subsequent saveSettings() calls are permitted
         isSettingsLoaded = true

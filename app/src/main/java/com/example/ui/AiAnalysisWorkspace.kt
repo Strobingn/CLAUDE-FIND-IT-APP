@@ -256,7 +256,7 @@ fun AiAnalysisWorkspace(
             viewportResetKey = 0,
             showSurveyCursor = false,
             showCoordinateHud = false,
-            onViewportChanged = { bounds, zoom ->
+            onViewportChanged = { bounds, zoom, _, _ ->
                 visibleBounds.value = bounds
                 zoomLevel.value = zoom
             },
