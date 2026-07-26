@@ -12,8 +12,9 @@ import androidx.room.migration.Migration
         Setting::class,
         AnalyzedDatasetEntity::class,
         SurveyLayerEntity::class,
+        OfflineBasemapRegionEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -21,6 +22,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun settingDao(): SettingDao
     abstract fun analyzedDatasetDao(): AnalyzedDatasetDao
     abstract fun surveyLayerDao(): SurveyLayerDao
+    abstract fun offlineBasemapRegionDao(): OfflineBasemapRegionDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -82,6 +84,34 @@ abstract class AppDatabase : RoomDatabase() {
                 )
             }
         }
+        private val migration6To7 = object : Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS offline_basemap_regions (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        terrainKey TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        minLat REAL NOT NULL,
+                        maxLat REAL NOT NULL,
+                        minLon REAL NOT NULL,
+                        maxLon REAL NOT NULL,
+                        zoom INTEGER NOT NULL,
+                        tileCount INTEGER NOT NULL,
+                        completedTiles INTEGER NOT NULL,
+                        estimatedBytes INTEGER NOT NULL,
+                        storedBytes INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        lastError TEXT,
+                        createdAtMillis INTEGER NOT NULL,
+                        updatedAtMillis INTEGER NOT NULL
+                    )
+                """)
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_offline_basemap_regions_terrainKey " +
+                        "ON offline_basemap_regions (terrainKey)",
+                )
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -95,6 +125,7 @@ abstract class AppDatabase : RoomDatabase() {
                     migration3To4,
                     migration4To5,
                     migration5To6,
+                    migration6To7,
                 )
                 .build()
                 .also { instance = it }

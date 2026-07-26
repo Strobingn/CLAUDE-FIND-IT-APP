@@ -14,7 +14,7 @@ This audit checks the production UI and persisted state paths against the Phase 
 | Multi-dataset candidate comparison | Analyzed dataset snapshots persist and can be compared by geographic proximity. | Implemented; unit coverage present | Validate with two independently imported, overlapping georeferenced datasets. |
 | NYS/USGS tile discovery | The Import tab provides coordinate lookup through the USGS/NYS catalog and downloads an exact LAZ tile with progress and cancellation. | Partial | Replace point lookup with reusable rectangle/polygon/radius area selection, size estimate, multi-tile queue, retry, grouping, and mosaic open. |
 | GPX/KML survey workflow | The Import tab securely parses GPX waypoints, routes, and tracks plus KML points, lines, and polygons. Layers persist per terrain source, render on georeferenced terrain and Google Maps, and can be framed or deleted. | Implemented; emulator and tablet build verified | Add instrumented document-picker, Room migration, and round-trip export coverage. |
-| Offline basemap regions | Online basemap tiles can be stitched for the active terrain extent. User-managed offline region download and recovery are not complete. | Partial | Add region records, size estimate, queue/cancel/retry, cache inspection, and airplane-mode tests. |
+| Offline basemap regions | The Import tab estimates and downloads named USGS Topo regions for the active georeferenced terrain. Region state and progress persist per terrain source; missing tiles can be retried, active work canceled, stored size inspected, and completed regions reopened without a network. | Implemented; airplane-mode emulator and tablet UI verified | Add multi-region queue instrumentation and larger-area cancellation fixtures. |
 | Image and report export | CSV, GPX, KML, and GeoJSON field exports exist. Full terrain image, annotated comparison image, and PDF report workflows are absent. | Partial | Implement full-resolution image export first, then a versioned report schema and PDF renderer. |
 | Multi-tile projects | Individual downloaded tiles persist and reopen. Logical project grouping, source-preserving mosaics, duplicate prevention, and partial-project recovery are incomplete. | Partial | Implement the Phase 2 tile/project schema before adding mosaic rendering. |
 | Release validation | Debug unit tests and APK builds pass, and current workflows run on the emulator and Samsung tablet. | Partial | Add release build, instrumented suite, migration fixtures, and external GIS export checks to the release gate. |
@@ -58,12 +58,35 @@ Validation:
 - A real GPX layer was imported on the emulator, remained after a process restart, and rendered its waypoint and track on Google Maps.
 - The same APK installs and launches successfully on the Samsung tablet with the database migration applied.
 
+## Third completed increment
+
+The third Sprint 1 increment implements durable offline basemap regions without changing the skipped NYS/USGS LAZ area-selector scope.
+
+Data-integrity behavior:
+
+- Offline regions are keyed to the active terrain source.
+- Download planning requires real geographic bounds; local-grid terrain is rejected rather than placed at fabricated coordinates.
+- The preview reports zoom, exact tile count, tiles already present, and estimated new bytes.
+- Tiles use the official USGS Topo cached-map service and live in app-private `filesDir`, outside Android's evictable cache.
+- Cancellation and process interruption retain completed tiles and expose retry.
+- Retry requests only missing tiles.
+- Deleting a region removes only tiles not shared by another saved region and requires confirmation.
+- Ready regions load with network access disabled.
+
+Validation:
+
+- Unit tests cover entity round-tripping, project scope fields, status/progress persistence, and bounded pre-download planning.
+- The full debug unit-test suite and APK build pass.
+- A live USGS region downloaded to `Ready offline` on the emulator with exact stored-byte reporting.
+- With Wi-Fi and mobile data disabled and network access confirmed unreachable, the app restarted and reopened the saved basemap.
+- The version-7 database migration, APK install, cold launch, and new manager UI were verified on the Samsung tablet.
+
 ## Next implementation target
 
-Complete user-managed offline basemap regions:
+Complete full-resolution image and report export:
 
-1. Persist named basemap-region records by project.
-2. Estimate size before download.
-3. Add queue, progress, cancellation, and retry.
-4. Reopen cached regions in airplane mode.
-5. Add cache inspection and recovery tests.
+1. Export the complete terrain raster rather than the current screen crop.
+2. Include visible candidates, survey layers, scale, legend, and source metadata.
+3. Add annotated comparison-image export.
+4. Define a versioned field-report schema.
+5. Render and externally validate the first PDF report.

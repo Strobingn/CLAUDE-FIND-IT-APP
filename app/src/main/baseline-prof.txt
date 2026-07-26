@@ -2775,7 +2775,7 @@ Lcom/example/geospatial/GeoSpatialLibrary$GeoSpatialMetadata;
 Lcom/example/geospatial/GeoSpatialLibrary$GeographicBounds;
 Lcom/example/geospatial/GeoSpatialLibrary;
 Lcom/example/geospatial/LocationTracker;
-Lcom/example/geospatial/OsmTileRepository;
+Lcom/example/geospatial/BasemapTileRepository;
 Lcom/example/ui/ComposableSingletons$FindItHomeScreenKt$$ExternalSyntheticLambda0;
 Lcom/example/ui/ComposableSingletons$FindItHomeScreenKt$$ExternalSyntheticLambda1;
 Lcom/example/ui/ComposableSingletons$FindItHomeScreenKt$$ExternalSyntheticLambda2;
@@ -13571,8 +13571,8 @@ SPLcom/example/geospatial/GeoSpatialLibrary;->getSITES_METADATA()Ljava/util/List
 SPLcom/example/geospatial/LocationTracker;-><clinit>()V
 SPLcom/example/geospatial/LocationTracker;-><init>(Landroid/content/Context;)V
 SPLcom/example/geospatial/LocationTracker;->hasLocationPermission()Z
-SPLcom/example/geospatial/OsmTileRepository;-><clinit>()V
-SPLcom/example/geospatial/OsmTileRepository;-><init>(Landroid/content/Context;)V
+SPLcom/example/geospatial/BasemapTileRepository;-><clinit>()V
+SPLcom/example/geospatial/BasemapTileRepository;-><init>(Landroid/content/Context;)V
 SPLcom/example/ui/ComposableSingletons$FindItHomeScreenKt$$ExternalSyntheticLambda0;-><init>()V
 SPLcom/example/ui/ComposableSingletons$FindItHomeScreenKt$$ExternalSyntheticLambda0;->invoke(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
 SPLcom/example/ui/ComposableSingletons$FindItHomeScreenKt$$ExternalSyntheticLambda1;-><init>()V

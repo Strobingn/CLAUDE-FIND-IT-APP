@@ -272,7 +272,7 @@ fun LidarControlPanel(
                 fontWeight = FontWeight.Bold,
             )
             OptionGrid(
-                options = listOf(Option(0, "Off", "Terrain only"), Option(1, "On", "OpenStreetMap tiles")),
+                options = listOf(Option(0, "Off", "Terrain only"), Option(1, "On", "USGS Topo tiles")),
                 selected = if (basemapEnabled) 1 else 0,
                 onSelected = { onBasemapEnabledChanged(it == 1) },
                 tagPrefix = "basemap",

@@ -77,6 +77,7 @@ import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarControlPanel
 import com.example.ui.components.LidarMapCanvas
 import com.example.ui.components.NysLazTilePicker
+import com.example.ui.components.OfflineBasemapManager
 import com.example.ui.components.TargetLoggerPanel
 import com.example.ui.components.TerrainCellInspectionPanel
 import com.example.ui.components.TerrainGoogleMapScreen
@@ -549,6 +550,12 @@ private fun ImportTab(
     onImported: () -> Unit,
 ) {
     val surveyLayers by viewModel.surveyLayers.collectAsStateWithLifecycle()
+    val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
+    val offlineRegions by viewModel.offlineBasemapRegions.collectAsStateWithLifecycle()
+    val offlinePlan by viewModel.offlineBasemapPlan.collectAsStateWithLifecycle()
+    val offlineProgress by viewModel.offlineBasemapProgress.collectAsStateWithLifecycle()
+    val offlineMessage by viewModel.offlineBasemapMessage.collectAsStateWithLifecycle()
+    val offlineDownloading by viewModel.offlineBasemapDownloading.collectAsStateWithLifecycle()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -556,6 +563,27 @@ private fun ImportTab(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        OfflineBasemapManager(
+            suggestedName = metadata.siteName,
+            regions = offlineRegions,
+            plan = offlinePlan,
+            progress = offlineProgress,
+            isDownloading = offlineDownloading,
+            message = offlineMessage,
+            onEstimate = viewModel::estimateOfflineBasemapRegion,
+            onDownload = viewModel::downloadOfflineBasemapRegion,
+            onCancel = viewModel::cancelOfflineBasemapDownload,
+            onOpen = {
+                viewModel.openOfflineBasemapRegion(it)
+                onImported()
+            },
+            onRetry = viewModel::retryOfflineBasemapRegion,
+            onDelete = viewModel::deleteOfflineBasemapRegion,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+        )
+
         SurveyLayerImporter(
             layers = surveyLayers,
             onImported = {

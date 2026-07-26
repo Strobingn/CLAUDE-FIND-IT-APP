@@ -9,6 +9,8 @@ import com.example.data.DemGenerator
 import com.example.data.DetectionSource
 import com.example.data.ElevationGrid
 import com.example.data.GroundSurfaceMode
+import com.example.data.basemap.OfflineBasemapRegion
+import com.example.data.basemap.OfflineBasemapStatus
 import com.example.data.LazDatasetStore
 import com.example.data.LazTerrainDiskCache
 import com.example.data.LidarImportOptions
@@ -28,11 +30,16 @@ import com.example.data.local.toEntity
 import com.example.geospatial.GeoSpatialLibrary
 import com.example.geospatial.GeoSpatialLibrary.GeoSpatialMetadata
 import com.example.geospatial.LocationTracker
-import com.example.geospatial.OsmTileRepository
+import com.example.geospatial.BasemapTileRepository
+import com.example.geospatial.BasemapDownloadProgress
+import com.example.geospatial.BasemapPlan
+import com.example.geospatial.SlippyTileMath
 import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +56,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val settingsRepo = SettingsRepository(AppDatabase.get(application).settingDao())
     private val analyzedDatasetDao = AppDatabase.get(application).analyzedDatasetDao()
     private val surveyLayerDao = AppDatabase.get(application).surveyLayerDao()
+    private val offlineBasemapRegionDao = AppDatabase.get(application).offlineBasemapRegionDao()
 
     // Guard flag to prevent saveSettings() from overwriting DB values with defaults before loading completes
     private var isSettingsLoaded = false
@@ -179,6 +187,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         observeSurveyLayers(_activeTerrainKey.value)
+        observeOfflineBasemapRegions(_activeTerrainKey.value)
         // loadSettings must finish before the first scheduleRender — scheduleRender saves the
         // *current* StateFlow values back to disk, and if that runs while loadSettings' reads are
         // still in flight, it stomps the just-persisted settings with hardcoded defaults on every
@@ -252,7 +261,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { settingsRepo.saveBoolean(SettingsRepository.Keys.HEATMAP_ENABLED, enabled) }
     }
 
-    private val osmTileRepository = OsmTileRepository(application)
+    private val basemapTileRepository = BasemapTileRepository(application)
     private val _basemapEnabled = MutableStateFlow(false)
     val basemapEnabled: StateFlow<Boolean> = _basemapEnabled.asStateFlow()
     private val _basemapOpacity = MutableStateFlow(0.6f)
@@ -262,6 +271,19 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _basemapStatus = MutableStateFlow<String?>(null)
     val basemapStatus: StateFlow<String?> = _basemapStatus.asStateFlow()
     private var basemapJob: Job? = null
+    private val _offlineBasemapRegions = MutableStateFlow<List<OfflineBasemapRegion>>(emptyList())
+    val offlineBasemapRegions: StateFlow<List<OfflineBasemapRegion>> = _offlineBasemapRegions.asStateFlow()
+    private val _offlineBasemapPlan = MutableStateFlow<BasemapPlan?>(null)
+    val offlineBasemapPlan: StateFlow<BasemapPlan?> = _offlineBasemapPlan.asStateFlow()
+    private val _offlineBasemapProgress = MutableStateFlow<BasemapDownloadProgress?>(null)
+    val offlineBasemapProgress: StateFlow<BasemapDownloadProgress?> = _offlineBasemapProgress.asStateFlow()
+    private val _offlineBasemapMessage = MutableStateFlow<String?>(null)
+    val offlineBasemapMessage: StateFlow<String?> = _offlineBasemapMessage.asStateFlow()
+    private val _offlineBasemapDownloading = MutableStateFlow(false)
+    val offlineBasemapDownloading: StateFlow<Boolean> = _offlineBasemapDownloading.asStateFlow()
+    private var offlineBasemapRegionJob: Job? = null
+    private var offlineBasemapDownloadJob: Job? = null
+    private var activeOfflineDownloadId: String? = null
 
     fun setBasemapEnabled(enabled: Boolean) {
         _basemapEnabled.value = enabled
@@ -290,13 +312,33 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
         basemapJob = viewModelScope.launch {
-            _basemapStatus.value = "Loading basemap tiles…"
-            val result = runCatching { osmTileRepository.loadBasemap(bounds) }.getOrNull()
+            val offline = _offlineBasemapRegions.value.firstOrNull {
+                it.status == OfflineBasemapStatus.READY
+            }
+            _basemapStatus.value = if (offline != null) {
+                "Opening saved offline basemap…"
+            } else {
+                "Loading basemap tiles…"
+            }
+            val result = runCatching {
+                if (offline != null) {
+                    basemapTileRepository.loadBasemap(
+                        bounds = offline.bounds,
+                        fixedZoom = offline.zoom,
+                        maxTiles = offline.tileCount,
+                        allowNetwork = false,
+                    )
+                } else {
+                    basemapTileRepository.loadBasemap(bounds)
+                }
+            }.getOrNull()
             _basemapBitmap.value = result?.bitmap
             _basemapStatus.value = when {
+                result?.bitmap != null && offline != null &&
+                    result.loadedTiles == result.expectedTiles -> "Saved offline basemap ready."
                 result?.bitmap != null -> null
                 result?.blockedByServer == true ->
-                    "OpenStreetMap's tile server rejected these requests — basemap unavailable here."
+                    "The USGS Topo service rejected these requests — basemap unavailable here."
                 else -> "Couldn't load basemap tiles — showing terrain view only."
             }
         }
@@ -563,6 +605,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _activeTerrainKey.value = terrainKey
         refreshVisibleSignals()
         observeSurveyLayers(terrainKey)
+        observeOfflineBasemapRegions(terrainKey)
+        _offlineBasemapPlan.value = null
+        _offlineBasemapMessage.value = null
     }
 
     private fun observeSurveyLayers(terrainKey: String) {
@@ -583,6 +628,199 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun deleteSurveyLayer(layer: SurveyLayer) {
         viewModelScope.launch { surveyLayerDao.deleteById(layer.id) }
+    }
+
+    private fun observeOfflineBasemapRegions(terrainKey: String) {
+        offlineBasemapRegionJob?.cancel()
+        offlineBasemapRegionJob = viewModelScope.launch {
+            offlineBasemapRegionDao.observeByTerrainKey(terrainKey).collect { stored ->
+                val regions = stored.map { it.toDomain() }
+                _offlineBasemapRegions.value = regions
+                regions.filter {
+                    it.status == OfflineBasemapStatus.DOWNLOADING && it.id != activeOfflineDownloadId
+                }.forEach { interrupted ->
+                    offlineBasemapRegionDao.upsert(
+                        interrupted.copy(
+                            status = OfflineBasemapStatus.CANCELED,
+                            lastError = "Download was interrupted. Retry keeps completed tiles.",
+                            updatedAtMillis = System.currentTimeMillis(),
+                        ).toEntity(),
+                    )
+                }
+                if (_basemapEnabled.value &&
+                    stored.any { it.status == OfflineBasemapStatus.READY.name } &&
+                    _basemapBitmap.value == null
+                ) {
+                    refreshBasemapTiles()
+                }
+            }
+        }
+    }
+
+    fun estimateOfflineBasemapRegion() {
+        val bounds = _activeGeoMetadata.value.bounds
+        if (bounds == null) {
+            _offlineBasemapPlan.value = null
+            _offlineBasemapMessage.value =
+                "This terrain has no real geographic bounds, so an offline map cannot be placed safely."
+            return
+        }
+        val plan = basemapTileRepository.planOfflineRegion(bounds)
+        _offlineBasemapPlan.value = plan
+        _offlineBasemapMessage.value = null
+    }
+
+    fun downloadOfflineBasemapRegion(displayName: String? = null) {
+        if (_offlineBasemapDownloading.value) return
+        val plan = _offlineBasemapPlan.value ?: run {
+            estimateOfflineBasemapRegion()
+            _offlineBasemapPlan.value
+        } ?: return
+        val now = System.currentTimeMillis()
+        val region = OfflineBasemapRegion(
+            id = UUID.randomUUID().toString(),
+            terrainKey = _activeTerrainKey.value,
+            displayName = displayName?.trim().takeUnless { it.isNullOrEmpty() }
+                ?: "${_activeGeoMetadata.value.siteName} offline map",
+            bounds = plan.bounds,
+            zoom = plan.zoom,
+            tileCount = plan.tileCount,
+            completedTiles = plan.cachedTiles,
+            estimatedBytes = plan.estimatedDownloadBytes,
+            storedBytes = plan.cachedBytes,
+            status = OfflineBasemapStatus.PLANNED,
+            lastError = null,
+            createdAtMillis = now,
+            updatedAtMillis = now,
+        )
+        startOfflineBasemapDownload(region, plan)
+    }
+
+    fun retryOfflineBasemapRegion(region: OfflineBasemapRegion) {
+        if (_offlineBasemapDownloading.value) return
+        val plan = basemapTileRepository.planOfflineRegion(region.bounds, fixedZoom = region.zoom)
+        startOfflineBasemapDownload(
+            region.copy(
+                completedTiles = plan.cachedTiles,
+                storedBytes = plan.cachedBytes,
+                estimatedBytes = plan.estimatedDownloadBytes,
+                lastError = null,
+                updatedAtMillis = System.currentTimeMillis(),
+            ),
+            plan,
+        )
+    }
+
+    private fun startOfflineBasemapDownload(region: OfflineBasemapRegion, plan: BasemapPlan) {
+        offlineBasemapDownloadJob?.cancel()
+        activeOfflineDownloadId = region.id
+        offlineBasemapDownloadJob = viewModelScope.launch {
+            _offlineBasemapDownloading.value = true
+            _offlineBasemapProgress.value = BasemapDownloadProgress(
+                completedTiles = plan.cachedTiles,
+                totalTiles = plan.tileCount,
+                downloadedBytes = 0L,
+            )
+            var current = region.copy(
+                status = OfflineBasemapStatus.DOWNLOADING,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
+            offlineBasemapRegionDao.upsert(current.toEntity())
+            try {
+                val result = basemapTileRepository.downloadOfflineRegion(plan) { progress ->
+                    _offlineBasemapProgress.value = progress
+                }
+                val ready = result.failedTiles == 0 && result.completedTiles == plan.tileCount
+                current = current.copy(
+                    completedTiles = result.completedTiles,
+                    storedBytes = result.storedBytes,
+                    status = if (ready) OfflineBasemapStatus.READY else OfflineBasemapStatus.FAILED,
+                    lastError = when {
+                        ready -> null
+                        result.blockedByServer -> "The tile server rejected one or more requests."
+                        else -> "${result.failedTiles} tile download(s) failed. Retry to fetch only missing tiles."
+                    },
+                    updatedAtMillis = System.currentTimeMillis(),
+                )
+                offlineBasemapRegionDao.upsert(current.toEntity())
+                if (ready) {
+                    _offlineBasemapMessage.value = "Offline map saved. It can now reopen without service."
+                    _basemapEnabled.value = true
+                    settingsRepo.saveBoolean(SettingsRepository.Keys.BASEMAP_ENABLED, true)
+                    refreshBasemapTiles()
+                } else {
+                    _offlineBasemapMessage.value = current.lastError
+                }
+            } catch (cancelled: CancellationException) {
+                current = current.copy(
+                    status = OfflineBasemapStatus.CANCELED,
+                    lastError = "Download canceled. Retry keeps completed tiles.",
+                    updatedAtMillis = System.currentTimeMillis(),
+                )
+                withContext(NonCancellable) {
+                    offlineBasemapRegionDao.upsert(current.toEntity())
+                }
+                throw cancelled
+            } finally {
+                if (activeOfflineDownloadId == region.id) {
+                    activeOfflineDownloadId = null
+                    _offlineBasemapDownloading.value = false
+                    _offlineBasemapProgress.value = null
+                }
+            }
+        }
+    }
+
+    fun cancelOfflineBasemapDownload() {
+        offlineBasemapDownloadJob?.cancel()
+    }
+
+    fun openOfflineBasemapRegion(region: OfflineBasemapRegion) {
+        if (region.status != OfflineBasemapStatus.READY) return
+        _basemapEnabled.value = true
+        viewModelScope.launch {
+            settingsRepo.saveBoolean(SettingsRepository.Keys.BASEMAP_ENABLED, true)
+            val result = basemapTileRepository.loadBasemap(
+                bounds = region.bounds,
+                fixedZoom = region.zoom,
+                maxTiles = region.tileCount,
+                allowNetwork = false,
+            )
+            _basemapBitmap.value = result.bitmap
+            _basemapStatus.value = if (
+                result.bitmap != null && result.loadedTiles == result.expectedTiles
+            ) {
+                "Saved offline basemap ready."
+            } else {
+                "Saved region is incomplete. Retry its missing tiles."
+            }
+        }
+    }
+
+    fun deleteOfflineBasemapRegion(region: OfflineBasemapRegion) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (activeOfflineDownloadId == region.id) offlineBasemapDownloadJob?.cancel()
+            val retainedEntities = offlineBasemapRegionDao.getAll().filterNot { it.id == region.id }
+            val retained = retainedEntities.map {
+                SlippyTileMath.boundsToTileRange(
+                    GeoSpatialLibrary.GeographicBounds(it.minLat, it.maxLat, it.minLon, it.maxLon),
+                    it.zoom,
+                )
+            }
+            basemapTileRepository.deleteTilesUsedOnlyBy(
+                SlippyTileMath.boundsToTileRange(region.bounds, region.zoom),
+                retained,
+            )
+            offlineBasemapRegionDao.deleteById(region.id)
+            if (region.terrainKey == _activeTerrainKey.value &&
+                retainedEntities.none {
+                    it.terrainKey == region.terrainKey && it.status == OfflineBasemapStatus.READY.name
+                }
+            ) {
+                _basemapBitmap.value = null
+                _basemapStatus.value = "Offline region removed."
+            }
+        }
     }
 
     private fun refreshVisibleSignals() {
@@ -722,6 +960,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         locationJob?.cancel()
         basemapJob?.cancel()
         surveyLayerJob?.cancel()
+        offlineBasemapRegionJob?.cancel()
+        offlineBasemapDownloadJob?.cancel()
         saveSettingsJob?.cancel()
         super.onCleared()
     }
