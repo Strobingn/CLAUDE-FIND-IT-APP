@@ -66,6 +66,7 @@ fun LayerComparisonWorkspace(
 ) {
     val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
     val summary by viewModel.activeTerrainSummary.collectAsStateWithLifecycle()
+    val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
     val result = aiState.localResult
 
@@ -133,7 +134,7 @@ fun LayerComparisonWorkspace(
                     }
                 }
                 Button(
-                    onClick = { assistantViewModel.runLocalAnalysis(grid, summary) },
+                    onClick = { assistantViewModel.runLocalAnalysis(grid, summary, signals) },
                     enabled = !aiState.isLocalAnalyzing,
                     modifier = Modifier.testTag("comparison_run_analysis_button"),
                 ) {

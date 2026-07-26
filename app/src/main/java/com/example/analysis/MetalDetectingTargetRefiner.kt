@@ -20,7 +20,47 @@ data class MetalDetectingTarget(
     val yPercent: Float,
     val score: Float,
     val radiusMeters: Float,
+    /** Dynamic, per-candidate measurements (e.g. "Flat interior: 82%") - not static boilerplate. */
     val evidence: List<String>,
+    /**
+     * Rule-based (not ML) reasons this candidate could plausibly be a false positive, computed
+     * from the same measured layers as the score itself. Empty when no caution signal triggered.
+     */
+    val cautionReasons: List<String> = emptyList(),
+    /** True when a user-verified field outcome nearby actually influenced this candidate's score. */
+    val verifiedNearby: Boolean = false,
+)
+
+/**
+ * Bundles the prefix-sum tables and radii built once per [MetalDetectingTargetRefiner.refine]
+ * call so that [MetalDetectingTargetRefiner]'s dynamic evidence/caution generation can cheaply
+ * recompute the same named components at a single candidate's (x,y) after local-maxima
+ * extraction, instead of storing every intermediate component as a full-grid array.
+ */
+private class RefinerContext(
+    val flatRect: RectSumTable,
+    val smoothRect: RectSumTable,
+    val concaveRect: RectSumTable,
+    val raisedRect: RectSumTable,
+    val loweredRect: RectSumTable,
+    val edgeRect: RectSumTable,
+    val depressionRect: RectSumTable,
+    val ruggedRect: RectSumTable,
+    val linearityRect: RectSumTable,
+    val linearityDiag: DiagonalSumTable,
+    val flatDiag: DiagonalSumTable,
+    val smoothDiag: DiagonalSumTable,
+    val foundationRect: RectSumTable,
+    val cellarRect: RectSumTable,
+    val trashRect: RectSumTable,
+    val roadRect: RectSumTable,
+    val hillCompare: FloatArray,
+    val innerRadius: Int,
+    val edgeInner: Int,
+    val edgeOuter: Int,
+    val contextRadius: Int,
+    val corridorHalfLength: Int,
+    val corridorHalfWidth: Int,
 )
 
 /**
@@ -42,7 +82,10 @@ object MetalDetectingTargetRefiner {
     private const val MAX_PER_TYPE = 12
     private const val MAX_TOTAL = 48
 
-    fun refine(result: TerrainIntelligenceResult): List<MetalDetectingTarget> {
+    fun refine(
+        result: TerrainIntelligenceResult,
+        feedback: List<VerifiedFeedbackPoint> = emptyList(),
+    ): List<MetalDetectingTarget> {
         val layers = result.layers
         val width = layers.width
         val height = layers.height
@@ -189,6 +232,12 @@ object MetalDetectingTargetRefiner {
         val trashRect = RectSumTable(trash, width, height)
         val roadRect = RectSumTable(road, width, height)
 
+        // Real-world context radius, in grid-percent units, for matching verified feedback points
+        // against a pixel while computing the human-activity-context term below.
+        val confirmedPoints = feedback.filter { it.confirmed }
+        val contextPercentRadius = if (width > 1) contextRadius * 100f / (width - 1) else 100f
+        val contextPercentRadiusSq = contextPercentRadius * contextPercentRadius
+
         for (y in 0 until height) {
             for (x in 0 until width) {
                 val i = y * width + x
@@ -196,31 +245,40 @@ object MetalDetectingTargetRefiner {
                 val cellarContext = cellarRect.ringMean(x, y, 0, contextRadius)
                 val trashContext = trashRect.ringMean(x, y, 0, contextRadius)
                 val roadContext = roadRect.ringMean(x, y, 0, contextRadius)
+                val xPercent = if (width <= 1) 50f else x * 100f / (width - 1)
+                val yPercent = if (height <= 1) 50f else y * 100f / (height - 1)
+                val verifiedContext = if (confirmedPoints.isEmpty()) {
+                    0f
+                } else {
+                    val nearestSq = confirmedPoints.minOf { distanceSquared(it.xPercent, it.yPercent, xPercent, yPercent) }
+                    (1f - nearestSq / contextPercentRadiusSq).coerceIn(0f, 1f)
+                }
                 homesite[i] = (
-                    foundationContext * 0.36f +
-                        cellarContext * 0.22f +
-                        trashContext * 0.14f +
-                        roadContext * 0.18f +
-                        flatRect.ringMean(x, y, 0, contextRadius) * 0.10f
+                    foundationContext * 0.34f +
+                        cellarContext * 0.20f +
+                        trashContext * 0.13f +
+                        roadContext * 0.17f +
+                        flatRect.ringMean(x, y, 0, contextRadius) * 0.06f +
+                        verifiedContext * 0.10f
                     ).coerceIn(0f, 1f)
                 // Trash-pit priority rises when a shallow pit is close to occupation evidence.
                 trash[i] = (trash[i] * 0.76f + homesite[i] * 0.24f).coerceIn(0f, 1f)
             }
         }
 
+        val ctx = RefinerContext(
+            flatRect, smoothRect, concaveRect, raisedRect, loweredRect, edgeRect, depressionRect, ruggedRect,
+            linearityRect, linearityDiag, flatDiag, smoothDiag, foundationRect, cellarRect, trashRect, roadRect,
+            hillCompare, innerRadius, edgeInner, edgeOuter, contextRadius, corridorHalfLength, corridorHalfWidth,
+        )
+
         val output = ArrayList<MetalDetectingTarget>()
-        appendTargets(output, MetalDetectingTargetType.FOUNDATION, foundation, width, height, 0.66f, 8f,
-            listOf("flat interior neighborhood", "rectilinear edge ring", "multi-direction persistence"))
-        appendTargets(output, MetalDetectingTargetType.ROAD_TRAIL, road, width, height, 0.67f, 7f,
-            listOf("continuous linear corridor", "low-gradient smooth surface", "cut or crowned relief"))
-        appendTargets(output, MetalDetectingTargetType.CELLAR_HOLE, cellar, width, height, 0.68f, 7f,
-            listOf("compact deep depression", "concave center", "raised or defined perimeter"))
-        appendTargets(output, MetalDetectingTargetType.TRASH_PIT, trash, width, height, 0.65f, 5f,
-            listOf("shallow irregular depression", "occupation-context proximity", "possible refuse-pit morphology"))
-        appendTargets(output, MetalDetectingTargetType.STONE_WALL, wall, width, height, 0.68f, 5f,
-            listOf("continuous raised line", "edge persistence", "low cross-line roughness"))
-        appendTargets(output, MetalDetectingTargetType.OLD_HOMESITE, homesite, width, height, 0.66f, 14f,
-            listOf("foundation/cellar/pit cluster", "road access context", "locally usable ground"))
+        appendTargets(output, MetalDetectingTargetType.FOUNDATION, foundation, width, height, 0.66f, 8f, feedback, ctx)
+        appendTargets(output, MetalDetectingTargetType.ROAD_TRAIL, road, width, height, 0.67f, 7f, feedback, ctx)
+        appendTargets(output, MetalDetectingTargetType.CELLAR_HOLE, cellar, width, height, 0.68f, 7f, feedback, ctx)
+        appendTargets(output, MetalDetectingTargetType.TRASH_PIT, trash, width, height, 0.65f, 5f, feedback, ctx)
+        appendTargets(output, MetalDetectingTargetType.STONE_WALL, wall, width, height, 0.68f, 5f, feedback, ctx)
+        appendTargets(output, MetalDetectingTargetType.OLD_HOMESITE, homesite, width, height, 0.66f, 14f, feedback, ctx)
 
         return suppressNearbyDuplicates(output)
             .sortedByDescending { it.score }
@@ -235,20 +293,142 @@ object MetalDetectingTargetRefiner {
         height: Int,
         threshold: Float,
         radiusMeters: Float,
-        evidence: List<String>,
+        feedback: List<VerifiedFeedbackPoint>,
+        ctx: RefinerContext,
     ) {
-        localMaxima(score, width, height, threshold, MAX_PER_TYPE).forEach { (index, value) ->
+        localMaxima(score, width, height, threshold, MAX_PER_TYPE).forEach { (index, rawValue) ->
             val x = index % width
             val y = index / width
+            val xPercent = if (width <= 1) 50f else x * 100f / (width - 1)
+            val yPercent = if (height <= 1) 50f else y * 100f / (height - 1)
+            val nearestFeedback = feedback.minByOrNull { distanceSquared(it.xPercent, it.yPercent, xPercent, yPercent) }
+            val feedbackMatched = nearestFeedback != null &&
+                distanceSquared(nearestFeedback.xPercent, nearestFeedback.yPercent, xPercent, yPercent) <= VerifiedFeedback.MATCH_DISTANCE_SQUARED
+            val adjusted = if (feedbackMatched) {
+                (rawValue + if (nearestFeedback!!.confirmed) 0.14f else -0.28f).coerceIn(0f, 1f)
+            } else {
+                rawValue
+            }
+            // Mirrors TerrainIntelligenceEngine's feedback rule: a rejected match can drop an
+            // already-qualified candidate, but feedback never resurrects one that never cleared
+            // the raw per-pixel threshold in the first place.
+            if (adjusted < threshold * 0.88f) return@forEach
             output += MetalDetectingTarget(
                 type = type,
-                xPercent = if (width <= 1) 50f else x * 100f / (width - 1),
-                yPercent = if (height <= 1) 50f else y * 100f / (height - 1),
-                score = value,
+                xPercent = xPercent,
+                yPercent = yPercent,
+                score = adjusted,
                 radiusMeters = radiusMeters,
-                evidence = evidence,
+                evidence = explainCandidate(type, x, y, index, ctx),
+                cautionReasons = classifyCaution(type, x, y, index, ctx, feedback, xPercent, yPercent),
+                verifiedNearby = feedbackMatched,
             )
         }
+    }
+
+    /** Dynamic, per-candidate evidence with the actual measured percentages, not static text. */
+    private fun explainCandidate(type: MetalDetectingTargetType, x: Int, y: Int, i: Int, ctx: RefinerContext): List<String> {
+        fun pct(value: Float) = "${(value * 100f).roundToInt()}%"
+        return when (type) {
+            MetalDetectingTargetType.FOUNDATION -> listOf(
+                "Flat interior: ${pct(ctx.flatRect.ringMean(x, y, 0, ctx.innerRadius))}",
+                "Smooth interior: ${pct(ctx.smoothRect.ringMean(x, y, 0, ctx.innerRadius))}",
+                "Edge/rim persistence: ${pct(ctx.edgeRect.ringMean(x, y, ctx.edgeInner, ctx.edgeOuter))}",
+                "Multi-direction continuity: ${pct(directionalContinuity(ctx.linearityRect, ctx.linearityDiag, x, y, ctx.corridorHalfLength, ctx.corridorHalfWidth))}",
+            )
+            MetalDetectingTargetType.ROAD_TRAIL -> listOf(
+                "Linear directional continuity: ${pct(directionalContinuity(ctx.linearityRect, ctx.linearityDiag, x, y, ctx.corridorHalfLength, ctx.corridorHalfWidth))}",
+                "Corridor flatness: ${pct(directionalContinuity(ctx.flatRect, ctx.flatDiag, x, y, ctx.corridorHalfLength, ctx.corridorHalfWidth))}",
+                "Corridor smoothness: ${pct(directionalContinuity(ctx.smoothRect, ctx.smoothDiag, x, y, ctx.corridorHalfLength, ctx.corridorHalfWidth))}",
+                "Cut or crowned relief: ${pct(max(ctx.loweredRect.ringMean(x, y, 0, ctx.innerRadius), ctx.raisedRect.ringMean(x, y, 0, ctx.innerRadius)))}",
+            )
+            MetalDetectingTargetType.CELLAR_HOLE -> {
+                val centerDepression = ctx.depressionRect.ringMean(x, y, 0, ctx.innerRadius)
+                val ringDepression = ctx.depressionRect.ringMean(x, y, ctx.edgeInner, ctx.edgeOuter)
+                listOf(
+                    "Compact depression signature: ${pct((centerDepression - ringDepression * 0.55f).coerceIn(0f, 1f))}",
+                    "Concave center: ${pct(ctx.concaveRect.ringMean(x, y, 0, ctx.innerRadius))}",
+                    "Raised/defined rim: ${pct(ctx.raisedRect.ringMean(x, y, ctx.edgeInner, ctx.edgeOuter))}",
+                )
+            }
+            MetalDetectingTargetType.TRASH_PIT -> {
+                val centerDepression = ctx.depressionRect.ringMean(x, y, 0, ctx.innerRadius)
+                val boundaryEdge = ctx.edgeRect.ringMean(x, y, ctx.edgeInner, ctx.edgeOuter)
+                val centerRugged = ctx.ruggedRect.ringMean(x, y, 0, ctx.innerRadius)
+                listOf(
+                    "Shallow-depth preference: ${pct(triangularPreference(centerDepression, center = 0.46f, halfWidth = 0.38f))}",
+                    "Irregular edge signature: ${pct((boundaryEdge * 0.65f + centerRugged * 0.35f).coerceIn(0f, 1f))}",
+                )
+            }
+            MetalDetectingTargetType.STONE_WALL -> listOf(
+                "Continuous raised line: ${pct(directionalContinuity(ctx.linearityRect, ctx.linearityDiag, x, y, ctx.corridorHalfLength, ctx.corridorHalfWidth))}",
+                "Raised interior: ${pct(ctx.raisedRect.ringMean(x, y, 0, ctx.innerRadius))}",
+                "Edge persistence: ${pct(ctx.edgeRect.ringMean(x, y, ctx.edgeInner, ctx.edgeOuter))}",
+            )
+            MetalDetectingTargetType.OLD_HOMESITE -> listOf(
+                "Nearby foundation evidence: ${pct(ctx.foundationRect.ringMean(x, y, 0, ctx.contextRadius))}",
+                "Nearby cellar evidence: ${pct(ctx.cellarRect.ringMean(x, y, 0, ctx.contextRadius))}",
+                "Nearby road-access context: ${pct(ctx.roadRect.ringMean(x, y, 0, ctx.contextRadius))}",
+            )
+        }
+    }
+
+    /**
+     * Rule-based (not machine-learned) caution flags: known signatures that can mimic a real
+     * feature but usually indicate something else, checked against the same measured layers used
+     * to compute the score. Returns an empty list when nothing unusual is flagged.
+     */
+    private fun classifyCaution(
+        type: MetalDetectingTargetType,
+        x: Int,
+        y: Int,
+        i: Int,
+        ctx: RefinerContext,
+        feedback: List<VerifiedFeedbackPoint>,
+        xPercent: Float,
+        yPercent: Float,
+    ): List<String> {
+        val reasons = ArrayList<String>()
+        val centerRugged = ctx.ruggedRect.ringMean(x, y, 0, ctx.innerRadius)
+        val directionalLine = directionalContinuity(ctx.linearityRect, ctx.linearityDiag, x, y, ctx.corridorHalfLength, ctx.corridorHalfWidth)
+
+        when (type) {
+            MetalDetectingTargetType.FOUNDATION, MetalDetectingTargetType.STONE_WALL, MetalDetectingTargetType.CELLAR_HOLE -> {
+                if (ctx.hillCompare[i] < 0.15f) {
+                    reasons += "Edge signal doesn't agree strongly across multiple lighting angles - could be a rendering artifact rather than a real edge."
+                }
+                if (centerRugged > 0.6f && directionalLine < 0.3f) {
+                    reasons += "High surface roughness without directional coherence - could be a natural rock jumble rather than a built feature."
+                }
+            }
+            MetalDetectingTargetType.ROAD_TRAIL -> {
+                val corridorFlat = directionalContinuity(ctx.flatRect, ctx.flatDiag, x, y, ctx.corridorHalfLength, ctx.corridorHalfWidth)
+                val corridorSmooth = directionalContinuity(ctx.smoothRect, ctx.smoothDiag, x, y, ctx.corridorHalfLength, ctx.corridorHalfWidth)
+                if (corridorFlat < 0.4f && corridorSmooth < 0.4f) {
+                    reasons += "Aligned but not low-gradient or smooth - could be a natural drainage line or animal trail rather than a maintained road."
+                }
+            }
+            MetalDetectingTargetType.TRASH_PIT -> {
+                if (centerRugged < 0.15f) {
+                    reasons += "Very regular, symmetric depression - may be better explained as a small cellar hole or natural sink rather than a refuse pit."
+                }
+            }
+            MetalDetectingTargetType.OLD_HOMESITE -> {
+                val foundationContext = ctx.foundationRect.ringMean(x, y, 0, ctx.contextRadius)
+                val cellarContext = ctx.cellarRect.ringMean(x, y, 0, ctx.contextRadius)
+                val roadContext = ctx.roadRect.ringMean(x, y, 0, ctx.contextRadius)
+                if (foundationContext < 0.3f && cellarContext < 0.3f && roadContext < 0.3f) {
+                    reasons += "Limited convergence of foundation, cellar, or road evidence nearby - may be an isolated flat clearing rather than a true homesite."
+                }
+            }
+        }
+
+        val nearRejected = feedback.filter { !it.confirmed }
+            .minOfOrNull { distanceSquared(it.xPercent, it.yPercent, xPercent, yPercent) }
+        if (nearRejected != null && nearRejected > VerifiedFeedback.MATCH_DISTANCE_SQUARED && nearRejected <= VerifiedFeedback.MATCH_DISTANCE_SQUARED * 4f) {
+            reasons += "A nearby location was previously field-checked and rejected as a false positive - worth extra scrutiny."
+        }
+        return reasons
     }
 
     private fun suppressNearbyDuplicates(input: List<MetalDetectingTarget>): List<MetalDetectingTarget> {

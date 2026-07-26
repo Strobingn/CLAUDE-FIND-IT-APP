@@ -12,6 +12,7 @@ import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
 import com.example.data.TerrainImportSource
 import com.example.data.TargetSignal
+import com.example.data.local.AnalyzedDatasetEntity
 import com.example.data.local.AppDatabase
 import com.example.data.local.SettingsRepository
 import com.example.data.local.toDomain
@@ -37,6 +38,7 @@ import kotlinx.coroutines.withContext
 class HillshadeViewModel(application: Application) : AndroidViewModel(application) {
     private val signalDao = AppDatabase.get(application).targetSignalDao()
     private val settingsRepo = SettingsRepository(AppDatabase.get(application).settingDao())
+    private val analyzedDatasetDao = AppDatabase.get(application).analyzedDatasetDao()
 
     // Guard flag to prevent saveSettings() from overwriting DB values with defaults before loading completes
     private var isSettingsLoaded = false
@@ -118,6 +120,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _loggedSignals = MutableStateFlow<List<TargetSignal>>(emptyList())
     val loggedSignals = _loggedSignals.asStateFlow()
 
+    private val _analyzedDatasets = MutableStateFlow<List<AnalyzedDatasetEntity>>(emptyList())
+    val analyzedDatasets: StateFlow<List<AnalyzedDatasetEntity>> = _analyzedDatasets.asStateFlow()
+
     private val _activeGeoMetadata = MutableStateFlow(GeoSpatialLibrary.SITES_METADATA.first())
     val activeGeoMetadata: StateFlow<GeoSpatialMetadata> = _activeGeoMetadata.asStateFlow()
     private val _currentLat = MutableStateFlow<Double?>(null)
@@ -160,6 +165,16 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 _loggedSignals.value = stored.map { it.toDomain() }
             }
         }
+        viewModelScope.launch {
+            analyzedDatasetDao.observeAll().collect { stored ->
+                _analyzedDatasets.value = stored
+            }
+        }
+    }
+
+    /** Persists a snapshot of this dataset's targets so it can later be cross-compared with another. */
+    fun saveDatasetSnapshot(entity: AnalyzedDatasetEntity) {
+        viewModelScope.launch { analyzedDatasetDao.upsert(entity) }
     }
 
     /** Called by the UI after a runtime permission dialog resolves. */
