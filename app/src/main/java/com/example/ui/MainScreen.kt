@@ -70,6 +70,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.analysis.TerrainCellInspector
 import com.example.data.NormalizedRasterBounds
 import com.example.ui.components.CustomFileLoader
 import com.example.ui.components.LidarCanvasMode
@@ -77,6 +78,7 @@ import com.example.ui.components.LidarControlPanel
 import com.example.ui.components.LidarMapCanvas
 import com.example.ui.components.NysLazTilePicker
 import com.example.ui.components.TargetLoggerPanel
+import com.example.ui.components.TerrainCellInspectionPanel
 import com.example.ui.components.TerrainGoogleMapScreen
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -227,6 +229,7 @@ private fun TerrainTab(
 
     val visibleBounds = remember { mutableStateOf(NormalizedRasterBounds.Full) }
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
+    val inspectedCell = remember { mutableStateOf<com.example.analysis.TerrainCellInspection?>(null) }
     val showControls = rememberSaveable { mutableStateOf(false) }
     val localViewportResetKey = rememberSaveable { mutableIntStateOf(0) }
     val viewportResetKey = vmViewportReset + localViewportResetKey.intValue
@@ -274,11 +277,34 @@ private fun TerrainTab(
             basemapOpacity = basemapOpacity,
             basemapStatus = basemapStatus,
             deviceGridPosition = devicePosition,
+            inspectionPoint = inspectedCell.value?.let { it.xPercent to it.yPercent },
+            onInspectPosition = { xPercent, yPercent ->
+                inspectedCell.value = TerrainCellInspector.inspect(
+                    grid = elevationGrid,
+                    metadata = metadata,
+                    xPercent = xPercent,
+                    yPercent = yPercent,
+                    vegetationFilter = vegetation,
+                    featureScaleMeters = featureScale,
+                )
+            },
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = 76.dp, bottom = 58.dp)
                 .testTag("terrain_workspace"),
         )
+
+        inspectedCell.value?.let { inspection ->
+            TerrainCellInspectionPanel(
+                inspection = inspection,
+                onDismiss = { inspectedCell.value = null },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 72.dp)
+                    .fillMaxWidth(0.94f),
+            )
+        }
 
         Surface(
             shape = RoundedCornerShape(15.dp),

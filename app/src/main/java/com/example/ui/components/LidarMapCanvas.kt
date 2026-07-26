@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Box
@@ -101,6 +102,8 @@ fun LidarMapCanvas(
     basemapStatus: String? = null,
     deviceGridPosition: Pair<Float, Float>? = null,
     overlayTargets: List<LidarOverlayTarget> = emptyList(),
+    inspectionPoint: Pair<Float, Float>? = null,
+    onInspectPosition: ((Float, Float) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val imageBitmap = remember(bitmap) {
@@ -253,12 +256,38 @@ fun LidarMapCanvas(
                     }
                 }
             }
+            val inspectionModifier = if (mode == LidarCanvasMode.EXPLORE && onInspectPosition != null) {
+                Modifier.pointerInput(onInspectPosition, imageBitmap, zoom, pan, viewportSize) {
+                    detectTapGestures { offset ->
+                        val canvasWidth = size.width.toFloat().coerceAtLeast(1f)
+                        val canvasHeight = size.height.toFloat().coerceAtLeast(1f)
+                        val fit = containScale(
+                            canvasWidth,
+                            canvasHeight,
+                            imageBitmap.width.toFloat(),
+                            imageBitmap.height.toFloat(),
+                        )
+                        val displayWidth = imageBitmap.width * fit * zoom
+                        val displayHeight = imageBitmap.height * fit * zoom
+                        val imageLeft = (canvasWidth - displayWidth) * 0.5f + pan.x
+                        val imageTop = (canvasHeight - displayHeight) * 0.5f + pan.y
+                        val normalizedX = (offset.x - imageLeft) / displayWidth
+                        val normalizedY = (offset.y - imageTop) / displayHeight
+                        if (normalizedX in 0f..1f && normalizedY in 0f..1f) {
+                            onInspectPosition?.invoke(normalizedX * 100f, normalizedY * 100f)
+                        }
+                    }
+                }
+            } else {
+                Modifier
+            }
 
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
                     .onSizeChanged { viewportSize = it }
                     .then(interactionModifier)
+                    .then(inspectionModifier)
                     .testTag("lidar_canvas"),
             ) {
                 val canvasWidth = size.width.coerceAtLeast(1f)
@@ -356,6 +385,25 @@ fun LidarMapCanvas(
                         overlayLabelBackgroundPaint,
                     )
                     drawContext.canvas.nativeCanvas.drawText(label, labelX, labelBaseline, overlayLabelPaint)
+                }
+                inspectionPoint?.let { point ->
+                    val px = imageLeft + (point.first.coerceIn(0f, 100f) / 100f) * displayWidth
+                    val py = imageTop + (point.second.coerceIn(0f, 100f) / 100f) * displayHeight
+                    val marker = Offset(px, py)
+                    drawCircle(color = Color.Black, radius = 18f, center = marker, alpha = 0.65f)
+                    drawCircle(color = Color(0xFFFFC107), radius = 12f, center = marker, style = Stroke(width = 3f))
+                    drawLine(
+                        color = Color(0xFFFFC107),
+                        start = Offset(px - 22f, py),
+                        end = Offset(px + 22f, py),
+                        strokeWidth = 2f,
+                    )
+                    drawLine(
+                        color = Color(0xFFFFC107),
+                        start = Offset(px, py - 22f),
+                        end = Offset(px, py + 22f),
+                        strokeWidth = 2f,
+                    )
                 }
                 if (showSurveyCursor) {
                     val sx = imageLeft + (sweepX.coerceIn(0f, 100f) / 100f) * displayWidth
