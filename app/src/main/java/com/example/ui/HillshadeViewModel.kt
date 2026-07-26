@@ -20,6 +20,9 @@ import com.example.data.TerrainGpuSceneBuilder
 import com.example.data.TerrainImportSource
 import com.example.data.TerrainPerformanceSession
 import com.example.data.TargetSignal
+import com.example.data.export.ProjectExportFiles
+import com.example.data.export.ProjectExportRenderer
+import com.example.data.export.ProjectExportSnapshot
 import com.example.data.targetsForTerrain
 import com.example.data.survey.SurveyLayer
 import com.example.data.local.AnalyzedDatasetEntity
@@ -630,6 +633,46 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { surveyLayerDao.deleteById(layer.id) }
     }
 
+    suspend fun buildProjectExportFiles(): ProjectExportFiles = renderMutex.withLock {
+        withContext(Dispatchers.Default) {
+            // A refined viewport replaces the active grid, but project export must still cover the
+            // complete source footprint. overviewTerrain retains that full raster for LAZ imports.
+            val fullResult = overviewTerrain
+            val exportGrid = fullResult?.grid ?: _elevationGrid.value
+            val exportMetadata = (fullResult?.geoMetadata ?: _activeGeoMetadata.value).copy(
+                columns = exportGrid.width,
+                rows = exportGrid.height,
+                resolutionMeters = exportGrid.cellSizeMeters.toDouble(),
+            )
+            val bitmap = exportGrid.renderHillshade(
+                sunAzimuth = _sunAzimuth.value,
+                sunAltitude = _sunAltitude.value,
+                vegetationFilter = _vegetationFilter.value,
+                palette = _paletteType.value,
+                contrast = _contrast.value,
+                visualizationMode = _visualizationMode.value,
+                overlayType = _overlayType.value,
+                overlayOpacity = _overlayOpacity.value,
+                zScale = _zScale.value,
+                featureScaleMeters = _featureScaleMeters.value,
+                analysisSensitivity = _analysisSensitivity.value,
+                contourIntervalMeters = _contourIntervalMeters.value,
+            )
+            ProjectExportRenderer.build(
+                ProjectExportSnapshot(
+                    projectName = exportMetadata.siteName,
+                    terrainKey = _activeTerrainKey.value,
+                    summary = fullResult?.summary ?: _activeTerrainSummary.value,
+                    metadata = exportMetadata,
+                    terrainBitmap = bitmap,
+                    visualizationLabel = visualizationLabel(_visualizationMode.value),
+                    targets = _loggedSignals.value,
+                    surveyLayers = _surveyLayers.value,
+                ),
+            )
+        }
+    }
+
     private fun observeOfflineBasemapRegions(terrainKey: String) {
         offlineBasemapRegionJob?.cancel()
         offlineBasemapRegionJob = viewModelScope.launch {
@@ -825,6 +868,19 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun refreshVisibleSignals() {
         _loggedSignals.value = targetsForTerrain(allLoggedSignals, _activeTerrainKey.value)
+    }
+
+    private fun visualizationLabel(mode: Int): String = when (mode) {
+        0 -> "Standard hillshade"
+        1 -> "Multi-directional hillshade"
+        2 -> "Slope"
+        3 -> "Local relief"
+        4 -> "Curvature"
+        5 -> "Disturbance screening"
+        6 -> "Aspect"
+        7 -> "Elevation"
+        8 -> "Canopy height"
+        else -> "Terrain"
     }
 
     private suspend fun loadSettings() {

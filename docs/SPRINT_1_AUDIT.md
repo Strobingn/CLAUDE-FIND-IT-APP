@@ -15,7 +15,7 @@ This audit checks the production UI and persisted state paths against the Phase 
 | NYS/USGS tile discovery | The Import tab provides coordinate lookup through the USGS/NYS catalog and downloads an exact LAZ tile with progress and cancellation. | Partial | Replace point lookup with reusable rectangle/polygon/radius area selection, size estimate, multi-tile queue, retry, grouping, and mosaic open. |
 | GPX/KML survey workflow | The Import tab securely parses GPX waypoints, routes, and tracks plus KML points, lines, and polygons. Layers persist per terrain source, render on georeferenced terrain and Google Maps, and can be framed or deleted. | Implemented; emulator and tablet build verified | Add instrumented document-picker, Room migration, and round-trip export coverage. |
 | Offline basemap regions | The Import tab estimates and downloads named USGS Topo regions for the active georeferenced terrain. Region state and progress persist per terrain source; missing tiles can be retried, active work canceled, stored size inspected, and completed regions reopened without a network. | Implemented; airplane-mode emulator and tablet UI verified | Add multi-region queue instrumentation and larger-area cancellation fixtures. |
-| Image and report export | CSV, GPX, KML, and GeoJSON field exports exist. Full terrain image, annotated comparison image, and PDF report workflows are absent. | Partial | Implement full-resolution image export first, then a versioned report schema and PDF renderer. |
+| Image and report export | Finds exports the complete source terrain footprint as an annotated PNG and a schema-versioned PDF field report. Compare exports both selected derived layers in aspect-correct side-by-side panes. | Implemented; emulator and external PDF render verified | Add instrumented DocumentsUI coverage and larger imported-LAZ export fixtures. |
 | Multi-tile projects | Individual downloaded tiles persist and reopen. Logical project grouping, source-preserving mosaics, duplicate prevention, and partial-project recovery are incomplete. | Partial | Implement the Phase 2 tile/project schema before adding mosaic rendering. |
 | Release validation | Debug unit tests and APK builds pass, and current workflows run on the emulator and Samsung tablet. | Partial | Add release build, instrumented suite, migration fixtures, and external GIS export checks to the release gate. |
 
@@ -81,12 +81,33 @@ Validation:
 - With Wi-Fi and mobile data disabled and network access confirmed unreachable, the app restarted and reopened the saved basemap.
 - The version-7 database migration, APK install, cold launch, and new manager UI were verified on the Samsung tablet.
 
+## Fourth completed increment
+
+The fourth Sprint 1 increment implements full-footprint image, comparison, and PDF field-report export.
+
+Data-integrity behavior:
+
+- Terrain export rebuilds the active visualization from the retained source-footprint grid rather than capturing the current zoomed screen.
+- Saved targets and survey geometry are taken from the active terrain project only.
+- Geographic coordinates are printed only from existing terrain and target georeferencing; local-grid projects remain labeled as local.
+- PNG exports include the visualization, raster dimensions, resolution, source metadata, legend, targets, survey layers, and an interpretation notice.
+- Comparison export uses the complete selected derived-layer bitmaps and fit-contain panes so neither layer is cropped, stretched, or overlaid on the other.
+- PDF report schema 1 includes the annotated map, project metadata, saved-target records, survey provenance, and explicit data-integrity limitations.
+
+Validation:
+
+- Unit tests cover whole-raster annotation, PNG output, comparison export, and aspect-preserving comparison dimensions.
+- The full debug unit-test suite and APK build pass.
+- Android DocumentsUI successfully saved a terrain PNG, comparison PNG, and four-page PDF on the emulator.
+- Both PNGs were visually inspected at original resolution.
+- Poppler validated the PDF structure and extracted all four pages; every rendered page was visually inspected for clipping, overlap, and footer placement.
+
 ## Next implementation target
 
-Complete full-resolution image and report export:
+Stabilize multi-tile projects:
 
-1. Export the complete terrain raster rather than the current screen crop.
-2. Include visible candidates, survey layers, scale, legend, and source metadata.
-3. Add annotated comparison-image export.
-4. Define a versioned field-report schema.
-5. Render and externally validate the first PDF report.
+1. Define logical project and source-preserving tile membership records.
+2. Reuse existing tiles and prevent duplicate project downloads.
+3. Track partial download and recovery state per project.
+4. Open grouped tiles as one logical project before introducing seamless mosaic rendering.
+5. Add migration, reopen, and interrupted-project fixtures.

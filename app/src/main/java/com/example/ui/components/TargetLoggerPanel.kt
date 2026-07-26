@@ -45,6 +45,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,6 +64,8 @@ import com.example.data.export.buildCsv
 import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
 import com.example.data.export.buildKml
+import com.example.data.export.ProjectExportFiles
+import kotlinx.coroutines.launch
 
 @Composable
 fun TargetLoggerPanel(
@@ -73,17 +76,64 @@ fun TargetLoggerPanel(
     onDeleteSignal: (TargetSignal) -> Unit,
     onUpdateSignal: (TargetSignal) -> Unit,
     onClearAll: () -> Unit,
+    onBuildProjectExport: suspend () -> ProjectExportFiles,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var editingSignal by remember { mutableStateOf<TargetSignal?>(null) }
     var showExport by remember { mutableStateOf(false) }
+    var showProjectExport by remember { mutableStateOf(false) }
+    var isBuildingProjectExport by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     var exportMessage by remember { mutableStateOf<String?>(null) }
     var pendingCsv by remember { mutableStateOf("") }
     var pendingGpx by remember { mutableStateOf("") }
     var pendingKml by remember { mutableStateOf("") }
     var pendingGeoJson by remember { mutableStateOf("") }
+    var pendingProjectBytes by remember { mutableStateOf(ByteArray(0)) }
+
+    val terrainImageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/png"),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(pendingProjectBytes) }
+                    ?: error("Could not open the selected destination")
+            }.onSuccess { exportMessage = "Full terrain image saved" }
+                .onFailure { exportMessage = "Save failed: ${it.localizedMessage}" }
+        }
+    }
+    val projectPdfLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/pdf"),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(pendingProjectBytes) }
+                    ?: error("Could not open the selected destination")
+            }.onSuccess { exportMessage = "PDF field report saved" }
+                .onFailure { exportMessage = "Save failed: ${it.localizedMessage}" }
+        }
+    }
+
+    val buildProjectExport: (Boolean) -> Unit = { pdf ->
+        showProjectExport = false
+        isBuildingProjectExport = true
+        exportMessage = if (pdf) "Building full PDF report…" else "Building full terrain image…"
+        scope.launch {
+            runCatching { onBuildProjectExport() }
+                .onSuccess { files ->
+                    pendingProjectBytes = if (pdf) files.reportPdf else files.terrainPng
+                    if (pdf) {
+                        projectPdfLauncher.launch("${files.fileStem}-field-report.pdf")
+                    } else {
+                        terrainImageLauncher.launch("${files.fileStem}-terrain.png")
+                    }
+                }
+                .onFailure { exportMessage = "Export failed: ${it.localizedMessage}" }
+            isBuildingProjectExport = false
+        }
+    }
 
     val csvLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/csv"),
@@ -154,6 +204,15 @@ fun TargetLoggerPanel(
                     Icon(Icons.Default.AddLocationAlt, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("Log current position")
+                }
+                OutlinedButton(
+                    onClick = { showProjectExport = true },
+                    enabled = !isBuildingProjectExport,
+                    modifier = Modifier.fillMaxWidth().height(52.dp).testTag("project_export_button"),
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isBuildingProjectExport) "Building export…" else "Export terrain and report")
                 }
             }
         }
@@ -256,6 +315,32 @@ fun TargetLoggerPanel(
                 pendingGeoJson = buildGeoJson(loggedSignals)
                 showExport = false
                 geoJsonLauncher.launch("find-it-targets.geojson")
+            },
+        )
+    }
+
+    if (showProjectExport) {
+        AlertDialog(
+            onDismissRequest = { showProjectExport = false },
+            title = { Text("Export this terrain project") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Exports rebuild the complete source footprint, not the current screen crop.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text("PNG includes saved targets, survey layers, legend, scale, and source coordinates.")
+                    Text("PDF includes the annotated map, metadata, target records, survey provenance, and integrity notes.")
+                }
+            },
+            confirmButton = {
+                Button(onClick = { buildProjectExport(true) }) { Text("Save PDF") }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { showProjectExport = false }) { Text("Cancel") }
+                    TextButton(onClick = { buildProjectExport(false) }) { Text("Save PNG") }
+                }
             },
         )
     }

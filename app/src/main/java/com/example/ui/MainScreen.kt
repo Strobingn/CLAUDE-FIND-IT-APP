@@ -539,6 +539,7 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         onDeleteSignal = viewModel::deleteLoggedSignal,
         onUpdateSignal = viewModel::updateLoggedSignal,
         onClearAll = viewModel::clearLoggedSignals,
+        onBuildProjectExport = viewModel::buildProjectExportFiles,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }

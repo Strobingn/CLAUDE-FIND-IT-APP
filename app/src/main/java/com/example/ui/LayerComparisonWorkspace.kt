@@ -1,6 +1,8 @@
 package com.example.ui
 
 import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -21,6 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -36,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -46,6 +50,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -56,6 +61,10 @@ import com.example.analysis.TerrainDerivedLayer
 import com.example.analysis.TerrainIntelligenceEngine
 import com.example.analysis.TerrainIntelligenceRenderer
 import com.example.data.NormalizedRasterBounds
+import com.example.data.export.ProjectExportRenderer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.max
 
 /**
@@ -77,6 +86,22 @@ fun LayerComparisonWorkspace(
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
     val result = aiState.localResult
     val currentDatasetKey = remember(grid) { TerrainIntelligenceEngine.terrainSignature(grid) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pendingComparisonPng by remember { mutableStateOf(ByteArray(0)) }
+    var exportMessage by remember { mutableStateOf<String?>(null) }
+    var isExporting by remember { mutableStateOf(false) }
+    val comparisonExportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/png"),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(pendingComparisonPng) }
+                    ?: error("Could not open the selected destination")
+            }.onSuccess { exportMessage = "Comparison image saved" }
+                .onFailure { exportMessage = "Save failed: ${it.localizedMessage}" }
+        }
+    }
 
     var leftLayer by rememberSaveable { mutableStateOf(TerrainDerivedLayer.LOCAL_RELIEF) }
     var rightLayer by rememberSaveable { mutableStateOf(TerrainDerivedLayer.SLOPE) }
@@ -137,6 +162,9 @@ fun LayerComparisonWorkspace(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                exportMessage?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically,
@@ -160,6 +188,39 @@ fun LayerComparisonWorkspace(
                             enabled = canRefine && !isRefining && !aiState.isLocalAnalyzing,
                             modifier = Modifier.testTag("comparison_refine_button"),
                         ) { Text(if (!canRefine) "No LAZ source" else if (isRefining) "Refining…" else "Refine") }
+                        OutlinedButton(
+                            onClick = {
+                                val left = leftBitmap ?: return@OutlinedButton
+                                val right = rightBitmap ?: return@OutlinedButton
+                                isExporting = true
+                                exportMessage = "Building full comparison image…"
+                                scope.launch {
+                                    runCatching {
+                                        withContext(Dispatchers.Default) {
+                                            ProjectExportRenderer.renderComparisonPng(
+                                                left = left,
+                                                leftLabel = leftLayer.label,
+                                                right = right,
+                                                rightLabel = rightLayer.label,
+                                                projectName = summary,
+                                            )
+                                        }
+                                    }.onSuccess {
+                                        pendingComparisonPng = it
+                                        comparisonExportLauncher.launch("find-it-layer-comparison.png")
+                                    }.onFailure {
+                                        exportMessage = "Export failed: ${it.localizedMessage}"
+                                    }
+                                    isExporting = false
+                                }
+                            },
+                            enabled = !isExporting && leftBitmap != null && rightBitmap != null,
+                            modifier = Modifier.testTag("comparison_export_button"),
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.width(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (isExporting) "Building…" else "Export PNG")
+                        }
                     }
                     Button(
                         onClick = { assistantViewModel.runLocalAnalysis(grid, summary, signals) },
