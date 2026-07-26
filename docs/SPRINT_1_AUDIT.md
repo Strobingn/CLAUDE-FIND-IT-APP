@@ -1,6 +1,6 @@
 # Sprint 1 Core Workflow Audit
 
-**Audit date:** 2026-07-26  
+**Audit date:** 2026-07-26
 **Roadmap:** [ROADMAP.md](../ROADMAP.md)
 
 This audit checks the production UI and persisted state paths against the Phase 1 definition of done. A feature is not marked complete solely because code exists.
