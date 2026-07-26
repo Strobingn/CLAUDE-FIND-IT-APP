@@ -19,6 +19,7 @@ import com.example.data.TerrainImportSource
 import com.example.data.TerrainPerformanceSession
 import com.example.data.TargetSignal
 import com.example.data.targetsForTerrain
+import com.example.data.survey.SurveyLayer
 import com.example.data.local.AnalyzedDatasetEntity
 import com.example.data.local.AppDatabase
 import com.example.data.local.SettingsRepository
@@ -47,6 +48,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val signalDao = AppDatabase.get(application).targetSignalDao()
     private val settingsRepo = SettingsRepository(AppDatabase.get(application).settingDao())
     private val analyzedDatasetDao = AppDatabase.get(application).analyzedDatasetDao()
+    private val surveyLayerDao = AppDatabase.get(application).surveyLayerDao()
 
     // Guard flag to prevent saveSettings() from overwriting DB values with defaults before loading completes
     private var isSettingsLoaded = false
@@ -145,6 +147,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _analyzedDatasets = MutableStateFlow<List<AnalyzedDatasetEntity>>(emptyList())
     val analyzedDatasets: StateFlow<List<AnalyzedDatasetEntity>> = _analyzedDatasets.asStateFlow()
+    private val _surveyLayers = MutableStateFlow<List<SurveyLayer>>(emptyList())
+    val surveyLayers: StateFlow<List<SurveyLayer>> = _surveyLayers.asStateFlow()
+    private var surveyLayerJob: Job? = null
 
     private val _activeGeoMetadata = MutableStateFlow(GeoSpatialLibrary.SITES_METADATA.first())
     val activeGeoMetadata: StateFlow<GeoSpatialMetadata> = _activeGeoMetadata.asStateFlow()
@@ -173,6 +178,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val AUTO_RENDER_ZOOM_THRESHOLD = 2.5f
 
     init {
+        observeSurveyLayers(_activeTerrainKey.value)
         // loadSettings must finish before the first scheduleRender — scheduleRender saves the
         // *current* StateFlow values back to disk, and if that runs while loadSettings' reads are
         // still in flight, it stomps the just-persisted settings with hardcoded defaults on every
@@ -556,6 +562,27 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private fun setActiveTerrainKey(terrainKey: String) {
         _activeTerrainKey.value = terrainKey
         refreshVisibleSignals()
+        observeSurveyLayers(terrainKey)
+    }
+
+    private fun observeSurveyLayers(terrainKey: String) {
+        surveyLayerJob?.cancel()
+        surveyLayerJob = viewModelScope.launch {
+            surveyLayerDao.observeByTerrainKey(terrainKey).collect { stored ->
+                _surveyLayers.value = stored.mapNotNull { it.toDomain() }
+            }
+        }
+    }
+
+    fun importSurveyLayer(layer: SurveyLayer) {
+        val terrainKey = _activeTerrainKey.value
+        viewModelScope.launch {
+            surveyLayerDao.upsert(layer.toEntity(terrainKey))
+        }
+    }
+
+    fun deleteSurveyLayer(layer: SurveyLayer) {
+        viewModelScope.launch { surveyLayerDao.deleteById(layer.id) }
     }
 
     private fun refreshVisibleSignals() {
@@ -694,6 +721,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         renderJob?.cancel()
         locationJob?.cancel()
         basemapJob?.cancel()
+        surveyLayerJob?.cancel()
         saveSettingsJob?.cancel()
         super.onCleared()
     }

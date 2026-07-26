@@ -59,6 +59,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.BuildConfig
 import com.example.data.ElevationGrid
+import com.example.data.survey.SurveyFeature
+import com.example.data.survey.SurveyGeometryType
 import com.example.geospatial.GeoSpatialLibrary
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
@@ -68,6 +70,12 @@ import com.google.android.gms.maps.model.GroundOverlay
 import com.google.android.gms.maps.model.GroundOverlayOptions
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
+import com.google.android.gms.maps.model.Marker
+import com.google.android.gms.maps.model.MarkerOptions
+import com.google.android.gms.maps.model.Polygon
+import com.google.android.gms.maps.model.PolygonOptions
+import com.google.android.gms.maps.model.Polyline
+import com.google.android.gms.maps.model.PolylineOptions
 import java.security.MessageDigest
 import kotlin.math.cos
 
@@ -77,6 +85,7 @@ fun TerrainGoogleMapScreen(
     grid: ElevationGrid,
     metadata: GeoSpatialLibrary.GeoSpatialMetadata,
     terrainKey: String,
+    surveyFeatures: List<SurveyFeature> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -84,6 +93,7 @@ fun TerrainGoogleMapScreen(
     val alignmentStore = remember(context) { TerrainMapAlignmentStore(context.applicationContext) }
     var googleMap by remember { mutableStateOf<GoogleMap?>(null) }
     var overlay by remember { mutableStateOf<GroundOverlay?>(null) }
+    var surveyMapObjects by remember { mutableStateOf<List<Any>>(emptyList()) }
     var cameraCenter by remember { mutableStateOf(LatLng(39.5, -98.35)) }
     val naturalSize = remember(metadata.bounds, grid.width, grid.height, grid.cellSizeMeters) {
         naturalOverlaySize(metadata, grid)
@@ -98,6 +108,11 @@ fun TerrainGoogleMapScreen(
     var alignmentMode by rememberSaveable(terrainKey) { mutableStateOf(false) }
     var editBounds by rememberSaveable { mutableStateOf(false) }
     var lastFramedTerrainKey by remember { mutableStateOf<String?>(null) }
+    val surveyPoints = remember(surveyFeatures) {
+        surveyFeatures.flatMap { feature ->
+            feature.coordinates.map { LatLng(it.latitude, it.longitude) }
+        }
+    }
 
     fun updateAlignment(updated: TerrainMapAlignment) {
         alignment = updated
@@ -126,6 +141,7 @@ fun TerrainGoogleMapScreen(
         }
         onDispose {
             overlay?.remove()
+            surveyMapObjects.forEach(::removeMapObject)
             googleMap = null
         }
     }
@@ -156,6 +172,46 @@ fun TerrainGoogleMapScreen(
             mapView.post {
                 runCatching { map.animateCamera(CameraUpdateFactory.newLatLngBounds(frameBounds, 72)) }
                     .onFailure { map.moveCamera(CameraUpdateFactory.newLatLngZoom(placement.center, 16f)) }
+            }
+        }
+    }
+
+    LaunchedEffect(googleMap, surveyFeatures) {
+        val map = googleMap ?: return@LaunchedEffect
+        surveyMapObjects.forEach(::removeMapObject)
+        surveyMapObjects = surveyFeatures.mapNotNull { feature ->
+            val points = feature.coordinates.map { LatLng(it.latitude, it.longitude) }
+            when (feature.geometryType) {
+                SurveyGeometryType.POINT -> points.firstOrNull()?.let { point ->
+                    map.addMarker(
+                        MarkerOptions()
+                            .position(point)
+                            .title(feature.name ?: "Survey waypoint"),
+                    )
+                }
+                SurveyGeometryType.LINE -> if (points.size >= 2) {
+                    map.addPolyline(
+                        PolylineOptions()
+                            .addAll(points)
+                            .color(android.graphics.Color.CYAN)
+                            .width(6f)
+                            .zIndex(6f),
+                    )
+                } else {
+                    null
+                }
+                SurveyGeometryType.POLYGON -> if (points.size >= 3) {
+                    map.addPolygon(
+                        PolygonOptions()
+                            .addAll(points)
+                            .strokeColor(android.graphics.Color.CYAN)
+                            .fillColor(android.graphics.Color.argb(42, 0, 229, 255))
+                            .strokeWidth(5f)
+                            .zIndex(5f),
+                    )
+                } else {
+                    null
+                }
             }
         }
     }
@@ -212,6 +268,25 @@ fun TerrainGoogleMapScreen(
                 }
             },
             onEditBounds = { editBounds = true },
+            canShowSurvey = surveyPoints.isNotEmpty(),
+            onShowSurvey = {
+                val map = googleMap ?: return@OverlayControls
+                val first = surveyPoints.firstOrNull() ?: return@OverlayControls
+                mapView.post {
+                    if (surveyPoints.size == 1) {
+                        map.animateCamera(CameraUpdateFactory.newLatLngZoom(first, 17f))
+                    } else {
+                        val bounds = LatLngBounds.builder().apply {
+                            surveyPoints.forEach(::include)
+                        }.build()
+                        runCatching {
+                            map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 88))
+                        }.onFailure {
+                            map.moveCamera(CameraUpdateFactory.newLatLngZoom(first, 16f))
+                        }
+                    }
+                }
+            },
             canReset = hasSavedAlignment,
             onReset = {
                 alignmentStore.clear(terrainKey)
@@ -317,6 +392,8 @@ private fun OverlayControls(
     onBearingChanged: (Float) -> Unit,
     onNudge: (eastFraction: Float, northFraction: Float) -> Unit,
     onEditBounds: () -> Unit,
+    canShowSurvey: Boolean,
+    onShowSurvey: () -> Unit,
     canReset: Boolean,
     onReset: () -> Unit,
     modifier: Modifier = Modifier,
@@ -340,6 +417,11 @@ private fun OverlayControls(
                     Icon(Icons.Default.CenterFocusStrong, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
                     Text("Center here")
+                }
+                OutlinedButton(onClick = onShowSurvey, enabled = canShowSurvey) {
+                    Icon(Icons.Default.Layers, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Show survey")
                 }
                 if (canReset) {
                     OutlinedButton(onClick = onReset) {
@@ -677,5 +759,13 @@ private class TerrainMapAlignmentStore(context: Context) {
     private fun prefix(terrainKey: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(terrainKey.toByteArray())
         return "alignment_" + digest.take(12).joinToString("") { "%02x".format(it) }
+    }
+}
+
+private fun removeMapObject(value: Any) {
+    when (value) {
+        is Marker -> value.remove()
+        is Polyline -> value.remove()
+        is Polygon -> value.remove()
     }
 }

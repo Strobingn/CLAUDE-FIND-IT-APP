@@ -7,14 +7,20 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 
 @Database(
-    entities = [TargetSignalEntity::class, Setting::class, AnalyzedDatasetEntity::class],
-    version = 5,
+    entities = [
+        TargetSignalEntity::class,
+        Setting::class,
+        AnalyzedDatasetEntity::class,
+        SurveyLayerEntity::class,
+    ],
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun targetSignalDao(): TargetSignalDao
     abstract fun settingDao(): SettingDao
     abstract fun analyzedDatasetDao(): AnalyzedDatasetDao
+    abstract fun surveyLayerDao(): SurveyLayerDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -58,6 +64,24 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE target_signals ADD COLUMN terrainKey TEXT")
             }
         }
+        private val migration5To6 = object : Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS survey_layers (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        terrainKey TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        format TEXT NOT NULL,
+                        sourceXml TEXT NOT NULL,
+                        importedAtMillis INTEGER NOT NULL
+                    )
+                """)
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_survey_layers_terrainKey " +
+                        "ON survey_layers (terrainKey)",
+                )
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -65,7 +89,13 @@ abstract class AppDatabase : RoomDatabase() {
                 AppDatabase::class.java,
                 "find-it.db",
             )
-                .addMigrations(migration1To2, migration2To3, migration3To4, migration4To5)
+                .addMigrations(
+                    migration1To2,
+                    migration2To3,
+                    migration3To4,
+                    migration4To5,
+                    migration5To6,
+                )
                 .build()
                 .also { instance = it }
         }

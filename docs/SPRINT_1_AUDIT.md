@@ -13,7 +13,7 @@ This audit checks the production UI and persisted state paths against the Phase 
 | Synchronized layer comparison | Compare renders two terrain layers from one grid with a shared zoom and pan state and supports manual visible-area refinement. | Implemented; debug verified | Add screenshot and gesture synchronization regression tests. |
 | Multi-dataset candidate comparison | Analyzed dataset snapshots persist and can be compared by geographic proximity. | Implemented; unit coverage present | Validate with two independently imported, overlapping georeferenced datasets. |
 | NYS/USGS tile discovery | The Import tab provides coordinate lookup through the USGS/NYS catalog and downloads an exact LAZ tile with progress and cancellation. | Partial | Replace point lookup with reusable rectangle/polygon/radius area selection, size estimate, multi-tile queue, retry, grouping, and mosaic open. |
-| GPX/KML survey workflow | Field finds can be exported to GPX/KML. A complete survey import, map display, and project-persistence workflow is not exposed. | Partial | Define survey-layer storage, import validation, UI visibility, restart recovery, and round-trip tests. |
+| GPX/KML survey workflow | The Import tab securely parses GPX waypoints, routes, and tracks plus KML points, lines, and polygons. Layers persist per terrain source, render on georeferenced terrain and Google Maps, and can be framed or deleted. | Implemented; emulator and tablet build verified | Add instrumented document-picker, Room migration, and round-trip export coverage. |
 | Offline basemap regions | Online basemap tiles can be stitched for the active terrain extent. User-managed offline region download and recovery are not complete. | Partial | Add region records, size estimate, queue/cancel/retry, cache inspection, and airplane-mode tests. |
 | Image and report export | CSV, GPX, KML, and GeoJSON field exports exist. Full terrain image, annotated comparison image, and PDF report workflows are absent. | Partial | Implement full-resolution image export first, then a versioned report schema and PDF renderer. |
 | Multi-tile projects | Individual downloaded tiles persist and reopen. Logical project grouping, source-preserving mosaics, duplicate prevention, and partial-project recovery are incomplete. | Partial | Implement the Phase 2 tile/project schema before adding mosaic rendering. |
@@ -38,12 +38,32 @@ Validation:
 - Full debug unit-test and APK build passes.
 - Live emulator and Samsung tablet taps display the measurement panel over a real imported LAZ.
 
+## Second completed increment
+
+The next Sprint 1 increment implements persistent GPX/KML survey layers while leaving the skipped NYS/USGS area-selection work unchanged.
+
+Data-integrity behavior:
+
+- GPX and KML coordinates remain in their source WGS84 latitude/longitude values.
+- Layers are keyed to the active terrain source and do not leak into another LAZ project.
+- XML document types and entities are rejected before parsing.
+- Unsupported or malformed files fail visibly instead of creating placeholder geometry.
+- Local-grid terrain does not fabricate an overlay position; the same layer remains visible on Google Maps.
+- Android providers that report GPX/KML as generic files remain selectable, with format validation performed by the parser.
+
+Validation:
+
+- Unit tests cover GPX tracks and waypoints, KML points, lines and polygons, coordinate order, and external-entity rejection.
+- The full debug unit-test suite and APK build pass.
+- A real GPX layer was imported on the emulator, remained after a process restart, and rendered its waypoint and track on Google Maps.
+- The same APK installs and launches successfully on the Samsung tablet with the database migration applied.
+
 ## Next implementation target
 
-Build the reusable area-selection contract for NYS/USGS tile acquisition:
+Complete user-managed offline basemap regions:
 
-1. Represent rectangle, polygon, and radius selections.
-2. Intersect selections with tile bounds.
-3. Return exact tile identities, source URLs, and estimated sizes.
-4. Reuse the same selector from every terrain-import entry point.
-5. Preserve cancellation and existing-file reuse.
+1. Persist named basemap-region records by project.
+2. Estimate size before download.
+3. Add queue, progress, cancellation, and retry.
+4. Reopen cached regions in airplane mode.
+5. Add cache inspection and recovery tests.

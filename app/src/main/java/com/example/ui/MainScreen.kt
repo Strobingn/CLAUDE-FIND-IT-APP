@@ -80,6 +80,7 @@ import com.example.ui.components.NysLazTilePicker
 import com.example.ui.components.TargetLoggerPanel
 import com.example.ui.components.TerrainCellInspectionPanel
 import com.example.ui.components.TerrainGoogleMapScreen
+import com.example.ui.components.SurveyLayerImporter
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
@@ -195,6 +196,7 @@ private fun TerrainTab(
     val sweepX by viewModel.sweepX.collectAsStateWithLifecycle()
     val sweepY by viewModel.sweepY.collectAsStateWithLifecycle()
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
+    val surveyLayers by viewModel.surveyLayers.collectAsStateWithLifecycle()
     val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
     val elevationGrid by viewModel.elevationGrid.collectAsStateWithLifecycle()
     val azimuth by viewModel.sunAzimuth.collectAsStateWithLifecycle()
@@ -277,6 +279,7 @@ private fun TerrainTab(
             basemapOpacity = basemapOpacity,
             basemapStatus = basemapStatus,
             deviceGridPosition = devicePosition,
+            surveyFeatures = surveyLayers.flatMap { it.features },
             inspectionPoint = inspectedCell.value?.let { it.xPercent to it.yPercent },
             onInspectPosition = { xPercent, yPercent ->
                 inspectedCell.value = TerrainCellInspector.inspect(
@@ -501,11 +504,13 @@ private fun GoogleMapTab(viewModel: HillshadeViewModel, padding: PaddingValues) 
     val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
     val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
     val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
+    val surveyLayers by viewModel.surveyLayers.collectAsStateWithLifecycle()
     TerrainGoogleMapScreen(
         terrainBitmap = bitmap,
         grid = grid,
         metadata = metadata,
         terrainKey = terrainKey,
+        surveyFeatures = surveyLayers.flatMap { it.features },
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }
@@ -543,6 +548,7 @@ private fun ImportTab(
     padding: PaddingValues,
     onImported: () -> Unit,
 ) {
+    val surveyLayers by viewModel.surveyLayers.collectAsStateWithLifecycle()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -550,6 +556,18 @@ private fun ImportTab(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        SurveyLayerImporter(
+            layers = surveyLayers,
+            onImported = {
+                viewModel.importSurveyLayer(it)
+                onImported()
+            },
+            onDelete = viewModel::deleteSurveyLayer,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+        )
+
         NysLazTilePicker(
             onCustomTerrainLoaded = { result, source ->
                 viewModel.setCustomTerrain(result, source)

@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
@@ -56,6 +57,8 @@ import com.example.data.NormalizedRasterBounds
 import com.example.data.TargetSignal
 import com.example.data.TerrainPerformanceSession
 import com.example.data.computeDigPriorityHeatmap
+import com.example.data.survey.SurveyFeature
+import com.example.data.survey.SurveyGeometryType
 import com.example.geospatial.GeoSpatialLibrary
 import kotlin.math.min
 import kotlinx.coroutines.FlowPreview
@@ -102,6 +105,7 @@ fun LidarMapCanvas(
     basemapStatus: String? = null,
     deviceGridPosition: Pair<Float, Float>? = null,
     overlayTargets: List<LidarOverlayTarget> = emptyList(),
+    surveyFeatures: List<SurveyFeature> = emptyList(),
     inspectionPoint: Pair<Float, Float>? = null,
     onInspectPosition: ((Float, Float) -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -118,6 +122,18 @@ fun LidarMapCanvas(
     }
     val heatmapCells = remember(loggedSignals, showHeatmap) {
         if (showHeatmap) computeDigPriorityHeatmap(loggedSignals, HEATMAP_BINS) else null
+    }
+    val surveyGeometries = remember(surveyFeatures, geoMetadata) {
+        surveyFeatures.mapNotNull { feature ->
+            val points = feature.coordinates.mapNotNull { coordinate ->
+                GeoSpatialLibrary.geographicToGrid(
+                    coordinate.latitude,
+                    coordinate.longitude,
+                    geoMetadata,
+                )
+            }
+            if (points.isEmpty()) null else CanvasSurveyGeometry(feature.geometryType, points)
+        }
     }
     val gpuScene by TerrainPerformanceSession.gpuScene.collectAsStateWithLifecycle()
     var useGpuTerrain by rememberSaveable { mutableStateOf(false) }
@@ -351,6 +367,34 @@ fun LidarMapCanvas(
                         )
                     }
                 }
+                surveyGeometries.forEach { geometry ->
+                    val points = geometry.points.map { point ->
+                        Offset(
+                            imageLeft + (point.first / 100f) * displayWidth,
+                            imageTop + (point.second / 100f) * displayHeight,
+                        )
+                    }
+                    when (geometry.type) {
+                        SurveyGeometryType.POINT -> points.forEach { point ->
+                            drawCircle(Color.Black, radius = 10f, center = point, alpha = 0.65f)
+                            drawCircle(Color(0xFF00E5FF), radius = 7f, center = point)
+                            drawCircle(Color.White, radius = 7f, center = point, style = Stroke(2f))
+                        }
+                        SurveyGeometryType.LINE -> points.zipWithNext().forEach { (start, end) ->
+                            drawLine(Color.Black, start, end, strokeWidth = 7f, alpha = 0.6f)
+                            drawLine(Color(0xFF00E5FF), start, end, strokeWidth = 3.5f)
+                        }
+                        SurveyGeometryType.POLYGON -> if (points.size >= 3) {
+                            val path = Path().apply {
+                                moveTo(points.first().x, points.first().y)
+                                points.drop(1).forEach { lineTo(it.x, it.y) }
+                                close()
+                            }
+                            drawPath(path, Color(0x3300E5FF))
+                            drawPath(path, Color(0xFF00E5FF), style = Stroke(3.5f))
+                        }
+                    }
+                }
                 for (signal in loggedSignals) {
                     val px = imageLeft + (signal.gridX.coerceIn(0f, 100f) / 100f) * displayWidth
                     val py = imageTop + (signal.gridY.coerceIn(0f, 100f) / 100f) * displayHeight
@@ -506,6 +550,11 @@ fun LidarMapCanvas(
         }
     }
 }
+
+private data class CanvasSurveyGeometry(
+    val type: SurveyGeometryType,
+    val points: List<Pair<Float, Float>>,
+)
 
 private fun containScale(
     viewportWidth: Float,
