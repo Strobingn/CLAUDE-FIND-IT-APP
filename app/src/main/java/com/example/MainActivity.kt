@@ -12,7 +12,6 @@ import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
-    // Android 12+ splash (icon + dark brand bg); falls back via theme pre-12
     installSplashScreen()
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()

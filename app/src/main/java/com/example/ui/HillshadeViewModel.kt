@@ -12,6 +12,7 @@ import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
 import com.example.data.TerrainImportSource
 import com.example.data.TargetSignal
+import com.example.data.local.AnalyzedDatasetEntity
 import com.example.data.local.AppDatabase
 import com.example.data.local.SettingsRepository
 import com.example.data.local.toDomain
@@ -37,6 +38,7 @@ import kotlinx.coroutines.withContext
 class HillshadeViewModel(application: Application) : AndroidViewModel(application) {
     private val signalDao = AppDatabase.get(application).targetSignalDao()
     private val settingsRepo = SettingsRepository(AppDatabase.get(application).settingDao())
+    private val analyzedDatasetDao = AppDatabase.get(application).analyzedDatasetDao()
 
     // Guard flag to prevent saveSettings() from overwriting DB values with defaults before loading completes
     private var isSettingsLoaded = false
@@ -102,6 +104,11 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     val viewportPanX: StateFlow<Float> = _viewportPanX.asStateFlow()
     private val _viewportPanY = MutableStateFlow(0f)
     val viewportPanY: StateFlow<Float> = _viewportPanY.asStateFlow()
+    // Bumped exactly once, right after loadSettings() finishes reading the persisted viewport,
+    // so the terrain canvas can seed itself from the restored zoom/pan a single time rather than
+    // fighting with live user interaction on every subsequent update.
+    private val _viewportRestoreToken = MutableStateFlow(0)
+    val viewportRestoreToken: StateFlow<Int> = _viewportRestoreToken.asStateFlow()
 
     private var saveSettingsJob: Job? = null
 
@@ -112,6 +119,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _loggedSignals = MutableStateFlow<List<TargetSignal>>(emptyList())
     val loggedSignals = _loggedSignals.asStateFlow()
+
+    private val _analyzedDatasets = MutableStateFlow<List<AnalyzedDatasetEntity>>(emptyList())
+    val analyzedDatasets: StateFlow<List<AnalyzedDatasetEntity>> = _analyzedDatasets.asStateFlow()
 
     private val _activeGeoMetadata = MutableStateFlow(GeoSpatialLibrary.SITES_METADATA.first())
     val activeGeoMetadata: StateFlow<GeoSpatialMetadata> = _activeGeoMetadata.asStateFlow()
@@ -155,6 +165,16 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 _loggedSignals.value = stored.map { it.toDomain() }
             }
         }
+        viewModelScope.launch {
+            analyzedDatasetDao.observeAll().collect { stored ->
+                _analyzedDatasets.value = stored
+            }
+        }
+    }
+
+    /** Persists a snapshot of this dataset's targets so it can later be cross-compared with another. */
+    fun saveDatasetSnapshot(entity: AnalyzedDatasetEntity) {
+        viewModelScope.launch { analyzedDatasetDao.upsert(entity) }
     }
 
     /** Called by the UI after a runtime permission dialog resolves. */
@@ -352,13 +372,10 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     fun refineTerrain(viewport: NormalizedRasterBounds) {
         val source = terrainSource ?: return
         if (_isRefiningTerrain.value) return
+        // Refine works at any zoom level, including the full extent - it always re-reads the
+        // requested viewport from the original point cloud, so there's no reason to force the
+        // user to pinch in first even when that viewport happens to be the whole dataset.
         val absoluteBounds = viewport.sanitized().inside(currentSourceBounds)
-        val widthFraction = absoluteBounds.right - absoluteBounds.left
-        val heightFraction = absoluteBounds.bottom - absoluteBounds.top
-        if (widthFraction >= 0.98 && heightFraction >= 0.98) {
-            _terrainDetailMessage.value = "Zoom farther in before loading detail."
-            return
-        }
         _isRefiningTerrain.value = true
         _terrainDetailMessage.value = "Reading original returns for this viewport…"
         viewModelScope.launch(Dispatchers.IO) {
@@ -443,11 +460,13 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         updateCoordinates()
     }
 
-    // Update viewport zoom and pan
+    // Update viewport zoom and pan. Persists (debounced) but intentionally does not trigger a
+    // hillshade re-render - re-rendering on every pinch/pan tick is what caused zoom jank before.
     fun updateViewport(zoom: Float, panX: Float, panY: Float) {
         _viewportZoom.value = zoom
         _viewportPanX.value = panX
         _viewportPanY.value = panY
+        saveSettings()
     }
 
     private fun updateCoordinates() {
@@ -525,6 +544,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _viewportZoom.value = settingsRepo.getFloat(SettingsRepository.Keys.VIEWPORT_ZOOM, 1f)
         _viewportPanX.value = settingsRepo.getFloat(SettingsRepository.Keys.VIEWPORT_PAN_X, 0f)
         _viewportPanY.value = settingsRepo.getFloat(SettingsRepository.Keys.VIEWPORT_PAN_Y, 0f)
+        _viewportRestoreToken.value = _viewportRestoreToken.value + 1
 
         // Mark settings as loaded so subsequent saveSettings() calls are permitted
         isSettingsLoaded = true

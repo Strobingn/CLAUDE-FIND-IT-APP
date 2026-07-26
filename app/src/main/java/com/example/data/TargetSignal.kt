@@ -18,8 +18,32 @@ data class TargetSignal(
     val timestamp: Long = System.currentTimeMillis(),
     val notes: String = "",
     val photoUris: List<String> = emptyList(),
-    val status: String = "Logged" // "Logged", "Excavated", "Anomalous", "Trash"
+    val status: String = "Logged", // "Logged", "Excavated", "Anomalous", "Trash"
+    /**
+     * Ground truth from field-checking this find, used to feed the verified-outcome feedback
+     * loop back into future terrain analysis of the same dataset. Distinct from [status], which
+     * describes physical handling state rather than whether the detection itself was correct.
+     */
+    val outcome: VerificationOutcome = VerificationOutcome.UNVERIFIED,
+    /**
+     * Signature of the analyzed terrain dataset this find was logged against, when known (set for
+     * AI-suggested markers). Lets feedback be matched back to the exact dataset it came from
+     * instead of any dataset that happens to have a candidate at a similar grid position.
+     */
+    val datasetKey: String? = null,
 ) : Serializable
+
+/**
+ * Field-verified outcome of a logged find, used as ground truth to adjust future candidate
+ * scoring for the same terrain dataset. Not a prediction - only ever set by the user after
+ * checking a location in the field.
+ */
+enum class VerificationOutcome(val label: String) {
+    UNVERIFIED("Not yet checked"),
+    CONFIRMED_FEATURE("Confirmed real feature"),
+    REJECTED_FALSE_POSITIVE("Checked - false positive"),
+    INCONCLUSIVE("Checked - inconclusive"),
+}
 
 enum class MetalType(val label: String, val colorHex: Long) {
     GOLD("Gold Coin/Ring", 0xFFFFD700),

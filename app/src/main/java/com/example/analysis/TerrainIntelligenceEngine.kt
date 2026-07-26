@@ -159,6 +159,24 @@ class TerrainIntelligenceEngine(
         fun index(x: Int, y: Int): Int = y.coerceIn(0, height - 1) * width + x.coerceIn(0, width - 1)
         fun at(x: Int, y: Int): Float = elevation[index(x, y)]
 
+        // Hillshade direction vectors depend only on the fixed azimuth/altitude set, never on
+        // (x,y), so they are computed once here instead of recomputing sin/cos/toRadians for
+        // every one of the 8 azimuths at every pixel.
+        val hillshadeLightX = FloatArray(8)
+        val hillshadeLightY = FloatArray(8)
+        val hillshadeLightZ = FloatArray(8)
+        run {
+            val altitude = Math.toRadians(35.0)
+            val horizontal = cos(altitude)
+            val lz = sin(altitude).toFloat()
+            for (k in 0 until 8) {
+                val azimuth = Math.toRadians((k * 45).toDouble())
+                hillshadeLightX[k] = (sin(azimuth) * horizontal).toFloat()
+                hillshadeLightY[k] = (-cos(azimuth) * horizontal).toFloat()
+                hillshadeLightZ[k] = lz
+            }
+        }
+
         for (y in 0 until height) {
             for (x in 0 until width) {
                 val i = y * width + x
@@ -176,10 +194,14 @@ class TerrainIntelligenceEngine(
                 aspect[i] = ((Math.toDegrees(atan2(dx, -dy).toDouble()).toFloat() + 360f) % 360f)
                 curvature[i] = (at(x - 1, y) + at(x + 1, y) + at(x, y - 1) + at(x, y + 1) - 4f * at(x, y)) / (cell * cell)
 
+                val normalLength = sqrt(dx * dx + dy * dy + 1f)
+                val nx = -dx / normalLength
+                val ny = -dy / normalLength
+                val nz = 1f / normalLength
                 var minShade = 1f
                 var maxShade = 0f
-                for (azimuth in 0 until 360 step 45) {
-                    val shade = terrainShade(dx, dy, azimuth.toFloat(), 35f)
+                for (k in 0 until 8) {
+                    val shade = (nx * hillshadeLightX[k] + ny * hillshadeLightY[k] + nz * hillshadeLightZ[k]).coerceIn(0f, 1f)
                     minShade = min(minShade, shade)
                     maxShade = max(maxShade, shade)
                 }
@@ -190,7 +212,7 @@ class TerrainIntelligenceEngine(
                 val d45 = abs(at(x - 1, y - 1) - 2f * at(x, y) + at(x + 1, y + 1))
                 val d135 = abs(at(x + 1, y - 1) - 2f * at(x, y) + at(x - 1, y + 1))
                 val strongest = max(max(dxx, dyy), max(d45, d135))
-                val second = listOf(dxx, dyy, d45, d135).sortedDescending().getOrElse(1) { 0f }
+                val second = secondLargestOfFour(dxx, dyy, d45, d135)
                 linearityRaw[i] = (strongest - second * 0.45f).coerceAtLeast(0f)
             }
         }
@@ -218,17 +240,24 @@ class TerrainIntelligenceEngine(
                 var negativeAngleSum = 0.0
                 var skySum = 0.0
                 for ((stepX, stepY) in directions) {
-                    var highest = 0.0
-                    var lowest = 0.0
+                    // atan is monotonic, so max/min of atan(ratio) over all steps equals
+                    // atan(max/min ratio); tracking the raw rise/run ratio and applying atan
+                    // once per direction (instead of once per step) gives the identical result
+                    // with up to horizonRadius times fewer atan() calls.
+                    var highestRatio = 0.0
+                    var lowestRatio = 0.0
+                    val horizontalUnit = cell * (if (stepX != 0 && stepY != 0) 1.41421356f else 1f)
                     for (step in 1..horizonRadius) {
                         val px = x + stepX * step
                         val py = y + stepY * step
                         if (px !in 0 until width || py !in 0 until height) break
-                        val horizontal = cell * step * if (stepX != 0 && stepY != 0) 1.41421356f else 1f
-                        val angle = atan(((elevation[py * width + px] - center) / horizontal).toDouble())
-                        highest = max(highest, angle)
-                        lowest = min(lowest, angle)
+                        val horizontal = horizontalUnit * step
+                        val ratio = ((elevation[py * width + px] - center) / horizontal).toDouble()
+                        highestRatio = max(highestRatio, ratio)
+                        lowestRatio = min(lowestRatio, ratio)
                     }
+                    val highest = atan(highestRatio)
+                    val lowest = atan(lowestRatio)
                     positiveAngleSum += highest
                     negativeAngleSum += -lowest
                     skySum += cos(highest).let { it * it }
@@ -443,18 +472,14 @@ class TerrainIntelligenceEngine(
             return java.lang.Long.toUnsignedString(hash, 16)
         }
 
-        private fun terrainShade(dx: Float, dy: Float, azimuthDegrees: Float, altitudeDegrees: Float): Float {
-            val azimuth = Math.toRadians(azimuthDegrees.toDouble())
-            val altitude = Math.toRadians(altitudeDegrees.toDouble())
-            val normalLength = sqrt(dx * dx + dy * dy + 1f)
-            val nx = -dx / normalLength
-            val ny = -dy / normalLength
-            val nz = 1f / normalLength
-            val horizontal = cos(altitude).toFloat()
-            val lx = (sin(azimuth) * horizontal).toFloat()
-            val ly = (-cos(azimuth) * horizontal).toFloat()
-            val lz = sin(altitude).toFloat()
-            return (nx * lx + ny * ly + nz * lz).coerceIn(0f, 1f)
+        /** Second-largest of 4 values without allocating a list/sort; used per-pixel in the main derived-layer loop. */
+        private fun secondLargestOfFour(a: Float, b: Float, c: Float, d: Float): Float {
+            var max1: Float
+            var max2: Float
+            if (a >= b) { max1 = a; max2 = b } else { max1 = b; max2 = a }
+            if (c > max1) { max2 = max1; max1 = c } else if (c > max2) { max2 = c }
+            if (d > max1) { max2 = max1; max1 = d } else if (d > max2) { max2 = d }
+            return max2
         }
 
         private fun downsample(grid: ElevationGrid, maxSide: Int): SampledGrid {
@@ -541,14 +566,37 @@ class TerrainIntelligenceEngine(
         }
 
         private fun normalizePositive(values: FloatArray): FloatArray {
-            val finite = values.filter { it.isFinite() && it >= 0f }.sorted()
-            val scale = finite.getOrElse((finite.size * 0.96).toInt().coerceIn(0, max(0, finite.lastIndex))) { 1f }.coerceAtLeast(1e-6f)
+            var count = 0
+            val finite = FloatArray(values.size)
+            for (value in values) if (value.isFinite() && value >= 0f) finite[count++] = value
+            val scale = (
+                if (count == 0) {
+                    1f
+                } else {
+                    val sorted = finite.copyOf(count)
+                    sorted.sort()
+                    sorted[(count * 0.96).toInt().coerceIn(0, count - 1)]
+                }
+                ).coerceAtLeast(1e-6f)
             return FloatArray(values.size) { (values[it].coerceAtLeast(0f) / scale).coerceIn(0f, 1f) }
         }
 
         private fun normalizeSigned(values: FloatArray): FloatArray {
-            val magnitudes = values.map { abs(it) }.filter(Float::isFinite).sorted()
-            val scale = magnitudes.getOrElse((magnitudes.size * 0.96).toInt().coerceIn(0, max(0, magnitudes.lastIndex))) { 1f }.coerceAtLeast(1e-6f)
+            var count = 0
+            val magnitudes = FloatArray(values.size)
+            for (value in values) {
+                val magnitude = abs(value)
+                if (magnitude.isFinite()) magnitudes[count++] = magnitude
+            }
+            val scale = (
+                if (count == 0) {
+                    1f
+                } else {
+                    val sorted = magnitudes.copyOf(count)
+                    sorted.sort()
+                    sorted[(count * 0.96).toInt().coerceIn(0, count - 1)]
+                }
+                ).coerceAtLeast(1e-6f)
             return FloatArray(values.size) { (values[it] / scale).coerceIn(-1f, 1f) }
         }
 
@@ -711,8 +759,12 @@ object TerrainIntelligenceRenderer {
         val values = requireNotNull(layers.values[type]) { "Layer ${type.label} is not available" }
         val bitmap = Bitmap.createBitmap(layers.width, layers.height, Bitmap.Config.ARGB_8888)
         val pixels = IntArray(values.size)
-        val normalizedPositive = normalizeForRendering(values, signed = false)
-        val normalizedSigned = normalizeForRendering(values, signed = true)
+        // Each layer type only ever reads one of these two normalizations below; only compute
+        // the one actually needed instead of always normalizing twice.
+        val needsSigned = type == TerrainDerivedLayer.CURVATURE || type == TerrainDerivedLayer.LOCAL_RELIEF
+        val needsPositive = type != TerrainDerivedLayer.ASPECT && !needsSigned
+        val normalizedPositive = if (needsPositive) normalizeForRendering(values, signed = false) else EMPTY_FLOAT_ARRAY
+        val normalizedSigned = if (needsSigned) normalizeForRendering(values, signed = true) else EMPTY_FLOAT_ARRAY
         for (i in values.indices) {
             pixels[i] = when (type) {
                 TerrainDerivedLayer.ASPECT -> {
@@ -737,10 +789,24 @@ object TerrainIntelligenceRenderer {
         return bitmap
     }
 
+    private val EMPTY_FLOAT_ARRAY = FloatArray(0)
+
     private fun normalizeForRendering(values: FloatArray, signed: Boolean): FloatArray {
-        val scaleValues = if (signed) values.map { abs(it) } else values.map { max(0f, it) }
-        val sorted = scaleValues.filter(Float::isFinite).sorted()
-        val scale = sorted.getOrElse((sorted.size * 0.97).toInt().coerceIn(0, max(0, sorted.lastIndex))) { 1f }.coerceAtLeast(1e-6f)
+        var count = 0
+        val scaleValues = FloatArray(values.size)
+        for (value in values) {
+            val candidate = if (signed) abs(value) else max(0f, value)
+            if (candidate.isFinite()) scaleValues[count++] = candidate
+        }
+        val scale = (
+            if (count == 0) {
+                1f
+            } else {
+                val sorted = scaleValues.copyOf(count)
+                sorted.sort()
+                sorted[(count * 0.97).toInt().coerceIn(0, count - 1)]
+            }
+            ).coerceAtLeast(1e-6f)
         return FloatArray(values.size) {
             if (signed) (values[it] / scale).coerceIn(-1f, 1f) else (values[it] / scale).coerceIn(0f, 1f)
         }
