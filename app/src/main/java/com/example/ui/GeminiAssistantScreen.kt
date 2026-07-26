@@ -74,6 +74,7 @@ import com.example.analysis.VerifiedFeedback
 import com.example.analysis.VerifiedFeedbackPoint
 import com.example.data.AppMemoryBudget
 import com.example.data.ElevationGrid
+import com.example.data.NormalizedRasterBounds
 import com.example.data.TargetSignal
 import com.example.geospatial.GeoSpatialLibrary.GeoSpatialMetadata
 import java.io.File
@@ -81,6 +82,7 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -97,6 +99,42 @@ data class AiMessage(
     val usedViewportImage: Boolean = false,
 )
 
+data class CloudMapTarget(
+    val xPercent: Float,
+    val yPercent: Float,
+    val label: String,
+    val confidence: Float,
+)
+
+private val cloudMapTargetPattern = Regex(
+    """\[MAP_TARGET\s+x=([0-9]+(?:\.[0-9]+)?)\s+y=([0-9]+(?:\.[0-9]+)?)\s+confidence=([0-9]+(?:\.[0-9]+)?)\s+label=([^\]]+)]""",
+    RegexOption.IGNORE_CASE,
+)
+
+internal fun parseCloudMapTargets(
+    response: String,
+    viewportBounds: NormalizedRasterBounds,
+): List<CloudMapTarget> {
+    val bounds = viewportBounds.sanitized()
+    return cloudMapTargetPattern.findAll(response).mapNotNull { match ->
+        val localX = match.groupValues[1].toFloatOrNull()?.coerceIn(0f, 100f) ?: return@mapNotNull null
+        val localY = match.groupValues[2].toFloatOrNull()?.coerceIn(0f, 100f) ?: return@mapNotNull null
+        val confidence = match.groupValues[3].toFloatOrNull()?.let {
+            if (it > 1f) it / 100f else it
+        }?.coerceIn(0f, 1f) ?: return@mapNotNull null
+        val label = match.groupValues[4].trim().take(80).ifBlank { "AI target" }
+        CloudMapTarget(
+            xPercent = ((bounds.left + (localX.toDouble() / 100.0) * (bounds.right - bounds.left)) * 100.0).toFloat(),
+            yPercent = ((bounds.top + (localY.toDouble() / 100.0) * (bounds.bottom - bounds.top)) * 100.0).toFloat(),
+            label = label,
+            confidence = confidence,
+        )
+    }.distinctBy { "${it.xPercent.toInt()}:${it.yPercent.toInt()}:${it.label}" }.take(12).toList()
+}
+
+private fun removeCloudMapTargetTags(response: String): String =
+    response.replace(cloudMapTargetPattern, "").replace(Regex("\n{3,}"), "\n\n").trim()
+
 data class AiTerrainState(
     val messages: List<AiMessage> = emptyList(),
     val isSending: Boolean = false,
@@ -107,11 +145,14 @@ data class AiTerrainState(
     val hasDeviceGeminiKey: Boolean = false,
     val activeProvider: TerrainAiProvider? = null,
     val isLocalAnalyzing: Boolean = false,
+    val isLocalRestoring: Boolean = false,
     val localStage: String = "Ready for offline terrain analysis",
     val localError: String? = null,
     val localResult: TerrainIntelligenceResult? = null,
     val selectedLayer: TerrainDerivedLayer = TerrainDerivedLayer.LOCAL_RELIEF,
+    val showSourceHillshade: Boolean = true,
     val localLayerBitmap: Bitmap? = null,
+    val cloudMapTargets: List<CloudMapTarget> = emptyList(),
     /** Field-verified points for the current dataset, derived from logged finds - see [VerifiedFeedback]. */
     val verifiedFeedback: List<VerifiedFeedbackPoint> = emptyList(),
 )
@@ -123,6 +164,7 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         TerrainDerivedLayerCache(File(application.cacheDir, "terrain-intelligence-v2")),
     )
     private val ids = AtomicLong(1L)
+    private var localAnalysisJob: Job? = null
     private val _state = MutableStateFlow(
         AiTerrainState(
             messages = listOf(
@@ -168,12 +210,14 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
      */
     fun runLocalAnalysis(grid: ElevationGrid, terrainSummary: String, loggedSignals: List<TargetSignal> = emptyList()) {
         if (_state.value.isLocalAnalyzing) return
+        localAnalysisJob?.cancel()
         _state.value = _state.value.copy(
             isLocalAnalyzing = true,
+            isLocalRestoring = false,
             localError = null,
             localStage = "Starting offline terrain-feature extraction…",
         )
-        viewModelScope.launch {
+        localAnalysisJob = viewModelScope.launch {
             try {
                 val datasetKey = TerrainIntelligenceEngine.terrainSignature(grid)
                 val verifiedPoints = VerifiedFeedback.derive(loggedSignals, datasetKey)
@@ -212,21 +256,66 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
      * disk cache, so reopening the same terrain restores the result without repeating extraction.
      */
     fun restoreLocalAnalysis(grid: ElevationGrid, terrainSummary: String) {
-        if (_state.value.isLocalAnalyzing) return
         val datasetKey = TerrainIntelligenceEngine.terrainSignature(grid)
         if (_state.value.localResult?.datasetKey == datasetKey) return
-        runLocalAnalysis(grid, terrainSummary)
+        localAnalysisJob?.cancel()
+        _state.value = _state.value.copy(
+            isLocalAnalyzing = false,
+            isLocalRestoring = true,
+            localResult = null,
+            localLayerBitmap = null,
+            localError = null,
+            localStage = "Checking for saved analysis…",
+        )
+        localAnalysisJob = viewModelScope.launch {
+            try {
+                val result = localEngine.restoreCached(
+                    grid = grid,
+                    terrainSummary = terrainSummary,
+                    onStage = { stage -> _state.value = _state.value.copy(localStage = stage) },
+                )
+                if (result == null) {
+                    _state.value = _state.value.copy(
+                        isLocalRestoring = false,
+                        localStage = "Source detail ready · tap Analyze to update derived layers",
+                    )
+                    return@launch
+                }
+                val bitmap = withContext(Dispatchers.Default) {
+                    TerrainIntelligenceRenderer.renderLayer(result, _state.value.selectedLayer)
+                }
+                _state.value = _state.value.copy(
+                    isLocalRestoring = false,
+                    localStage = "Saved analysis restored · ${result.candidates.size} candidates",
+                    localResult = result,
+                    localLayerBitmap = bitmap,
+                    localError = null,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _state.value = _state.value.copy(
+                    isLocalRestoring = false,
+                    localError = error.localizedMessage ?: "Could not restore saved analysis",
+                    localStage = "Tap Analyze to rebuild derived layers",
+                )
+            }
+        }
     }
 
     fun selectLocalLayer(layer: TerrainDerivedLayer) {
         val result = _state.value.localResult ?: return
-        _state.value = _state.value.copy(selectedLayer = layer)
+        _state.value = _state.value.copy(selectedLayer = layer, showSourceHillshade = false)
         viewModelScope.launch {
             val bitmap = withContext(Dispatchers.Default) {
                 TerrainIntelligenceRenderer.renderLayer(result, layer)
             }
             _state.value = _state.value.copy(localLayerBitmap = bitmap)
         }
+    }
+
+    fun selectSourceHillshade() {
+        _state.value = _state.value.copy(showSourceHillshade = true)
     }
 
     fun send(
@@ -274,9 +363,26 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                             text = it.text,
                         )
                     },
-                    systemContext = terrainContext,
+                    systemContext = if (image != null) {
+                        terrainContext + """
+
+                            MAP DRAWING PROTOCOL:
+                            Inspect the attached terrain image and identify up to 8 worthwhile field-check targets.
+                            The image coordinates are 0..100 from left to right and 0..100 from top to bottom.
+                            After the written explanation, emit one exact marker line per target:
+                            [MAP_TARGET x=42.0 y=61.0 confidence=0.82 label=possible cellar rim]
+                            Only mark visible evidence. Do not claim buried metal, age, or depth as fact.
+                        """.trimIndent()
+                    } else {
+                        terrainContext
+                    },
                     image = image,
                 )
+                val cloudTargets = if (image != null) {
+                    parseCloudMapTargets(answer.text, viewport.bounds)
+                } else {
+                    emptyList()
+                }
                 val fallbackNote = answer.fallbackReason?.let {
                     "\n\nFallback used because OpenAI returned: $it"
                 }.orEmpty()
@@ -284,12 +390,17 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                     messages = _state.value.messages + AiMessage(
                         id = ids.getAndIncrement(),
                         role = AiMessageRole.MODEL,
-                        text = answer.text + fallbackNote,
+                        text = removeCloudMapTargetTags(answer.text) + fallbackNote,
                         provider = answer.provider,
                         usedViewportImage = image != null,
                     ),
                     isSending = false,
                     cloudError = null,
+                    cloudMapTargets = if (cloudTargets.isNotEmpty()) {
+                        cloudTargets
+                    } else {
+                        _state.value.cloudMapTargets
+                    },
                 ).withProviderStatus()
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -312,6 +423,7 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                 ),
             ),
             cloudError = null,
+            cloudMapTargets = emptyList(),
         ).withProviderStatus()
     }
 

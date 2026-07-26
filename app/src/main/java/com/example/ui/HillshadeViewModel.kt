@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import android.app.ActivityManager
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
@@ -13,6 +14,8 @@ import com.example.data.basemap.OfflineBasemapRegion
 import com.example.data.basemap.OfflineBasemapStatus
 import com.example.data.LazDatasetStore
 import com.example.data.LazTerrainDiskCache
+import com.example.data.LazTerrainMemoryCache
+import com.example.data.LazTerrainReader
 import com.example.data.LidarImportOptions
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
@@ -54,12 +57,35 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
+data class TerrainRefinementProgress(
+    val fraction: Float,
+    val message: String,
+)
+
+internal fun chooseAiRefineResolution(
+    memoryClassMb: Int,
+    isLowRamDevice: Boolean,
+    availableProcessors: Int,
+): Int = when {
+    isLowRamDevice || memoryClassMb <= 256 -> 768
+    memoryClassMb >= 512 && availableProcessors >= 8 -> 1_024
+    else -> 768
+}
+
+internal fun isEffectivelyWholeTerrain(bounds: NormalizedRasterBounds): Boolean {
+    val sanitized = bounds.sanitized()
+    val area = (sanitized.right - sanitized.left) * (sanitized.bottom - sanitized.top)
+    return area >= 0.90
+}
+
 class HillshadeViewModel(application: Application) : AndroidViewModel(application) {
     private val signalDao = AppDatabase.get(application).targetSignalDao()
     private val settingsRepo = SettingsRepository(AppDatabase.get(application).settingDao())
     private val analyzedDatasetDao = AppDatabase.get(application).analyzedDatasetDao()
     private val surveyLayerDao = AppDatabase.get(application).surveyLayerDao()
     private val offlineBasemapRegionDao = AppDatabase.get(application).offlineBasemapRegionDao()
+    private val refinementMemoryCache = LazTerrainMemoryCache()
+    private val refinementDiskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
 
     // Guard flag to prevent saveSettings() from overwriting DB values with defaults before loading completes
     private var isSettingsLoaded = false
@@ -114,6 +140,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     val canRefineTerrain = _canRefineTerrain.asStateFlow()
     private val _isRefiningTerrain = MutableStateFlow(false)
     val isRefiningTerrain = _isRefiningTerrain.asStateFlow()
+    private val _terrainRefinementProgress = MutableStateFlow<TerrainRefinementProgress?>(null)
+    val terrainRefinementProgress = _terrainRefinementProgress.asStateFlow()
     private val _isDetailedTerrain = MutableStateFlow(false)
     val isDetailedTerrain = _isDetailedTerrain.asStateFlow()
     private val _terrainDetailMessage = MutableStateFlow<String?>(null)
@@ -466,38 +494,139 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun refineTerrain(viewport: NormalizedRasterBounds) {
+    fun recommendedAiRefineResolution(): Int {
+        val activityManager = getApplication<Application>()
+            .getSystemService(ActivityManager::class.java)
+        val memoryClass = activityManager?.memoryClass ?: 256
+        val processors = Runtime.getRuntime().availableProcessors()
+        return chooseAiRefineResolution(
+            memoryClassMb = memoryClass,
+            isLowRamDevice = activityManager?.isLowRamDevice == true,
+            availableProcessors = processors,
+        )
+    }
+
+    fun refineTerrain(viewport: NormalizedRasterBounds, rasterResolution: Int = 1_024) {
         val source = terrainSource ?: return
         if (_isRefiningTerrain.value) return
-        // Refine works at any zoom level, including the full extent - it always re-reads the
-        // requested viewport from the original point cloud, so there's no reason to force the
-        // user to pinch in first even when that viewport happens to be the whole dataset.
-        val absoluteBounds = viewport.sanitized().inside(currentSourceBounds)
+        val requestedViewport = viewport.sanitized()
+        if (currentSourceBounds == NormalizedRasterBounds.Full && isEffectivelyWholeTerrain(requestedViewport)) {
+            // The overview is already a raster of the entire original point cloud. Reopening a
+            // compressed LAZ at 1x scans every return but cannot reveal a smaller source area, so
+            // it only makes the user wait (and can even request a lower adaptive resolution).
+            _terrainRefinementProgress.value = TerrainRefinementProgress(
+                fraction = 1f,
+                message = "Full source hillshade is already loaded",
+            )
+            _terrainDetailMessage.value =
+                "Full source hillshade is already loaded. Zoom into an area, then Refine for extra local detail."
+            return
+        }
+        // Cropped refinement always re-reads the requested viewport from the original point cloud.
+        val absoluteBounds = requestedViewport.inside(currentSourceBounds)
+        val options = source.options.copy(
+            rasterResolution = rasterResolution,
+            focusBounds = absoluteBounds,
+        ).sanitized()
+        val sourceUri = Uri.parse(source.uri)
+        val sourceFile = sourceUri.takeIf { it.scheme.equals("file", ignoreCase = true) }
+            ?.path
+            ?.let(::File)
+            ?.takeIf(File::isFile)
         _isRefiningTerrain.value = true
-        _terrainDetailMessage.value = "Reading original returns for this viewport…"
+        _terrainRefinementProgress.value = TerrainRefinementProgress(
+            fraction = 0.03f,
+            message = "Checking the detail cache…",
+        )
+        _terrainDetailMessage.value = "Opening source detail for this viewport…"
         viewModelScope.launch(Dispatchers.IO) {
+            var decodedNow = false
+            var loadedFromCache = false
             val result = runCatching {
-                getApplication<Application>().contentResolver.openInputStream(Uri.parse(source.uri))?.buffered()?.use { input ->
-                    DemGenerator.parseFromStreamDetailed(
-                        fileName = source.displayName,
-                        inputStream = input,
-                        options = source.options.copy(
-                            rasterResolution = 1_024,
-                            focusBounds = absoluteBounds,
-                        ),
+                sourceFile?.let { file ->
+                    refinementMemoryCache.get(file, options)?.also { loadedFromCache = true }
+                        ?: refinementDiskCache.get(file, options)?.also {
+                            refinementMemoryCache.put(file, options, it)
+                            loadedFromCache = true
+                        }
+                        ?: LazTerrainReader.read(file, options) { decoded, total ->
+                            val decodedFraction = if (total > 0L) decoded.toFloat() / total.toFloat() else 0f
+                            _terrainRefinementProgress.value = TerrainRefinementProgress(
+                                fraction = 0.08f + decodedFraction.coerceIn(0f, 1f) * 0.82f,
+                                message = "Decoding cropped source detail · " +
+                                    "${(decodedFraction * 100f).toInt().coerceIn(0, 100)}%",
+                            )
+                        }?.let { laz ->
+                            DemGenerator.TerrainLoadResult(
+                                grid = laz.grid,
+                                summary = laz.note,
+                                isBareEarth = laz.appliedGroundMode != GroundSurfaceMode.SURFACE_MODEL,
+                            )
+                        }?.also {
+                            refinementMemoryCache.put(file, options, it)
+                            decodedNow = true
+                        }
+                } ?: getApplication<Application>().contentResolver.openInputStream(sourceUri)?.buffered()?.use { input ->
+                    _terrainRefinementProgress.value = TerrainRefinementProgress(
+                        fraction = 0.08f,
+                        message = "Opening the original point cloud…",
                     )
+                    DemGenerator.parseFromStreamDetailed(
+                        source.displayName,
+                        input,
+                        options,
+                    ) { decoded, total ->
+                        val decodedFraction = if (total > 0L) {
+                            decoded.toFloat() / total.toFloat()
+                        } else {
+                            0f
+                        }
+                        _terrainRefinementProgress.value = TerrainRefinementProgress(
+                            fraction = 0.08f + decodedFraction.coerceIn(0f, 1f) * 0.82f,
+                            message = if (total > 0L) {
+                                "Decoding source detail · ${(decodedFraction * 100f).toInt().coerceIn(0, 100)}%"
+                            } else {
+                                "Decoding source detail…"
+                            },
+                        )
+                    }?.also {
+                        sourceFile?.let { file -> refinementMemoryCache.put(file, options, it) }
+                        decodedNow = true
+                    }
                 }
             }.getOrNull()
             withContext(Dispatchers.Main.immediate) {
-                _isRefiningTerrain.value = false
                 if (result == null) {
+                    _terrainRefinementProgress.value = TerrainRefinementProgress(
+                        fraction = 1f,
+                        message = "Refinement failed",
+                    )
+                    _isRefiningTerrain.value = false
                     _terrainDetailMessage.value = "Could not load detail from the original LAZ/LAS document."
                 } else {
+                    _terrainRefinementProgress.value = TerrainRefinementProgress(
+                        fraction = if (loadedFromCache) 0.96f else 0.92f,
+                        message = if (loadedFromCache) "Opening cached detail…" else "Rendering refined terrain…",
+                    )
                     currentSourceBounds = absoluteBounds
                     _isDetailedTerrain.value = true
-                    _terrainDetailMessage.value = "Detailed viewport loaded from the original point cloud."
-                    applyCustomTerrain(result, resetViewport = true)
+                    _terrainDetailMessage.value = if (loadedFromCache) {
+                        "Detailed viewport opened from cache."
+                    } else {
+                        "Detailed viewport loaded from the original point cloud."
+                    }
+                    applyCustomTerrain(result, resetViewport = false)
+                    _terrainRefinementProgress.value = TerrainRefinementProgress(
+                        fraction = 1f,
+                        message = "Refinement complete",
+                    )
+                    _isRefiningTerrain.value = false
                 }
+            }
+            if (decodedNow && result != null && sourceFile != null) {
+                // The image is already visible. Persist the result afterward so disk I/O does not
+                // extend the user-visible Refine wait.
+                runCatching { refinementDiskCache.put(sourceFile, options, result) }
             }
         }
     }

@@ -108,6 +108,36 @@ data class TerrainIntelligenceResult(
 class TerrainIntelligenceEngine(
     private val cache: TerrainDerivedLayerCache,
 ) {
+    /**
+     * Reopens derived layers only when this exact terrain signature is already cached.
+     * A cache miss returns immediately instead of silently starting the expensive analysis path.
+     */
+    suspend fun restoreCached(
+        grid: ElevationGrid,
+        terrainSummary: String,
+        feedback: List<TerrainFeedbackRecord> = emptyList(),
+        onStage: suspend (String) -> Unit = {},
+    ): TerrainIntelligenceResult? {
+        val datasetKey = terrainSignature(grid)
+        onStage("Checking the derived-layer cache…")
+        val lookup = cache.get(datasetKey)
+        val layers = lookup.layers ?: return null
+        onStage("Restoring cached terrain-feature detectors…")
+        val candidates = withContext(Dispatchers.Default) {
+            currentCoroutineContext().ensureActive()
+            detectFeatures(datasetKey, layers, feedback)
+        }
+        return TerrainIntelligenceResult(
+            datasetKey = datasetKey,
+            sourceWidth = grid.width,
+            sourceHeight = grid.height,
+            layers = layers,
+            candidates = candidates,
+            recommendation = buildRecommendation(candidates, terrainSummary),
+            cacheHit = lookup.hit,
+        )
+    }
+
     suspend fun analyze(
         grid: ElevationGrid,
         terrainSummary: String,

@@ -1028,6 +1028,7 @@ object DemGenerator {
         fileName: String,
         inputStream: java.io.InputStream,
         options: LidarImportOptions,
+        onLazProgress: ((decodedPoints: Long, totalPoints: Long) -> Unit)? = null,
     ): TerrainLoadResult? {
         return try {
             val lowerName = fileName.lowercase()
@@ -1058,7 +1059,7 @@ object DemGenerator {
             }
 
             if (lowerName.endsWith(".laz")) {
-                val laz = LazTerrainReader.read(buffered, options) ?: return null
+                val laz = LazTerrainReader.read(buffered, options, onProgress = onLazProgress) ?: return null
                 return TerrainLoadResult(
                     grid = laz.grid,
                     summary = laz.note,
@@ -1083,7 +1084,7 @@ object DemGenerator {
             if (signatureBytes >= 105 && signature.copyOfRange(0, 4).contentEquals("LASF".toByteArray())) {
                 val isCompressed = signature[104].toInt() and 0xC0 != 0
                 val las = if (isCompressed) {
-                    LazTerrainReader.read(buffered, options)
+                    LazTerrainReader.read(buffered, options, onProgress = onLazProgress)
                 } else {
                     parseLasStreamDetailed(buffered, options)
                 } ?: return null

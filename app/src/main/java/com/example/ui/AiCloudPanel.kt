@@ -1,5 +1,7 @@
 package com.example.ui
 
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,6 +19,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ImageSearch
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -49,6 +53,14 @@ import com.example.ai.TerrainAiProvider
 import com.example.ai.TerrainVisionSession
 import com.example.data.ElevationGrid
 import com.example.geospatial.GeoSpatialLibrary.GeoSpatialMetadata
+
+internal val AI_BUILT_IN_QUESTIONS = listOf(
+    "Analyze the visible viewport image",
+    "Compare the local detector results with the image",
+    "Identify road traces, walls, foundations, and depressions",
+    "Rank the strongest field-check locations",
+    "Explain what should be verified on site",
+)
 
 /** Cloud controls and conversation only. The interactive analysis map lives above this panel. */
 @Composable
@@ -179,6 +191,34 @@ fun AiCloudPanel(
                                 OutlinedButton(onClick = assistantViewModel::clearGeminiKey) { Text("Remove") }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(
+                    "Quick questions",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    AI_BUILT_IN_QUESTIONS.forEach { question ->
+                        AssistChip(
+                            onClick = {
+                                draft = question
+                                if (imageReady) attachImage = true
+                            },
+                            label = { Text(question) },
+                            leadingIcon = {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                            },
+                            enabled = !state.isSending,
+                        )
                     }
                 }
             }

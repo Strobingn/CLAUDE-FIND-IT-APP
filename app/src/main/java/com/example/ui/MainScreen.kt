@@ -53,7 +53,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -84,7 +83,6 @@ import com.example.ui.components.TerrainGoogleMapScreen
 import com.example.ui.components.SurveyLayerImporter
 import java.util.Locale
 import kotlin.math.roundToInt
-import kotlinx.coroutines.delay
 
 private data class AppTab(
     val label: String,
@@ -240,13 +238,6 @@ private fun TerrainTab(
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> viewModel.onLocationPermissionResult(granted) }
-
-    LaunchedEffect(visibleBounds.value, zoomLevel.value, canRefine) {
-        if (canRefine && zoomLevel.value >= 2.5f) {
-            delay(600)
-            if (!isRefining) viewModel.refineTerrain(visibleBounds.value)
-        }
-    }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         LidarMapCanvas(
