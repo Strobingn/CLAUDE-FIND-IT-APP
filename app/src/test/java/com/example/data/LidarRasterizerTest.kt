@@ -102,6 +102,41 @@ class LidarRasterizerTest {
     }
 
     @Test
+    fun coverageMaskUsesEveryDecodedReturnEvenWhenElevationsAreSampled() {
+        val rasterizer = LidarRasterizer(
+            minX = 0.0,
+            maxX = 100.0,
+            minY = 0.0,
+            maxY = 100.0,
+            options = LidarImportOptions(
+                groundMode = GroundSurfaceMode.AUTO_LOWEST,
+                rasterResolution = 128,
+            ),
+            declaredPointCount = 100,
+            maxBinnedPoints = 10.0,
+        )
+
+        repeat(20) { index ->
+            val sampledReturn = index % 10 == 0
+            rasterizer.addPoint(
+                x = if (sampledReturn) 5.0 else 90.0,
+                y = if (sampledReturn) 5.0 else 90.0,
+                z = if (sampledReturn) 10f else 20f,
+                classification = 2,
+            )
+        }
+
+        val result = requireNotNull(rasterizer.finish(6, "sampled coverage"))
+        val targetX = (0.9 * (result.grid.width - 1)).toInt()
+        val targetY = ((1.0 - 0.9) * (result.grid.height - 1)).toInt()
+        val targetIndex = targetY * result.grid.width + targetX
+
+        assertEquals(20L, rasterizer.pointsDecoded)
+        assertEquals(2, rasterizer.pointsBinned)
+        assertTrue(result.grid.validData[targetIndex])
+    }
+
+    @Test
     fun coverageMaskBridgesSmallBinGapsButPreservesLargeNoDataAreas() {
         val width = 100
         val height = 10
@@ -153,6 +188,7 @@ class LidarRasterizerTest {
         assertTrue(result.grid.validData.any { it })
         assertTrue(result.grid.bareEarth.all { it.isFinite() })
     }
+
     @Test
     fun nestedViewportBoundsComposeAgainstTheCurrentDetailTile() {
         val parent = NormalizedRasterBounds(0.2, 0.1, 0.8, 0.9)
