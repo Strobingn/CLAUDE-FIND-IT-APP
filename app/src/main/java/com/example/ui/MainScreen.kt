@@ -63,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -100,6 +101,9 @@ private val tabs = listOf(
     AppTab("Import", "Terrain library", Icons.Default.UploadFile),
 )
 
+/** Phones need more map space than tablets; six labelled navigation items are too tall there. */
+internal fun usesCompactBottomNavigation(screenWidthDp: Int): Boolean = screenWidthDp < 600
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
@@ -107,6 +111,9 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
     val terrainFocusMode = rememberSaveable { mutableStateOf(false) }
     val terrainSelected = selectedTab.intValue == 0
     val activeTab = tabs[selectedTab.intValue]
+    val compactBottomNavigation = usesCompactBottomNavigation(
+        LocalConfiguration.current.screenWidthDp,
+    )
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
@@ -128,11 +135,15 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
         bottomBar = {
             if (!terrainFocusMode.value) {
                 Surface(
-                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                    shape = RoundedCornerShape(
+                        topStart = if (compactBottomNavigation) 20.dp else 28.dp,
+                        topEnd = if (compactBottomNavigation) 20.dp else 28.dp,
+                    ),
                     shadowElevation = 14.dp,
                     tonalElevation = 5.dp,
                 ) {
                     NavigationBar(
+                        modifier = if (compactBottomNavigation) Modifier.height(64.dp) else Modifier,
                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
                         tonalElevation = 0.dp,
                     ) {
@@ -147,18 +158,22 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
                                     Icon(
                                         tab.icon,
                                         contentDescription = tab.label,
-                                        modifier = Modifier.width(38.dp).height(38.dp),
+                                        modifier = Modifier
+                                            .width(if (compactBottomNavigation) 30.dp else 38.dp)
+                                            .height(if (compactBottomNavigation) 30.dp else 38.dp),
                                     )
                                 },
-                                label = {
-                                    Text(
-                                        tab.label,
-                                        maxLines = 1,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = if (selectedTab.intValue == index) FontWeight.Bold else FontWeight.Medium,
-                                    )
+                                label = if (compactBottomNavigation) null else {
+                                    {
+                                        Text(
+                                            tab.label,
+                                            maxLines = 1,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (selectedTab.intValue == index) FontWeight.Bold else FontWeight.Medium,
+                                        )
+                                    }
                                 },
-                                alwaysShowLabel = true,
+                                alwaysShowLabel = !compactBottomNavigation,
                             )
                         }
                     }
