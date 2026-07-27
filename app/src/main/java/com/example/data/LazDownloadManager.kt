@@ -27,6 +27,7 @@ class LazDownloadManager {
         const val MAX_IMPORT_BYTES: Long = 10L * 1024L * 1024L * 1024L
         private const val MAX_REDIRECTS = 5
         private const val MAX_ATTEMPTS = 5
+        private const val HTTP_RANGE_NOT_SATISFIABLE = 416
         private const val CONNECT_TIMEOUT_MS = 30_000
         private const val READ_TIMEOUT_MS = 120_000
         private const val BUFFER_BYTES = 1024 * 1024
@@ -63,7 +64,7 @@ class LazDownloadManager {
                 connection = opened.connection
                 val status = opened.status
 
-                if (status == HttpURLConnection.HTTP_REQUESTED_RANGE_NOT_SATISFIABLE) {
+                if (status == HTTP_RANGE_NOT_SATISFIABLE) {
                     val serverLength = parseUnsatisfiedRangeTotal(connection.getHeaderField("Content-Range"))
                     val completedPartial = partial
                     val completedDestination = destination
