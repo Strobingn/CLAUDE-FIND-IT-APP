@@ -74,6 +74,7 @@ fun AiAnalysisWorkspace(
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
     val gridSpacing by viewModel.gridSpacing.collectAsStateWithLifecycle()
+    val visualizationMode by viewModel.visualizationMode.collectAsStateWithLifecycle()
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
 
     val visibleBounds = remember { mutableStateOf(NormalizedRasterBounds.Full) }
@@ -83,12 +84,27 @@ fun AiAnalysisWorkspace(
     val showHistoricTargets = rememberSaveable { mutableStateOf(AI_HISTORIC_TARGETS_DEFAULT_VISIBLE) }
     val showCloudTargets = rememberSaveable { mutableStateOf(true) }
     val showDatasetComparison = rememberSaveable { mutableStateOf(false) }
+    val pendingLocalLayer = remember { mutableStateOf<TerrainDerivedLayer?>(null) }
+    val localBitmapAtRequest = remember { mutableStateOf(aiState.localLayerBitmap) }
     val analyzedDatasets by viewModel.analyzedDatasets.collectAsStateWithLifecycle()
-    val analysisBitmap = if (aiState.showSourceHillshade) {
-        sourceBitmap
-    } else {
-        aiState.localLayerBitmap ?: sourceBitmap
+    val sourceRenderLabel = aiSourceVisualizationLabel(visualizationMode)
+    val localLayerPending = !aiState.showSourceHillshade && pendingLocalLayer.value != null
+    val analysisBitmap = when {
+        aiState.showSourceHillshade -> sourceBitmap
+        localLayerPending -> null
+        else -> aiState.localLayerBitmap
     }
+
+    LaunchedEffect(aiState.localLayerBitmap, pendingLocalLayer.value) {
+        if (pendingLocalLayer.value != null &&
+            aiState.localLayerBitmap != null &&
+            aiState.localLayerBitmap !== localBitmapAtRequest.value
+        ) {
+            pendingLocalLayer.value = null
+            localBitmapAtRequest.value = aiState.localLayerBitmap
+        }
+    }
+
     // Re-derives live from the current logged finds (not just at "Analyze" time) so marking a
     // find CONFIRMED/REJECTED in the Finds tab immediately re-scores historic targets here too,
     // without needing to re-run the full (much more expensive) derived-layer analysis.
@@ -227,14 +243,15 @@ fun AiAnalysisWorkspace(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             if (aiState.showSourceHillshade) {
-                                "Hillshade"
+                                sourceRenderLabel
                             } else {
-                                aiState.localResult?.let { aiState.selectedLayer.label } ?: "Hillshade"
+                                aiState.localResult?.let { aiState.selectedLayer.label } ?: "AI terrain layer"
                             },
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
                             when {
+                                localLayerPending -> "Rendering ${pendingLocalLayer.value?.label ?: "AI layer"}…"
                                 centerMarkerMode.value -> "Pan/zoom until the target is centered, then save it"
                                 isRefining -> "Reloading original LAZ detail without changing your zoom…"
                                 canRefine -> "${"%.1f".format(zoomLevel.value)}× · tap Refine for source detail"
@@ -277,13 +294,21 @@ fun AiAnalysisWorkspace(
                     ) {
                         FilterChip(
                             selected = aiState.showSourceHillshade,
-                            onClick = { assistantViewModel.selectSourceHillshade() },
-                            label = { Text("Hillshade") },
+                            onClick = {
+                                pendingLocalLayer.value = null
+                                assistantViewModel.selectSourceHillshade()
+                            },
+                            label = { Text("Source: $sourceRenderLabel") },
                         )
                         TerrainDerivedLayer.entries.forEach { layer ->
                             FilterChip(
                                 selected = !aiState.showSourceHillshade && aiState.selectedLayer == layer,
-                                onClick = { assistantViewModel.selectLocalLayer(layer) },
+                                onClick = {
+                                    localBitmapAtRequest.value = aiState.localLayerBitmap
+                                    pendingLocalLayer.value = layer
+                                    assistantViewModel.selectLocalLayer(layer)
+                                },
+                                enabled = pendingLocalLayer.value == null,
                                 label = { Text(layer.label) },
                             )
                         }
@@ -365,7 +390,7 @@ fun AiAnalysisWorkspace(
 
         LidarMapCanvas(
             bitmap = analysisBitmap,
-            isRendering = isRendering || aiState.isLocalAnalyzing,
+            isRendering = isRendering || aiState.isLocalAnalyzing || localLayerPending,
             sweepX = 50f,
             sweepY = 50f,
             loggedSignals = signals.filterNot { it.source == DetectionSource.CLOUD_AI },
@@ -406,7 +431,7 @@ fun AiAnalysisWorkspace(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        } else if (aiState.isLocalAnalyzing) {
+        } else if (aiState.isLocalAnalyzing || localLayerPending) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
 
@@ -434,6 +459,19 @@ fun AiAnalysisWorkspace(
 }
 
 private const val CLOUD_AI_NOTE_PREFIX = "Cloud AI target: "
+
+internal fun aiSourceVisualizationLabel(mode: Int): String = when (mode) {
+    0 -> "Standard hillshade"
+    1 -> "Multi-directional hillshade"
+    2 -> "Slope"
+    3 -> "Local relief"
+    4 -> "Curvature"
+    5 -> "Disturbance screening"
+    6 -> "Aspect"
+    7 -> "Elevation"
+    8 -> "Canopy height"
+    else -> "Terrain render"
+}
 
 internal fun cloudTargetIdentity(target: CloudMapTarget): String =
     "${target.xPercent.toInt()}:${target.yPercent.toInt()}:${target.label.trim().lowercase()}"
