@@ -141,7 +141,8 @@ class LazTerrainDiskCache(
     }
 
     companion object {
-        private const val MAGIC = "FINDIT_DEM_CACHE_V1"
+        // V2 invalidates V1 entries whose validData mask was derived from sampled returns.
+        private const val MAGIC = "FINDIT_DEM_CACHE_V2"
         private const val CACHE_EXTENSION = "fitdem"
         private const val BUFFER_BYTES = 256 * 1024
         private const val MAX_CELLS = 2_000_000L
