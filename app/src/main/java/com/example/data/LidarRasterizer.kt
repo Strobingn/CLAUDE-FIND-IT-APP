@@ -13,6 +13,7 @@ internal class LidarRasterizer(
     maxY: Double,
     options: LidarImportOptions,
     declaredPointCount: Long,
+    maxBinnedPoints: Double = MAX_BINNED_POINTS,
 ) {
     private val options = options.sanitized()
     private val sourceRangeX = (maxX - minX).takeIf { it.isFinite() && it > 0.0 } ?: 1.0
@@ -33,11 +34,14 @@ internal class LidarRasterizer(
     private val allMin: FloatArray
     private val allMax: FloatArray
     private val allCount: IntArray
+    private val coverageCount: IntArray
     private val classHistogram = IntArray(256)
     private val estimatedPointsInFocus = declaredPointCount.coerceAtLeast(1L).toDouble() *
         ((focus?.right ?: 1.0) - (focus?.left ?: 0.0)) *
         ((focus?.bottom ?: 1.0) - (focus?.top ?: 0.0))
-    private val sampleStride = ceil(estimatedPointsInFocus / MAX_BINNED_POINTS).toInt().coerceAtLeast(1)
+    private val sampleStride = ceil(
+        estimatedPointsInFocus / maxBinnedPoints.coerceAtLeast(1.0),
+    ).toInt().coerceAtLeast(1)
 
     var pointsDecoded: Long = 0
         private set
@@ -58,18 +62,27 @@ internal class LidarRasterizer(
         allMin = FloatArray(width * height) { Float.MAX_VALUE }
         allMax = FloatArray(width * height) { -Float.MAX_VALUE }
         allCount = IntArray(width * height)
+        coverageCount = IntArray(width * height)
     }
 
-    /** Streams every return while sampling bins evenly across the complete file. */
+    /**
+     * Streams every return. The full decoded stream records source coverage, while elevation and
+     * classification statistics remain sampled so very large files stay memory and CPU bounded.
+     */
     fun addPoint(x: Double, y: Double, z: Float, classification: Int, isKeyPoint: Boolean = false): Boolean {
         val pointIndex = pointsDecoded++
         if (!x.isFinite() || !y.isFinite() || !z.isFinite()) return true
         if (x < cropMinX || x > cropMaxX || y < cropMinY || y > cropMaxY) return true
-        if (pointIndex % sampleStride.toLong() != 0L) return true
 
         val gx = (((x - cropMinX) / rangeX) * (width - 1)).toInt().coerceIn(0, width - 1)
         val gy = ((1.0 - (y - cropMinY) / rangeY) * (height - 1)).toInt().coerceIn(0, height - 1)
         val index = gy * width + gx
+
+        // Coverage must be based on every decoded return. Using only the sampled elevation stream
+        // makes dense, continuous LAZ tiles render as disconnected transparent postage stamps.
+        coverageCount[index]++
+        if (pointIndex % sampleStride.toLong() != 0L) return true
+
         if (z < allMin[index]) allMin[index] = z
         if (z > allMax[index]) allMax[index] = z
         allCount[index]++
@@ -114,7 +127,7 @@ internal class LidarRasterizer(
             else -> allCount
         }
 
-        val coverageMask = buildCoverageMask(allCount, width, height)
+        val coverageMask = buildCoverageMask(coverageCount, width, height)
         val surface = FloatArray(width * height)
         for (index in surface.indices) {
             surface[index] = if (sourceCounts[index] > 0) source[index] else Float.NaN
@@ -230,7 +243,7 @@ internal fun buildCoverageMask(counts: IntArray, width: Int, height: Int): Boole
     if (populated == 0) return BooleanArray(counts.size)
 
     // Bridge ordinary raster-bin gaps, but keep large holes and space outside irregular flight
-    // footprints transparent. Radius adapts to sampled point density and remains tightly bounded.
+    // footprints transparent. Radius adapts to decoded point density and remains tightly bounded.
     val averageSpacing = sqrt(counts.size.toDouble() / populated)
     val radius = (ceil(averageSpacing * 2.0).toInt()).coerceIn(2, 8)
     val distance = IntArray(counts.size) { Int.MAX_VALUE }
