@@ -31,17 +31,25 @@ class TargetSignalEntityTest {
             source = DetectionSource.MANUAL,
             datasetKey = "analysis-42",
             terrainKey = "lidar:file:///terrain-42.laz",
+            gpsLatitude = 42.1831,
+            gpsLongitude = -73.8142,
+            gpsAccuracyMeters = 4.5f,
             photoUris = listOf(
                 "content://media/picker/first",
                 "content://media/picker/second",
             ),
+            voiceNoteUris = listOf("file:///private/field-note.m4a"),
         )
 
         val restored = signal.toEntity().toDomain()
 
         assertEquals(signal.photoUris, restored.photoUris)
+        assertEquals(signal.voiceNoteUris, restored.voiceNoteUris)
         assertEquals(signal.datasetKey, restored.datasetKey)
         assertEquals(signal.terrainKey, restored.terrainKey)
+        assertEquals(signal.gpsLatitude, restored.gpsLatitude)
+        assertEquals(signal.gpsLongitude, restored.gpsLongitude)
+        assertEquals(signal.gpsAccuracyMeters, restored.gpsAccuracyMeters)
     }
 
     @Test

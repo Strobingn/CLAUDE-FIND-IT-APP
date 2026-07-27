@@ -18,4 +18,10 @@ class NysHistoricLazTileCatalogTest {
         assertTrue(url.contains("bbox="))
         assertTrue(url.contains("max=100"))
     }
+
+    @Test
+    fun contentRangeReportsTheCompleteRemoteFileSize() {
+        assertTrue(NysHistoricLazTileCatalog().contentRangeLength("bytes 0-0/43782912") == 43_782_912L)
+        assertTrue(NysHistoricLazTileCatalog().contentRangeLength("bytes 0-0/*") == null)
+    }
 }

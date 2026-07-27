@@ -13,8 +13,10 @@ import androidx.room.migration.Migration
         AnalyzedDatasetEntity::class,
         SurveyLayerEntity::class,
         OfflineBasemapRegionEntity::class,
+        BreadcrumbTrackEntity::class,
+        MosaicProjectEntity::class,
     ],
-    version = 7,
+    version = 11,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -23,6 +25,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun analyzedDatasetDao(): AnalyzedDatasetDao
     abstract fun surveyLayerDao(): SurveyLayerDao
     abstract fun offlineBasemapRegionDao(): OfflineBasemapRegionDao
+    abstract fun breadcrumbTrackDao(): BreadcrumbTrackDao
+    abstract fun mosaicProjectDao(): MosaicProjectDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -112,6 +116,54 @@ abstract class AppDatabase : RoomDatabase() {
                 )
             }
         }
+        private val migration7To8 = object : Migration(7, 8) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS breadcrumb_tracks (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        terrainKey TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        pointsJson TEXT NOT NULL,
+                        isRecording INTEGER NOT NULL,
+                        createdAtMillis INTEGER NOT NULL,
+                        updatedAtMillis INTEGER NOT NULL
+                    )
+                """)
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_breadcrumb_tracks_terrainKey " +
+                        "ON breadcrumb_tracks (terrainKey)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_breadcrumb_tracks_terrainKey_isRecording " +
+                        "ON breadcrumb_tracks (terrainKey, isRecording)",
+                )
+            }
+        }
+        private val migration8To9 = object : Migration(8, 9) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE target_signals ADD COLUMN gpsLatitude REAL")
+                db.execSQL("ALTER TABLE target_signals ADD COLUMN gpsLongitude REAL")
+                db.execSQL("ALTER TABLE target_signals ADD COLUMN gpsAccuracyMeters REAL")
+            }
+        }
+        private val migration9To10 = object : Migration(9, 10) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS mosaic_projects (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        displayName TEXT NOT NULL,
+                        tileManifest TEXT NOT NULL,
+                        createdAtMillis INTEGER NOT NULL,
+                        updatedAtMillis INTEGER NOT NULL
+                    )
+                """)
+            }
+        }
+        private val migration10To11 = object : Migration(10, 11) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE target_signals ADD COLUMN voiceNoteUris TEXT NOT NULL DEFAULT ''")
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -126,6 +178,10 @@ abstract class AppDatabase : RoomDatabase() {
                     migration4To5,
                     migration5To6,
                     migration6To7,
+                    migration7To8,
+                    migration8To9,
+                    migration9To10,
+                    migration10To11,
                 )
                 .build()
                 .also { instance = it }

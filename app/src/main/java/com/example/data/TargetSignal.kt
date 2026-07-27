@@ -14,10 +14,16 @@ data class TargetSignal(
     val depthCm: Int? = null, // Only known for the built-in simulation or manual field notes
     val latitude: Double? = null,
     val longitude: Double? = null,
+    /** Actual device GPS position captured when this marker was saved, if a fresh fix existed. */
+    val gpsLatitude: Double? = null,
+    val gpsLongitude: Double? = null,
+    val gpsAccuracyMeters: Float? = null,
     val source: DetectionSource = DetectionSource.MANUAL,
     val timestamp: Long = System.currentTimeMillis(),
     val notes: String = "",
     val photoUris: List<String> = emptyList(),
+    /** App-private audio recordings captured while reviewing this specific target. */
+    val voiceNoteUris: List<String> = emptyList(),
     val status: String = "Logged", // "Logged", "Excavated", "Anomalous", "Trash"
     /**
      * Ground truth from field-checking this find, used to feed the verified-outcome feedback

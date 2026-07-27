@@ -12,6 +12,8 @@ import com.example.data.ElevationGrid
 import com.example.data.GroundSurfaceMode
 import com.example.data.basemap.OfflineBasemapRegion
 import com.example.data.basemap.OfflineBasemapStatus
+import com.example.data.field.BreadcrumbPoint
+import com.example.data.field.BreadcrumbTrack
 import com.example.data.LazDatasetStore
 import com.example.data.LazTerrainDiskCache
 import com.example.data.LazTerrainMemoryCache
@@ -35,6 +37,7 @@ import com.example.data.local.toDomain
 import com.example.data.local.toEntity
 import com.example.geospatial.GeoSpatialLibrary
 import com.example.geospatial.GeoSpatialLibrary.GeoSpatialMetadata
+import com.example.geospatial.CompassHeadingTracker
 import com.example.geospatial.LocationTracker
 import com.example.geospatial.BasemapTileRepository
 import com.example.geospatial.BasemapDownloadProgress
@@ -85,6 +88,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val analyzedDatasetDao = AppDatabase.get(application).analyzedDatasetDao()
     private val surveyLayerDao = AppDatabase.get(application).surveyLayerDao()
     private val offlineBasemapRegionDao = AppDatabase.get(application).offlineBasemapRegionDao()
+    private val breadcrumbTrackDao = AppDatabase.get(application).breadcrumbTrackDao()
     private val refinementMemoryCache = LazTerrainMemoryCache()
     private val refinementDiskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
 
@@ -190,6 +194,12 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _surveyLayers = MutableStateFlow<List<SurveyLayer>>(emptyList())
     val surveyLayers: StateFlow<List<SurveyLayer>> = _surveyLayers.asStateFlow()
     private var surveyLayerJob: Job? = null
+    private val _breadcrumbTracks = MutableStateFlow<List<BreadcrumbTrack>>(emptyList())
+    val breadcrumbTracks: StateFlow<List<BreadcrumbTrack>> = _breadcrumbTracks.asStateFlow()
+    private val _isBreadcrumbRecording = MutableStateFlow(false)
+    val isBreadcrumbRecording: StateFlow<Boolean> = _isBreadcrumbRecording.asStateFlow()
+    private var breadcrumbTrackJob: Job? = null
+    private var recordingBreadcrumbTrack: BreadcrumbTrack? = null
 
     private val _activeGeoMetadata = MutableStateFlow(GeoSpatialLibrary.SITES_METADATA.first())
     val activeGeoMetadata: StateFlow<GeoSpatialMetadata> = _activeGeoMetadata.asStateFlow()
@@ -199,6 +209,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     val currentLon: StateFlow<Double?> = _currentLon.asStateFlow()
 
     private val locationTracker = LocationTracker(application)
+    private val compassHeadingTracker = CompassHeadingTracker(application)
     private val _gpsEnabled = MutableStateFlow(false)
     val gpsEnabled: StateFlow<Boolean> = _gpsEnabled.asStateFlow()
     private val _hasLocationPermission = MutableStateFlow(locationTracker.hasLocationPermission())
@@ -207,7 +218,15 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     val deviceGridPosition: StateFlow<Pair<Float, Float>?> = _deviceGridPosition.asStateFlow()
     private val _deviceLocationAccuracyMeters = MutableStateFlow<Float?>(null)
     val deviceLocationAccuracyMeters: StateFlow<Float?> = _deviceLocationAccuracyMeters.asStateFlow()
+    private val _deviceLatitude = MutableStateFlow<Double?>(null)
+    val deviceLatitude: StateFlow<Double?> = _deviceLatitude.asStateFlow()
+    private val _deviceLongitude = MutableStateFlow<Double?>(null)
+    val deviceLongitude: StateFlow<Double?> = _deviceLongitude.asStateFlow()
+    private val _deviceLocationRecordedAtMillis = MutableStateFlow<Long?>(null)
     private var locationJob: Job? = null
+    private val _compassHeadingDegrees = MutableStateFlow<Float?>(null)
+    val compassHeadingDegrees: StateFlow<Float?> = _compassHeadingDegrees.asStateFlow()
+    private var compassHeadingJob: Job? = null
 
     // Bumped after successful refine / show-whole so the canvas forces zoom=1 + pan=0
     // against the new high-res (or full) bitmap.
@@ -216,10 +235,12 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     // Zoom threshold for auto-rendering
     private val AUTO_RENDER_ZOOM_THRESHOLD = 2.5f
+    private val MAX_MARKER_GPS_AGE_MILLIS = 60_000L
 
     init {
         observeSurveyLayers(_activeTerrainKey.value)
         observeOfflineBasemapRegions(_activeTerrainKey.value)
+        observeBreadcrumbTracks(_activeTerrainKey.value)
         // loadSettings must finish before the first scheduleRender — scheduleRender saves the
         // *current* StateFlow values back to disk, and if that runs while loadSettings' reads are
         // still in flight, it stomps the just-persisted settings with hardcoded defaults on every
@@ -252,7 +273,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     /** Called by the UI after a runtime permission dialog resolves. */
     fun onLocationPermissionResult(granted: Boolean) {
         _hasLocationPermission.value = granted || locationTracker.hasLocationPermission()
-        if (_gpsEnabled.value && _hasLocationPermission.value) startLocationUpdates()
+        if ((_gpsEnabled.value || _isBreadcrumbRecording.value) && _hasLocationPermission.value) {
+            startLocationUpdates()
+        }
     }
 
     fun toggleGpsTracking(enabled: Boolean) {
@@ -260,9 +283,67 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { settingsRepo.saveBoolean(SettingsRepository.Keys.GPS_ENABLED, enabled) }
         if (enabled && _hasLocationPermission.value) {
             startLocationUpdates()
-        } else if (!enabled) {
+        } else if (!enabled && !_isBreadcrumbRecording.value) {
             stopLocationUpdates()
         }
+    }
+
+    /** Starts the compass only while the saved-target field-navigation card is open. */
+    fun setCompassNavigationActive(active: Boolean) {
+        if (active) {
+            if (compassHeadingJob?.isActive == true) return
+            compassHeadingJob = viewModelScope.launch {
+                compassHeadingTracker.headings()
+                    .catch { _compassHeadingDegrees.value = null }
+                    .collect { heading -> _compassHeadingDegrees.value = heading }
+            }
+        } else {
+            compassHeadingJob?.cancel()
+            compassHeadingJob = null
+            _compassHeadingDegrees.value = null
+        }
+    }
+
+    /** Starts a persisted field trail for the currently open terrain project. */
+    fun startBreadcrumbRecording() {
+        if (_isBreadcrumbRecording.value) return
+        val now = System.currentTimeMillis()
+        val existing = _breadcrumbTracks.value.firstOrNull { it.isRecording }
+        val track = existing?.copy(isRecording = true, updatedAtMillis = now) ?: BreadcrumbTrack(
+            id = UUID.randomUUID().toString(),
+            terrainKey = _activeTerrainKey.value,
+            displayName = "GPS trail",
+            points = emptyList(),
+            isRecording = true,
+            createdAtMillis = now,
+            updatedAtMillis = now,
+        )
+        recordingBreadcrumbTrack = track
+        _isBreadcrumbRecording.value = true
+        viewModelScope.launch { breadcrumbTrackDao.upsert(track.toEntity()) }
+        if (_hasLocationPermission.value) startLocationUpdates()
+    }
+
+    /** Pauses the active trail without discarding its previous GPS fixes. */
+    fun pauseBreadcrumbRecording() {
+        val track = recordingBreadcrumbTrack ?: _breadcrumbTracks.value.firstOrNull { it.isRecording }
+            ?: return
+        val paused = track.copy(isRecording = false, updatedAtMillis = System.currentTimeMillis())
+        recordingBreadcrumbTrack = null
+        _isBreadcrumbRecording.value = false
+        viewModelScope.launch { breadcrumbTrackDao.upsert(paused.toEntity()) }
+        if (!_gpsEnabled.value) stopLocationUpdates()
+    }
+
+    fun deleteBreadcrumbTrack(track: BreadcrumbTrack) {
+        if (track.id == recordingBreadcrumbTrack?.id) pauseBreadcrumbRecording()
+        viewModelScope.launch { breadcrumbTrackDao.deleteById(track.id) }
+    }
+
+    fun clearBreadcrumbTracks() {
+        if (_isBreadcrumbRecording.value) pauseBreadcrumbRecording()
+        val terrainKey = _activeTerrainKey.value
+        viewModelScope.launch { breadcrumbTrackDao.deleteByTerrainKey(terrainKey) }
     }
 
     private fun startLocationUpdates() {
@@ -272,10 +353,29 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 .catch { /* provider unavailable or a platform SecurityException — stop tracking */ }
                 .collect { fix ->
                     _deviceLocationAccuracyMeters.value = fix.accuracyMeters
+                    _deviceLatitude.value = fix.latitude
+                    _deviceLongitude.value = fix.longitude
+                    _deviceLocationRecordedAtMillis.value = fix.recordedAtMillis
                     _deviceGridPosition.value =
                         GeoSpatialLibrary.geographicToGrid(fix.latitude, fix.longitude, _activeGeoMetadata.value)
+                    appendBreadcrumbFix(fix.latitude, fix.longitude, fix.accuracyMeters)
                 }
         }
+    }
+
+    private fun appendBreadcrumbFix(latitude: Double, longitude: Double, accuracyMeters: Float) {
+        val activeTrack = recordingBreadcrumbTrack ?: return
+        if (activeTrack.terrainKey != _activeTerrainKey.value || !accuracyMeters.isFinite() || accuracyMeters > 100f) return
+        val point = BreadcrumbPoint(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = accuracyMeters,
+            recordedAtMillis = System.currentTimeMillis(),
+        )
+        val updated = activeTrack.withPoint(point)
+        if (updated === activeTrack) return
+        recordingBreadcrumbTrack = updated
+        viewModelScope.launch { breadcrumbTrackDao.upsert(updated.toEntity()) }
     }
 
     private fun stopLocationUpdates() {
@@ -283,6 +383,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         locationJob = null
         _deviceGridPosition.value = null
         _deviceLocationAccuracyMeters.value = null
+        _deviceLatitude.value = null
+        _deviceLongitude.value = null
+        _deviceLocationRecordedAtMillis.value = null
     }
 
     private val _heatmapEnabled = MutableStateFlow(false)
@@ -713,6 +816,10 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun logCurrentSignal() {
+        val markerTime = System.currentTimeMillis()
+        val hasFreshDeviceFix = _deviceLocationRecordedAtMillis.value?.let { fixTime ->
+            markerTime - fixTime in 0L..MAX_MARKER_GPS_AGE_MILLIS
+        } == true
         val signal = TargetSignal(
             gridX = _sweepX.value,
             gridY = _sweepY.value,
@@ -721,7 +828,12 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             depthCm = null,
             latitude = _currentLat.value,
             longitude = _currentLon.value,
+            gpsLatitude = _deviceLatitude.value.takeIf { hasFreshDeviceFix },
+            gpsLongitude = _deviceLongitude.value.takeIf { hasFreshDeviceFix },
+            gpsAccuracyMeters = _deviceLocationAccuracyMeters.value
+                ?.takeIf { hasFreshDeviceFix && it.isFinite() && it >= 0f },
             source = DetectionSource.MANUAL,
+            timestamp = markerTime,
             terrainKey = _activeTerrainKey.value,
         )
         viewModelScope.launch { signalDao.upsert(signal.toEntity()) }
@@ -741,10 +853,14 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun setActiveTerrainKey(terrainKey: String) {
+        if (_isBreadcrumbRecording.value && terrainKey != _activeTerrainKey.value) {
+            pauseBreadcrumbRecording()
+        }
         _activeTerrainKey.value = terrainKey
         refreshVisibleSignals()
         observeSurveyLayers(terrainKey)
         observeOfflineBasemapRegions(terrainKey)
+        observeBreadcrumbTracks(terrainKey)
         _offlineBasemapPlan.value = null
         _offlineBasemapMessage.value = null
     }
@@ -754,6 +870,28 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         surveyLayerJob = viewModelScope.launch {
             surveyLayerDao.observeByTerrainKey(terrainKey).collect { stored ->
                 _surveyLayers.value = stored.mapNotNull { it.toDomain() }
+            }
+        }
+    }
+
+    private fun observeBreadcrumbTracks(terrainKey: String) {
+        breadcrumbTrackJob?.cancel()
+        recordingBreadcrumbTrack = null
+        _isBreadcrumbRecording.value = false
+        breadcrumbTrackJob = viewModelScope.launch {
+            breadcrumbTrackDao.observeByTerrainKey(terrainKey).collect { stored ->
+                val tracks = stored.map { it.toDomain() }
+                _breadcrumbTracks.value = tracks
+                val active = tracks.firstOrNull { it.isRecording }
+                if (active != null) {
+                    recordingBreadcrumbTrack = active
+                    _isBreadcrumbRecording.value = true
+                    if (_hasLocationPermission.value) startLocationUpdates()
+                } else if (recordingBreadcrumbTrack?.terrainKey == terrainKey) {
+                    recordingBreadcrumbTrack = null
+                    _isBreadcrumbRecording.value = false
+                    if (!_gpsEnabled.value) stopLocationUpdates()
+                }
             }
         }
     }
@@ -1150,8 +1288,10 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     override fun onCleared() {
         renderJob?.cancel()
         locationJob?.cancel()
+        compassHeadingJob?.cancel()
         basemapJob?.cancel()
         surveyLayerJob?.cancel()
+        breadcrumbTrackJob?.cancel()
         offlineBasemapRegionJob?.cancel()
         offlineBasemapDownloadJob?.cancel()
         saveSettingsJob?.cancel()

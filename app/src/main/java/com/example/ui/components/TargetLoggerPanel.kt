@@ -1,6 +1,10 @@
 package com.example.ui.components
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.MediaPlayer
+import android.net.Uri
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,6 +33,10 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -42,6 +50,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +59,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -58,8 +69,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.example.data.TargetSignal
 import com.example.data.VerificationOutcome
+import com.example.data.field.BreadcrumbTrack
+import com.example.data.field.FieldNavigation
+import com.example.data.field.VoiceNoteRecorder
+import com.example.data.field.createVoiceNoteFile
+import com.example.data.field.deleteVoiceNoteFile
+import com.example.geospatial.trueToMagneticBearingDegrees
 import com.example.data.export.buildCsv
 import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
@@ -72,6 +90,18 @@ fun TargetLoggerPanel(
     loggedSignals: List<TargetSignal>,
     currentSweepX: Float,
     currentSweepY: Float,
+    breadcrumbTracks: List<BreadcrumbTrack>,
+    isBreadcrumbRecording: Boolean,
+    gpsEnabled: Boolean,
+    deviceLatitude: Double?,
+    deviceLongitude: Double?,
+    deviceAccuracyMeters: Float?,
+    compassHeadingDegrees: Float?,
+    onEnableGps: () -> Unit,
+    onSetCompassNavigationActive: (Boolean) -> Unit,
+    onStartBreadcrumb: () -> Unit,
+    onPauseBreadcrumb: () -> Unit,
+    onClearBreadcrumbs: () -> Unit,
     onLogSignal: () -> Unit,
     onDeleteSignal: (TargetSignal) -> Unit,
     onUpdateSignal: (TargetSignal) -> Unit,
@@ -86,12 +116,26 @@ fun TargetLoggerPanel(
     var showProjectExport by remember { mutableStateOf(false) }
     var isBuildingProjectExport by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
+    var confirmClearBreadcrumbs by remember { mutableStateOf(false) }
     var exportMessage by remember { mutableStateOf<String?>(null) }
     var pendingCsv by remember { mutableStateOf("") }
     var pendingGpx by remember { mutableStateOf("") }
     var pendingKml by remember { mutableStateOf("") }
     var pendingGeoJson by remember { mutableStateOf("") }
     var pendingProjectBytes by remember { mutableStateOf(ByteArray(0)) }
+    var navigationTarget by remember { mutableStateOf<TargetSignal?>(null) }
+
+    LaunchedEffect(navigationTarget?.id) {
+        onSetCompassNavigationActive(navigationTarget != null)
+    }
+    LaunchedEffect(loggedSignals) {
+        navigationTarget?.let { active ->
+            if (loggedSignals.none { it.id == active.id }) navigationTarget = null
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { onSetCompassNavigationActive(false) }
+    }
 
     val terrainImageLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("image/png"),
@@ -217,6 +261,57 @@ fun TargetLoggerPanel(
             }
         }
 
+        val recordedBreadcrumbPoints = breadcrumbTracks.sumOf { it.points.size }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text("GPS breadcrumb", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    when {
+                        isBreadcrumbRecording -> "Recording ${recordedBreadcrumbPoints} GPS fix${if (recordedBreadcrumbPoints == 1) "" else "es"}. Trails are saved with this terrain project."
+                        recordedBreadcrumbPoints > 0 -> "$recordedBreadcrumbPoints saved GPS fix${if (recordedBreadcrumbPoints == 1) "" else "es"} across ${breadcrumbTracks.size} trail${if (breadcrumbTracks.size == 1) "" else "s"}."
+                        else -> "Record a project-scoped path for offline field checking. GPS jitter is filtered automatically."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Button(
+                        onClick = if (isBreadcrumbRecording) onPauseBreadcrumb else onStartBreadcrumb,
+                        modifier = Modifier.weight(1f).height(48.dp).testTag("breadcrumb_record_button"),
+                    ) {
+                        Icon(Icons.Default.Flag, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (isBreadcrumbRecording) "Pause trail" else "Start trail")
+                    }
+                    OutlinedButton(
+                        onClick = { confirmClearBreadcrumbs = true },
+                        enabled = breadcrumbTracks.isNotEmpty() && !isBreadcrumbRecording,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Clear trails")
+                    }
+                }
+            }
+        }
+
+        navigationTarget?.let { target ->
+            FieldNavigationCard(
+                target = target,
+                currentLatitude = deviceLatitude,
+                currentLongitude = deviceLongitude,
+                currentAccuracyMeters = deviceAccuracyMeters,
+                headingDegrees = compassHeadingDegrees,
+                gpsEnabled = gpsEnabled,
+                onEnableGps = onEnableGps,
+                onStop = { navigationTarget = null },
+            )
+        }
+
         if (exportMessage != null) {
             Text(
                 exportMessage.orEmpty(),
@@ -262,7 +357,11 @@ fun TargetLoggerPanel(
                     SignalCard(
                         signal = signal,
                         onEdit = { editingSignal = signal },
-                        onDelete = { onDeleteSignal(signal) },
+                        onDelete = {
+                            signal.voiceNoteUris.forEach { deleteVoiceNoteFile(context, it) }
+                            onDeleteSignal(signal)
+                        },
+                        onNavigate = { navigationTarget = signal },
                     )
                 }
             }
@@ -286,7 +385,13 @@ fun TargetLoggerPanel(
             title = { Text("Clear all finds?") },
             text = { Text("This permanently removes ${loggedSignals.size} saved record(s).") },
             confirmButton = {
-                TextButton(onClick = { confirmClear = false; onClearAll() }) { Text("Clear all") }
+                TextButton(
+                    onClick = {
+                        loggedSignals.flatMap { it.voiceNoteUris }.forEach { deleteVoiceNoteFile(context, it) }
+                        confirmClear = false
+                        onClearAll()
+                    },
+                ) { Text("Clear all") }
             },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
         )
@@ -319,6 +424,20 @@ fun TargetLoggerPanel(
         )
     }
 
+    if (confirmClearBreadcrumbs) {
+        AlertDialog(
+            onDismissRequest = { confirmClearBreadcrumbs = false },
+            title = { Text("Clear saved trails?") },
+            text = { Text("This removes ${breadcrumbTracks.size} breadcrumb trail(s) from this terrain project.") },
+            confirmButton = {
+                TextButton(onClick = { confirmClearBreadcrumbs = false; onClearBreadcrumbs() }) {
+                    Text("Clear trails")
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmClearBreadcrumbs = false }) { Text("Cancel") } },
+        )
+    }
+
     if (showProjectExport) {
         AlertDialog(
             onDismissRequest = { showProjectExport = false },
@@ -347,7 +466,151 @@ fun TargetLoggerPanel(
 }
 
 @Composable
-private fun SignalCard(signal: TargetSignal, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun FieldNavigationCard(
+    target: TargetSignal,
+    currentLatitude: Double?,
+    currentLongitude: Double?,
+    currentAccuracyMeters: Float?,
+    headingDegrees: Float?,
+    gpsEnabled: Boolean,
+    onEnableGps: () -> Unit,
+    onStop: () -> Unit,
+) {
+    val targetLatitude = target.latitude
+    val targetLongitude = target.longitude
+    val solution = remember(currentLatitude, currentLongitude, targetLatitude, targetLongitude, headingDegrees) {
+        if (currentLatitude == null || currentLongitude == null || targetLatitude == null || targetLongitude == null) {
+            null
+        } else {
+            FieldNavigation.solve(
+                currentLatitude = currentLatitude,
+                currentLongitude = currentLongitude,
+                targetLatitude = targetLatitude,
+                targetLongitude = targetLongitude,
+                headingDegrees = headingDegrees,
+            )
+        }
+    }
+    val magneticTargetBearing = remember(solution, currentLatitude, currentLongitude) {
+        if (solution == null || currentLatitude == null || currentLongitude == null) {
+            null
+        } else {
+            trueToMagneticBearingDegrees(
+                trueBearingDegrees = solution.targetBearingDegrees,
+                latitude = currentLatitude,
+                longitude = currentLongitude,
+            )
+        }
+    }
+    val compassTurn = remember(headingDegrees, magneticTargetBearing) {
+        if (headingDegrees == null || magneticTargetBearing == null) null
+        else FieldNavigation.signedTurnDegrees(headingDegrees, magneticTargetBearing)
+    }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        modifier = Modifier.fillMaxWidth().testTag("field_navigation_card"),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Navigation, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Field navigation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        "${target.metalType.label} · ${target.status}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+                TextButton(onClick = onStop) { Text("Stop") }
+            }
+
+            if (solution == null) {
+                Text(
+                    when {
+                        targetLatitude == null || targetLongitude == null ->
+                            "This saved target has no geographic coordinate, so it cannot be routed in the field."
+                        !gpsEnabled -> "Start GPS to calculate distance and bearing to this target."
+                        else -> "Waiting for a current GPS fix…"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (!gpsEnabled) {
+                    Button(onClick = onEnableGps, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                        Text("Start GPS navigation")
+                    }
+                }
+                return@Column
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Icon(
+                    Icons.Default.Navigation,
+                    contentDescription = "Direction to target",
+                    modifier = Modifier
+                        .size(62.dp)
+                        .rotate(compassTurn ?: 0f),
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        formatNavigationDistance(solution.distanceMeters),
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "Target true ${FieldNavigation.compassDirection(solution.targetBearingDegrees)} · ${solution.targetBearingDegrees.toInt()}°",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    compassTurn?.let { turn ->
+                        Text(
+                            FieldNavigation.turnInstruction(turn),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    } ?: Text(
+                        "Hold the phone flat while the compass initializes.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            headingDegrees?.let { heading ->
+                Text(
+                    "Compass heading ${FieldNavigation.compassDirection(heading)} · ${heading.toInt()}° magnetic",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            currentAccuracyMeters?.takeIf { it.isFinite() && it >= 0f }?.let { accuracy ->
+                Text(
+                    "Current GPS accuracy ±${"%.1f".format(java.util.Locale.US, accuracy)} m",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Text(
+                "Compass guidance is for field checking. Calibrate the phone and verify the target against the terrain before excavating.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+        }
+    }
+}
+
+private fun formatNavigationDistance(meters: Double): String = when {
+    meters >= 1_000.0 -> "${"%.2f".format(java.util.Locale.US, meters / 1_000.0)} km away"
+    meters >= 100.0 -> "${meters.toInt()} m away"
+    else -> "${"%.1f".format(java.util.Locale.US, meters)} m away"
+}
+
+@Composable
+private fun SignalCard(
+    signal: TargetSignal,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onNavigate: () -> Unit,
+) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         modifier = Modifier.fillMaxWidth().clickable(onClick = onEdit),
@@ -376,6 +639,13 @@ private fun SignalCard(signal: TargetSignal, onEdit: () -> Unit, onDelete: () ->
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
+                signal.gpsAccuracyMeters?.let { accuracy ->
+                    Text(
+                        "GPS captured ${"%.1f".format(java.util.Locale.US, accuracy)} m accuracy",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
                 if (signal.outcome != VerificationOutcome.UNVERIFIED) {
                     Text(
                         signal.outcome.label,
@@ -397,9 +667,23 @@ private fun SignalCard(signal: TargetSignal, onEdit: () -> Unit, onDelete: () ->
                         color = MaterialTheme.colorScheme.secondary,
                     )
                 }
+                if (signal.voiceNoteUris.isNotEmpty()) {
+                    Text(
+                        "${signal.voiceNoteUris.size} voice note${if (signal.voiceNoteUris.size == 1) "" else "s"}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
             }
             IconButton(onClick = onEdit, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Default.Edit, contentDescription = "Edit find")
+            }
+            IconButton(
+                onClick = onNavigate,
+                enabled = signal.latitude != null && signal.longitude != null,
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(Icons.Default.Navigation, contentDescription = "Navigate to find")
             }
             IconButton(onClick = onDelete, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete find")
@@ -416,6 +700,91 @@ private fun EditSignalDialog(
 ) {
     val context = LocalContext.current
     var photoUris by remember(signal.id) { mutableStateOf(signal.photoUris) }
+    var voiceNoteUris by remember(signal.id) { mutableStateOf(signal.voiceNoteUris) }
+    var recorder by remember(signal.id) { mutableStateOf<VoiceNoteRecorder?>(null) }
+    var isRecordingVoiceNote by remember(signal.id) { mutableStateOf(false) }
+    var recordingMessage by remember(signal.id) { mutableStateOf<String?>(null) }
+    var mediaPlayer by remember(signal.id) { mutableStateOf<MediaPlayer?>(null) }
+    var playingVoiceNoteUri by remember(signal.id) { mutableStateOf<String?>(null) }
+
+    fun stopPlayback() {
+        mediaPlayer?.let { player ->
+            runCatching { player.stop() }
+            player.release()
+        }
+        mediaPlayer = null
+        playingVoiceNoteUri = null
+    }
+
+    fun startVoiceRecording() {
+        if (isRecordingVoiceNote || voiceNoteUris.size >= 10) return
+        val active = VoiceNoteRecorder(context, createVoiceNoteFile(context, signal))
+        runCatching { active.start() }
+            .onSuccess {
+                recorder = active
+                isRecordingVoiceNote = true
+                recordingMessage = null
+            }
+            .onFailure {
+                active.cancel()
+                recordingMessage = it.localizedMessage ?: "Could not start the voice-note recorder."
+            }
+    }
+
+    fun stopVoiceRecording() {
+        val file = recorder?.stop()
+        recorder = null
+        isRecordingVoiceNote = false
+        if (file == null) {
+            recordingMessage = "The voice note was too short or could not be saved."
+        } else {
+            voiceNoteUris = (voiceNoteUris + Uri.fromFile(file).toString()).distinct().take(10)
+            recordingMessage = "Voice note saved offline."
+        }
+    }
+
+    fun playVoiceNote(uriText: String) {
+        if (playingVoiceNoteUri == uriText) {
+            stopPlayback()
+            return
+        }
+        stopPlayback()
+        val player = MediaPlayer()
+        runCatching {
+            player.setDataSource(context, Uri.parse(uriText))
+            player.setOnCompletionListener {
+                it.release()
+                if (mediaPlayer === it) {
+                    mediaPlayer = null
+                    playingVoiceNoteUri = null
+                }
+            }
+            player.prepare()
+            player.start()
+        }.onSuccess {
+            mediaPlayer = player
+            playingVoiceNoteUri = uriText
+            recordingMessage = null
+        }.onFailure {
+            player.release()
+            recordingMessage = it.localizedMessage ?: "Could not play this voice note."
+        }
+    }
+
+    DisposableEffect(signal.id) {
+        onDispose {
+            recorder?.cancel()
+            mediaPlayer?.release()
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) startVoiceRecording() else {
+            recordingMessage = "Microphone permission is required to record a voice note."
+        }
+    }
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             runCatching {
@@ -441,7 +810,11 @@ private fun EditSignalDialog(
         "Follow up",
     )
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            recorder?.cancel()
+            stopPlayback()
+            onDismiss()
+        },
         title = { Text("Edit find") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -480,6 +853,67 @@ private fun EditSignalDialog(
                     Icon(Icons.Default.AddPhotoAlternate, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("Add photo")
+                }
+                Text("Voice notes (${voiceNoteUris.size}/10)", style = MaterialTheme.typography.titleSmall)
+                voiceNoteUris.forEachIndexed { index, voiceUri ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Voice note ${index + 1}",
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        TextButton(onClick = { playVoiceNote(voiceUri) }) {
+                            Icon(
+                                if (playingVoiceNoteUri == voiceUri) Icons.Default.Stop else Icons.Default.PlayArrow,
+                                contentDescription = if (playingVoiceNoteUri == voiceUri) "Stop voice note" else "Play voice note",
+                            )
+                            Spacer(Modifier.width(3.dp))
+                            Text(if (playingVoiceNoteUri == voiceUri) "Stop" else "Play")
+                        }
+                        TextButton(
+                            onClick = {
+                                if (playingVoiceNoteUri == voiceUri) stopPlayback()
+                                deleteVoiceNoteFile(context, voiceUri)
+                                voiceNoteUris = voiceNoteUris - voiceUri
+                            },
+                        ) { Text("Remove") }
+                    }
+                }
+                Button(
+                    onClick = {
+                        if (isRecordingVoiceNote) {
+                            stopVoiceRecording()
+                        } else {
+                            val granted = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO,
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (granted) startVoiceRecording() else {
+                                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    },
+                    enabled = isRecordingVoiceNote || voiceNoteUris.size < 10,
+                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("voice_note_record_button"),
+                ) {
+                    Icon(if (isRecordingVoiceNote) Icons.Default.Stop else Icons.Default.Mic, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isRecordingVoiceNote) "Stop and save voice note" else "Record voice note")
+                }
+                recordingMessage?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (message.startsWith("Could") || message.startsWith("Microphone") || message.startsWith("The voice")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
                 }
                 statuses.chunked(2).forEach { rowStatuses ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -535,13 +969,31 @@ private fun EditSignalDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(signal.copy(notes = notes.trim(), photoUris = photoUris, status = status, outcome = outcome))
+                    stopPlayback()
+                    onSave(
+                        signal.copy(
+                            notes = notes.trim(),
+                            photoUris = photoUris,
+                            voiceNoteUris = voiceNoteUris,
+                            status = status,
+                            outcome = outcome,
+                        ),
+                    )
                 },
+                enabled = !isRecordingVoiceNote,
             ) {
                 Text("Save")
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    recorder?.cancel()
+                    stopPlayback()
+                    onDismiss()
+                },
+            ) { Text("Cancel") }
+        },
     )
 }
 

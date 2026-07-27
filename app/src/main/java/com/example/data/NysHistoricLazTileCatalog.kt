@@ -30,6 +30,11 @@ class NysHistoricLazTileCatalog(
         val maxLatitude: Double?,
     )
 
+    data class DownloadEstimate(
+        val knownBytes: Long,
+        val unknownTileCount: Int,
+    )
+
     suspend fun tilesAt(longitude: Double, latitude: Double): List<Tile> = withContext(Dispatchers.IO) {
         runCatching { queryNationalMap(longitude, latitude, longitude, latitude) }
             .getOrNull()
@@ -54,6 +59,35 @@ class NysHistoricLazTileCatalog(
                 geometryType = "esriGeometryEnvelope",
             )
     }
+
+    /** Reads source file sizes without downloading a LAZ payload. */
+    suspend fun estimateDownloadBytes(tiles: List<Tile>): DownloadEstimate = withContext(Dispatchers.IO) {
+        var knownBytes = 0L
+        var unknownTiles = 0
+        tiles.distinctBy(Tile::downloadUrl).forEach { tile ->
+            val bytes = runCatching { contentLength(tile.downloadUrl) }.getOrNull()
+            if (bytes == null || bytes < 0L) unknownTiles++ else knownBytes += bytes
+        }
+        DownloadEstimate(knownBytes, unknownTiles)
+    }
+
+    private fun contentLength(url: String): Long? {
+        val head = Request.Builder().url(url).head().build()
+        httpClient.newCall(head).execute().use { response ->
+            response.header("Content-Length")?.toLongOrNull()?.takeIf { it >= 0L }?.let { return it }
+        }
+        // Some public LiDAR hosts deliberately omit HEAD metadata. A single range byte obtains
+        // Content-Range without transferring the compressed point cloud.
+        val ranged = Request.Builder().url(url).header("Range", "bytes=0-0").get().build()
+        httpClient.newCall(ranged).execute().use { response ->
+            response.header("Content-Range")?.let(::contentRangeLength)?.let { return it }
+            response.header("Content-Length")?.toLongOrNull()?.takeIf { it >= 0L }?.let { return it }
+        }
+        return null
+    }
+
+    internal fun contentRangeLength(header: String): Long? =
+        header.substringAfter('/', missingDelimiterValue = "").toLongOrNull()?.takeIf { it >= 0L }
 
     private fun queryNys(geometry: String, geometryType: String): List<Tile> {
         val url = buildQueryUrl(geometry, geometryType)

@@ -24,6 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Compare
@@ -59,6 +60,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -72,7 +74,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.analysis.TerrainCellInspector
+import com.example.analysis.TerrainElevationProfiler
 import com.example.data.NormalizedRasterBounds
+import com.example.geospatial.GeoSpatialLibrary
 import com.example.ui.components.CustomFileLoader
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarControlPanel
@@ -81,6 +85,7 @@ import com.example.ui.components.NysLazTilePicker
 import com.example.ui.components.OfflineBasemapManager
 import com.example.ui.components.TargetLoggerPanel
 import com.example.ui.components.TerrainCellInspectionPanel
+import com.example.ui.components.TerrainElevationProfilePanel
 import com.example.ui.components.TerrainGoogleMapScreen
 import com.example.ui.components.SurveyLayerImporter
 import java.util.Locale
@@ -233,6 +238,8 @@ private fun TerrainTab(
     val gpsEnabled by viewModel.gpsEnabled.collectAsStateWithLifecycle()
     val hasLocationPermission by viewModel.hasLocationPermission.collectAsStateWithLifecycle()
     val devicePosition by viewModel.deviceGridPosition.collectAsStateWithLifecycle()
+    val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
+    val isBreadcrumbRecording by viewModel.isBreadcrumbRecording.collectAsStateWithLifecycle()
     val heatmapEnabled by viewModel.heatmapEnabled.collectAsStateWithLifecycle()
     val basemapEnabled by viewModel.basemapEnabled.collectAsStateWithLifecycle()
     val basemapOpacity by viewModel.basemapOpacity.collectAsStateWithLifecycle()
@@ -247,6 +254,21 @@ private fun TerrainTab(
     val visibleBounds = remember { mutableStateOf(NormalizedRasterBounds.Full) }
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
     val inspectedCell = remember { mutableStateOf<com.example.analysis.TerrainCellInspection?>(null) }
+    var isSelectingProfile by rememberSaveable { mutableStateOf(false) }
+    var profileStartPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    var profileEndPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
+    val elevationProfile = remember(elevationGrid, profileStartPoint, profileEndPoint, vegetation) {
+        val start = profileStartPoint
+        val end = profileEndPoint
+        if (start == null || end == null) null else TerrainElevationProfiler.sample(
+            grid = elevationGrid,
+            startXPercent = start.first,
+            startYPercent = start.second,
+            endXPercent = end.first,
+            endYPercent = end.second,
+            vegetationFilter = vegetation,
+        )
+    }
     val showControls = rememberSaveable { mutableStateOf(false) }
     val localViewportResetKey = rememberSaveable { mutableIntStateOf(0) }
     val viewportResetKey = vmViewportReset + localViewportResetKey.intValue
@@ -254,6 +276,13 @@ private fun TerrainTab(
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> viewModel.onLocationPermissionResult(granted) }
+    val breadcrumbPaths = remember(breadcrumbTracks, metadata) {
+        breadcrumbTracks.mapNotNull { track ->
+            track.points.mapNotNull { point ->
+                GeoSpatialLibrary.geographicToGrid(point.latitude, point.longitude, metadata)
+            }.takeIf { it.size >= 2 }
+        }
+    }
 
     // The Terrain workspace is the primary bare-earth inspection surface. Always enter it with
     // the source hillshade visible; users can still choose another analysis layer while here.
@@ -293,17 +322,31 @@ private fun TerrainTab(
             basemapOpacity = basemapOpacity,
             basemapStatus = basemapStatus,
             deviceGridPosition = devicePosition,
+            breadcrumbPaths = breadcrumbPaths,
             surveyFeatures = surveyLayers.flatMap { it.features },
             inspectionPoint = inspectedCell.value?.let { it.xPercent to it.yPercent },
+            profileStartPoint = profileStartPoint,
+            profileEndPoint = profileEndPoint,
             onInspectPosition = { xPercent, yPercent ->
-                inspectedCell.value = TerrainCellInspector.inspect(
-                    grid = elevationGrid,
-                    metadata = metadata,
-                    xPercent = xPercent,
-                    yPercent = yPercent,
-                    vegetationFilter = vegetation,
-                    featureScaleMeters = featureScale,
-                )
+                if (isSelectingProfile) {
+                    if (profileStartPoint == null || profileEndPoint != null) {
+                        profileStartPoint = xPercent to yPercent
+                        profileEndPoint = null
+                        inspectedCell.value = null
+                    } else {
+                        profileEndPoint = xPercent to yPercent
+                        isSelectingProfile = false
+                    }
+                } else {
+                    inspectedCell.value = TerrainCellInspector.inspect(
+                        grid = elevationGrid,
+                        metadata = metadata,
+                        xPercent = xPercent,
+                        yPercent = yPercent,
+                        vegetationFilter = vegetation,
+                        featureScaleMeters = featureScale,
+                    )
+                }
             },
             modifier = Modifier
                 .fillMaxSize()
@@ -315,6 +358,22 @@ private fun TerrainTab(
             TerrainCellInspectionPanel(
                 inspection = inspection,
                 onDismiss = { inspectedCell.value = null },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(start = 12.dp, end = 12.dp, bottom = 72.dp)
+                    .fillMaxWidth(0.94f),
+            )
+        }
+
+        elevationProfile?.let { profile ->
+            TerrainElevationProfilePanel(
+                profile = profile,
+                onClear = {
+                    profileStartPoint = null
+                    profileEndPoint = null
+                    isSelectingProfile = false
+                },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .navigationBarsPadding()
@@ -388,6 +447,24 @@ private fun TerrainTab(
                     active = showControls.value,
                 ) { showControls.value = !showControls.value }
                 TerrainQuickAction(
+                    when {
+                        isSelectingProfile && profileStartPoint == null -> "Profile: start"
+                        isSelectingProfile -> "Profile: end"
+                        else -> "Profile"
+                    },
+                    Icons.AutoMirrored.Filled.ShowChart,
+                    active = isSelectingProfile,
+                ) {
+                    if (isSelectingProfile) {
+                        isSelectingProfile = false
+                    } else {
+                        isSelectingProfile = true
+                        profileStartPoint = null
+                        profileEndPoint = null
+                        inspectedCell.value = null
+                    }
+                }
+                TerrainQuickAction(
                     if (gpsEnabled) "GPS on" else "GPS",
                     if (gpsEnabled && hasLocationPermission) Icons.Default.GpsFixed else Icons.Default.GpsNotFixed,
                     active = gpsEnabled && hasLocationPermission,
@@ -400,6 +477,22 @@ private fun TerrainTab(
                         locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                     }
                     viewModel.toggleGpsTracking(!gpsEnabled)
+                }
+                TerrainQuickAction(
+                    if (isBreadcrumbRecording) "Pause trail" else "Trail",
+                    Icons.Default.Flag,
+                    active = isBreadcrumbRecording,
+                ) {
+                    if (isBreadcrumbRecording) {
+                        viewModel.pauseBreadcrumbRecording()
+                    } else {
+                        viewModel.startBreadcrumbRecording()
+                        val granted = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (!granted) locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                    }
                 }
                 TerrainQuickAction(
                     if (focusMode) "Exit" else "Full",
@@ -524,12 +617,14 @@ private fun GoogleMapTab(viewModel: HillshadeViewModel, padding: PaddingValues) 
     val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
     val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
     val surveyLayers by viewModel.surveyLayers.collectAsStateWithLifecycle()
+    val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
     TerrainGoogleMapScreen(
         terrainBitmap = bitmap,
         grid = grid,
         metadata = metadata,
         terrainKey = terrainKey,
         surveyFeatures = surveyLayers.flatMap { it.features },
+        breadcrumbTracks = breadcrumbTracks,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }
@@ -549,10 +644,47 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val sweepX by viewModel.sweepX.collectAsStateWithLifecycle()
     val sweepY by viewModel.sweepY.collectAsStateWithLifecycle()
+    val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
+    val isBreadcrumbRecording by viewModel.isBreadcrumbRecording.collectAsStateWithLifecycle()
+    val gpsEnabled by viewModel.gpsEnabled.collectAsStateWithLifecycle()
+    val deviceLatitude by viewModel.deviceLatitude.collectAsStateWithLifecycle()
+    val deviceLongitude by viewModel.deviceLongitude.collectAsStateWithLifecycle()
+    val deviceAccuracyMeters by viewModel.deviceLocationAccuracyMeters.collectAsStateWithLifecycle()
+    val compassHeadingDegrees by viewModel.compassHeadingDegrees.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> viewModel.onLocationPermissionResult(granted) }
     TargetLoggerPanel(
         loggedSignals = signals,
         currentSweepX = sweepX,
         currentSweepY = sweepY,
+        breadcrumbTracks = breadcrumbTracks,
+        isBreadcrumbRecording = isBreadcrumbRecording,
+        gpsEnabled = gpsEnabled,
+        deviceLatitude = deviceLatitude,
+        deviceLongitude = deviceLongitude,
+        deviceAccuracyMeters = deviceAccuracyMeters,
+        compassHeadingDegrees = compassHeadingDegrees,
+        onEnableGps = {
+            viewModel.toggleGpsTracking(true)
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        },
+        onSetCompassNavigationActive = viewModel::setCompassNavigationActive,
+        onStartBreadcrumb = {
+            viewModel.startBreadcrumbRecording()
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        },
+        onPauseBreadcrumb = viewModel::pauseBreadcrumbRecording,
+        onClearBreadcrumbs = viewModel::clearBreadcrumbTracks,
         onLogSignal = viewModel::logCurrentSignal,
         onDeleteSignal = viewModel::deleteLoggedSignal,
         onUpdateSignal = viewModel::updateLoggedSignal,

@@ -4,7 +4,7 @@ import com.example.data.TargetSignal
 import java.util.Locale
 
 fun buildCsv(signals: List<TargetSignal>): String = buildString {
-    append("ID,GridX,GridY,Latitude,Longitude,Type,Source,SignalStrength,DepthCm,Status,Notes\n")
+    append("ID,GridX,GridY,Latitude,Longitude,GpsLatitude,GpsLongitude,GpsAccuracyMeters,Type,Source,SignalStrength,DepthCm,Status,VoiceNoteCount,Notes\n")
     signals.forEach { signal ->
         val fields = listOf(
             signal.id.toString(),
@@ -12,11 +12,15 @@ fun buildCsv(signals: List<TargetSignal>): String = buildString {
             formatDecimal(signal.gridY.toDouble(), 3),
             signal.latitude?.let { formatDecimal(it, 7) }.orEmpty(),
             signal.longitude?.let { formatDecimal(it, 7) }.orEmpty(),
+            signal.gpsLatitude?.let { formatDecimal(it, 7) }.orEmpty(),
+            signal.gpsLongitude?.let { formatDecimal(it, 7) }.orEmpty(),
+            signal.gpsAccuracyMeters?.let { formatDecimal(it.toDouble(), 1) }.orEmpty(),
             signal.metalType.label,
             signal.source.name,
             formatDecimal(signal.signalStrength.toDouble(), 1),
             signal.depthCm?.toString().orEmpty(),
             signal.status,
+            signal.voiceNoteUris.size.toString(),
             signal.notes,
         )
         append(fields.joinToString(",") { csvEscape(it) }).append('\n')
@@ -35,6 +39,8 @@ fun buildGpx(signals: List<TargetSignal>): String = buildString {
         val description = buildString {
             append("Source: ${signal.source.name}; Strength: ${signal.signalStrength.toInt()}%; ")
             append(signal.depthCm?.let { "Depth: $it cm; " } ?: "Depth: unknown; ")
+            signal.gpsAccuracyMeters?.let { append("GPS accuracy: ${formatDecimal(it.toDouble(), 1)} m; ") }
+            if (signal.voiceNoteUris.isNotEmpty()) append("Voice notes: ${signal.voiceNoteUris.size}; ")
             append("Status: ${signal.status}")
             if (signal.notes.isNotBlank()) append("; Notes: ${signal.notes}")
         }
@@ -71,6 +77,10 @@ fun buildGeoJson(signals: List<TargetSignal>): String = buildString {
         append("\"source\":\"").append(jsonEscape(signal.source.name)).append("\",")
         append("\"strength\":").append(formatDecimal(signal.signalStrength.toDouble(), 1)).append(',')
         append("\"depthCm\":").append(signal.depthCm ?: "null").append(',')
+        append("\"gpsLatitude\":").append(signal.gpsLatitude?.let { formatDecimal(it, 7) } ?: "null").append(',')
+        append("\"gpsLongitude\":").append(signal.gpsLongitude?.let { formatDecimal(it, 7) } ?: "null").append(',')
+        append("\"gpsAccuracyMeters\":").append(signal.gpsAccuracyMeters?.let { formatDecimal(it.toDouble(), 1) } ?: "null").append(',')
+        append("\"voiceNoteCount\":").append(signal.voiceNoteUris.size).append(',')
         append("\"status\":\"").append(jsonEscape(signal.status)).append("\",")
         append("\"notes\":\"").append(jsonEscape(signal.notes)).append("\"}}")
     }

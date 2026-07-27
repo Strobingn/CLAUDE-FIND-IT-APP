@@ -59,6 +59,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.BuildConfig
 import com.example.data.ElevationGrid
+import com.example.data.field.BreadcrumbTrack
 import com.example.data.survey.SurveyFeature
 import com.example.data.survey.SurveyGeometryType
 import com.example.geospatial.GeoSpatialLibrary
@@ -86,6 +87,7 @@ fun TerrainGoogleMapScreen(
     metadata: GeoSpatialLibrary.GeoSpatialMetadata,
     terrainKey: String,
     surveyFeatures: List<SurveyFeature> = emptyList(),
+    breadcrumbTracks: List<BreadcrumbTrack> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -94,6 +96,7 @@ fun TerrainGoogleMapScreen(
     var googleMap by remember { mutableStateOf<GoogleMap?>(null) }
     var overlay by remember { mutableStateOf<GroundOverlay?>(null) }
     var surveyMapObjects by remember { mutableStateOf<List<Any>>(emptyList()) }
+    var breadcrumbPolylines by remember { mutableStateOf<List<Polyline>>(emptyList()) }
     var cameraCenter by remember { mutableStateOf(LatLng(39.5, -98.35)) }
     val naturalSize = remember(metadata.bounds, grid.width, grid.height, grid.cellSizeMeters) {
         naturalOverlaySize(metadata, grid)
@@ -142,6 +145,7 @@ fun TerrainGoogleMapScreen(
         onDispose {
             overlay?.remove()
             surveyMapObjects.forEach(::removeMapObject)
+            breadcrumbPolylines.forEach { it.remove() }
             googleMap = null
         }
     }
@@ -213,6 +217,22 @@ fun TerrainGoogleMapScreen(
                     null
                 }
             }
+        }
+    }
+
+    LaunchedEffect(googleMap, breadcrumbTracks) {
+        val map = googleMap ?: return@LaunchedEffect
+        breadcrumbPolylines.forEach { it.remove() }
+        breadcrumbPolylines = breadcrumbTracks.mapNotNull { track ->
+            val points = track.points.map { point -> LatLng(point.latitude, point.longitude) }
+            if (points.size < 2) return@mapNotNull null
+            map.addPolyline(
+                PolylineOptions()
+                    .addAll(points)
+                    .color(android.graphics.Color.rgb(255, 152, 0))
+                    .width(7f)
+                    .zIndex(7f),
+            )
         }
     }
 

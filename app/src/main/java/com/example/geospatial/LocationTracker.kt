@@ -14,7 +14,13 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 
 /** A device GPS fix, decoupled from any Android location type so callers stay testable. */
-data class LocationFix(val latitude: Double, val longitude: Double, val accuracyMeters: Float)
+data class LocationFix(
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Float,
+    /** Platform measurement time, not the time a UI happened to receive the fix. */
+    val recordedAtMillis: Long,
+)
 
 /**
  * Wraps the platform [LocationManager] behind a plain [Flow] — no Google Play Services /
@@ -60,7 +66,14 @@ class LocationTracker(context: Context) {
                 return@callbackFlow
             }
             val listener = LocationListener { location: Location ->
-                trySend(LocationFix(location.latitude, location.longitude, location.accuracy))
+                trySend(
+                    LocationFix(
+                        latitude = location.latitude,
+                        longitude = location.longitude,
+                        accuracyMeters = location.accuracy,
+                        recordedAtMillis = location.time,
+                    ),
+                )
             }
             val requested = runCatching {
                 locationManager.requestLocationUpdates(
@@ -76,7 +89,14 @@ class LocationTracker(context: Context) {
                 return@callbackFlow
             }
             runCatching { locationManager.getLastKnownLocation(provider) }.getOrNull()?.let { last ->
-                trySend(LocationFix(last.latitude, last.longitude, last.accuracy))
+                trySend(
+                    LocationFix(
+                        latitude = last.latitude,
+                        longitude = last.longitude,
+                        accuracyMeters = last.accuracy,
+                        recordedAtMillis = last.time,
+                    ),
+                )
             }
             awaitClose { locationManager.removeUpdates(listener) }
         }

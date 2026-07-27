@@ -107,9 +107,12 @@ fun LidarMapCanvas(
     basemapOpacity: Float = 0.6f,
     basemapStatus: String? = null,
     deviceGridPosition: Pair<Float, Float>? = null,
+    breadcrumbPaths: List<List<Pair<Float, Float>>> = emptyList(),
     overlayTargets: List<LidarOverlayTarget> = emptyList(),
     surveyFeatures: List<SurveyFeature> = emptyList(),
     inspectionPoint: Pair<Float, Float>? = null,
+    profileStartPoint: Pair<Float, Float>? = null,
+    profileEndPoint: Pair<Float, Float>? = null,
     onInspectPosition: ((Float, Float) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -407,6 +410,23 @@ fun LidarMapCanvas(
                         }
                     }
                 }
+                breadcrumbPaths.forEach { path ->
+                    if (path.size < 2) return@forEach
+                    val points = path.map { point ->
+                        Offset(
+                            imageLeft + (point.first.coerceIn(0f, 100f) / 100f) * displayWidth,
+                            imageTop + (point.second.coerceIn(0f, 100f) / 100f) * displayHeight,
+                        )
+                    }
+                    points.zipWithNext().forEach { (start, end) ->
+                        drawLine(Color.Black, start, end, strokeWidth = 8f, alpha = 0.52f)
+                        drawLine(Color(0xFFFF9800), start, end, strokeWidth = 4f, alpha = 0.95f)
+                    }
+                    points.lastOrNull()?.let { last ->
+                        drawCircle(Color.Black, radius = 11f, center = last, alpha = 0.6f)
+                        drawCircle(Color(0xFFFF9800), radius = 7f, center = last)
+                    }
+                }
                 for (signal in loggedSignals) {
                     val px = imageLeft + (signal.gridX.coerceIn(0f, 100f) / 100f) * displayWidth
                     val py = imageTop + (signal.gridY.coerceIn(0f, 100f) / 100f) * displayHeight
@@ -500,6 +520,25 @@ fun LidarMapCanvas(
                         end = Offset(px, py + 22f),
                         strokeWidth = 2f,
                     )
+                }
+                profileStartPoint?.let { start ->
+                    val startOffset = Offset(
+                        imageLeft + (start.first.coerceIn(0f, 100f) / 100f) * displayWidth,
+                        imageTop + (start.second.coerceIn(0f, 100f) / 100f) * displayHeight,
+                    )
+                    profileEndPoint?.let { end ->
+                        val endOffset = Offset(
+                            imageLeft + (end.first.coerceIn(0f, 100f) / 100f) * displayWidth,
+                            imageTop + (end.second.coerceIn(0f, 100f) / 100f) * displayHeight,
+                        )
+                        drawLine(Color.Black, startOffset, endOffset, strokeWidth = 8f, alpha = 0.65f)
+                        drawLine(Color(0xFF00E5FF), startOffset, endOffset, strokeWidth = 3.5f)
+                        drawCircle(Color.Black, radius = 13f, center = endOffset, alpha = 0.65f)
+                        drawCircle(Color(0xFF00E5FF), radius = 8f, center = endOffset)
+                    }
+                    drawCircle(Color.Black, radius = 13f, center = startOffset, alpha = 0.65f)
+                    drawCircle(Color(0xFF00E5FF), radius = 8f, center = startOffset)
+                    drawCircle(Color.White, radius = 8f, center = startOffset, style = Stroke(2f))
                 }
                 if (showSurveyCursor) {
                     val sx = imageLeft + (sweepX.coerceIn(0f, 100f) / 100f) * displayWidth
