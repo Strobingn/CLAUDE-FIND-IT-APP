@@ -40,8 +40,8 @@ object TerrainVisionSession {
 }
 
 internal object GeminiTerrainImageEncoder {
-    private const val MAX_SIDE = 1_600
-    private const val MAX_INLINE_BYTES = 6 * 1024 * 1024
+    private const val MAX_SIDE = 1_280
+    private const val MAX_INLINE_BYTES = 3 * 1024 * 1024
 
     fun encode(snapshot: TerrainVisionSnapshot): GeminiImageInput? {
         val source = snapshot.bitmap?.takeIf {
@@ -70,7 +70,7 @@ internal object GeminiTerrainImageEncoder {
         val scaledOwned = scaled !== crop
 
         return try {
-            var quality = 90
+            var quality = 86
             var bytes: ByteArray
             do {
                 bytes = ByteArrayOutputStream().use { output ->

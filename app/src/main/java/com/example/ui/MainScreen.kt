@@ -53,6 +53,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -239,6 +240,12 @@ private fun TerrainTab(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> viewModel.onLocationPermissionResult(granted) }
 
+    // The Terrain workspace is the primary bare-earth inspection surface. Always enter it with
+    // the source hillshade visible; users can still choose another analysis layer while here.
+    LaunchedEffect(Unit) {
+        if (visualization != 0) viewModel.updateVisualizationMode(0)
+    }
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         LidarMapCanvas(
             bitmap = bitmap,
@@ -338,6 +345,11 @@ private fun TerrainTab(
                         fontWeight = FontWeight.Bold,
                     )
                 }
+                TerrainQuickAction(
+                    "Hillshade",
+                    Icons.Default.Landscape,
+                    active = visualization == 0,
+                ) { viewModel.updateVisualizationMode(0) }
                 TerrainQuickAction("Light -", Icons.Default.RotateLeft) { viewModel.rotateSunAzimuth(-45f) }
                 TerrainQuickAction("Light +", Icons.Default.RotateRight) { viewModel.rotateSunAzimuth(45f) }
                 TerrainQuickAction("Fit", Icons.Default.CenterFocusStrong) { localViewportResetKey.intValue++ }

@@ -67,4 +67,5 @@ enum class DetectionSource {
     MAGNETOMETER,
     MANUAL,
     AI_ANALYSIS,
+    CLOUD_AI,
 }

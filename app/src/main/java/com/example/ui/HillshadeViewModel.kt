@@ -66,10 +66,11 @@ internal fun chooseAiRefineResolution(
     memoryClassMb: Int,
     isLowRamDevice: Boolean,
     availableProcessors: Int,
+    totalRamMb: Int = memoryClassMb,
 ): Int = when {
-    isLowRamDevice || memoryClassMb <= 256 -> 768
-    memoryClassMb >= 512 && availableProcessors >= 8 -> 1_024
-    else -> 768
+    isLowRamDevice || memoryClassMb < 256 -> 768
+    totalRamMb >= 3_072 -> 1_536
+    else -> 1_024
 }
 
 internal fun isEffectivelyWholeTerrain(bounds: NormalizedRasterBounds): Boolean {
@@ -498,11 +499,15 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         val activityManager = getApplication<Application>()
             .getSystemService(ActivityManager::class.java)
         val memoryClass = activityManager?.memoryClass ?: 256
+        val memoryInfo = ActivityManager.MemoryInfo()
+        activityManager?.getMemoryInfo(memoryInfo)
+        val totalRamMb = (memoryInfo.totalMem / (1024L * 1024L)).toInt()
         val processors = Runtime.getRuntime().availableProcessors()
         return chooseAiRefineResolution(
             memoryClassMb = memoryClass,
             isLowRamDevice = activityManager?.isLowRamDevice == true,
             availableProcessors = processors,
+            totalRamMb = totalRamMb,
         )
     }
 
@@ -536,9 +541,10 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _isRefiningTerrain.value = true
         _terrainRefinementProgress.value = TerrainRefinementProgress(
             fraction = 0.03f,
-            message = "Checking the detail cache…",
+            message = "Checking ${options.rasterResolution} px detail cache…",
         )
-        _terrainDetailMessage.value = "Opening source detail for this viewport…"
+        _terrainDetailMessage.value =
+            "Opening ${options.rasterResolution} px source detail for this viewport…"
         viewModelScope.launch(Dispatchers.IO) {
             var decodedNow = false
             var loadedFromCache = false
@@ -553,7 +559,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                             val decodedFraction = if (total > 0L) decoded.toFloat() / total.toFloat() else 0f
                             _terrainRefinementProgress.value = TerrainRefinementProgress(
                                 fraction = 0.08f + decodedFraction.coerceIn(0f, 1f) * 0.82f,
-                                message = "Decoding cropped source detail · " +
+                                message = "Decoding ${options.rasterResolution} px source detail · " +
                                     "${(decodedFraction * 100f).toInt().coerceIn(0, 100)}%",
                             )
                         }?.let { laz ->
@@ -568,8 +574,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                         }
                 } ?: getApplication<Application>().contentResolver.openInputStream(sourceUri)?.buffered()?.use { input ->
                     _terrainRefinementProgress.value = TerrainRefinementProgress(
-                        fraction = 0.08f,
-                        message = "Opening the original point cloud…",
+                            fraction = 0.08f,
+                            message = "Opening the original point cloud at ${options.rasterResolution} px…",
                     )
                     DemGenerator.parseFromStreamDetailed(
                         source.displayName,
@@ -584,7 +590,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                         _terrainRefinementProgress.value = TerrainRefinementProgress(
                             fraction = 0.08f + decodedFraction.coerceIn(0f, 1f) * 0.82f,
                             message = if (total > 0L) {
-                                "Decoding source detail · ${(decodedFraction * 100f).toInt().coerceIn(0, 100)}%"
+                                "Decoding ${options.rasterResolution} px source detail · " +
+                                    "${(decodedFraction * 100f).toInt().coerceIn(0, 100)}%"
                             } else {
                                 "Decoding source detail…"
                             },
@@ -611,9 +618,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                     currentSourceBounds = absoluteBounds
                     _isDetailedTerrain.value = true
                     _terrainDetailMessage.value = if (loadedFromCache) {
-                        "Detailed viewport opened from cache."
+                        "${options.rasterResolution} px detailed viewport opened from cache."
                     } else {
-                        "Detailed viewport loaded from the original point cloud."
+                        "${options.rasterResolution} px detailed viewport loaded from the original point cloud."
                     }
                     applyCustomTerrain(result, resetViewport = false)
                     _terrainRefinementProgress.value = TerrainRefinementProgress(

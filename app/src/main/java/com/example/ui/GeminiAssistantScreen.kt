@@ -139,11 +139,13 @@ data class AiTerrainState(
     val messages: List<AiMessage> = emptyList(),
     val isSending: Boolean = false,
     val cloudError: String? = null,
+    val cloudStage: String = "Cloud AI ready",
     val openAiConfigured: Boolean = false,
     val geminiConfigured: Boolean = false,
     val hasDeviceOpenAiKey: Boolean = false,
     val hasDeviceGeminiKey: Boolean = false,
     val activeProvider: TerrainAiProvider? = null,
+    val providerPreference: TerrainAiProvider? = null,
     val isLocalAnalyzing: Boolean = false,
     val isLocalRestoring: Boolean = false,
     val localStage: String = "Ready for offline terrain analysis",
@@ -153,6 +155,7 @@ data class AiTerrainState(
     val showSourceHillshade: Boolean = true,
     val localLayerBitmap: Bitmap? = null,
     val cloudMapTargets: List<CloudMapTarget> = emptyList(),
+    val cloudTerrainKey: String? = null,
     /** Field-verified points for the current dataset, derived from logged finds - see [VerifiedFeedback]. */
     val verifiedFeedback: List<VerifiedFeedbackPoint> = emptyList(),
 )
@@ -171,7 +174,7 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                 AiMessage(
                     id = ids.getAndIncrement(),
                     role = AiMessageRole.MODEL,
-                    text = "OpenAI is the primary cloud analyst, Gemini 3.1 Pro is the automatic fallback, and local terrain intelligence runs without either provider.",
+                    text = "OpenAI is the primary cloud analyst, Gemini is the automatic fallback, and local terrain intelligence runs without either provider.",
                 ),
             ),
         ).withProviderStatus(),
@@ -200,6 +203,18 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
     fun clearGeminiKey() {
         GeminiApiClient.clearDeviceApiKey(appContext)
         _state.value = _state.value.withProviderStatus().copy(cloudError = null)
+    }
+
+    fun selectCloudProvider(provider: TerrainAiProvider?) {
+        val unavailable = when (provider) {
+            TerrainAiProvider.OPENAI -> !OpenAiApiClient.isConfigured(appContext)
+            TerrainAiProvider.GEMINI -> !GeminiApiClient.isConfigured(appContext)
+            null -> false
+        }
+        _state.value = _state.value.copy(
+            providerPreference = provider.takeUnless { unavailable },
+            cloudError = if (unavailable) "${provider?.label} is not configured on this device." else null,
+        )
     }
 
     /**
@@ -323,9 +338,11 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         terrainContext: String,
         viewport: TerrainVisionSnapshot,
         attachViewportImage: Boolean,
+        terrainKey: String? = null,
     ) {
         val cleaned = prompt.trim()
         if (cleaned.isBlank() || _state.value.isSending) return
+        val preference = _state.value.providerPreference
         if (TerrainAiGateway.preferredProvider(appContext) == null) {
             _state.value = _state.value.copy(
                 cloudError = "Add an OpenAI key for the primary provider or a Gemini key for fallback. Offline analysis still works without a key.",
@@ -346,7 +363,12 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
             usedViewportImage = attachViewportImage,
         )
         val withUser = _state.value.messages + userMessage
-        _state.value = _state.value.copy(messages = withUser, isSending = true, cloudError = null)
+        _state.value = _state.value.copy(
+            messages = withUser,
+            isSending = true,
+            cloudError = null,
+            cloudStage = "Preparing the terrain image…",
+        )
 
         viewModelScope.launch {
             try {
@@ -377,6 +399,10 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                         terrainContext
                     },
                     image = image,
+                    requestedProvider = preference,
+                    onProviderStage = { stage ->
+                        _state.value = _state.value.copy(cloudStage = stage)
+                    },
                 )
                 val cloudTargets = if (image != null) {
                     parseCloudMapTargets(answer.text, viewport.bounds)
@@ -396,11 +422,13 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                     ),
                     isSending = false,
                     cloudError = null,
+                    cloudStage = "Completed with ${answer.provider.label}",
                     cloudMapTargets = if (cloudTargets.isNotEmpty()) {
                         cloudTargets
                     } else {
                         _state.value.cloudMapTargets
                     },
+                    cloudTerrainKey = if (cloudTargets.isNotEmpty()) terrainKey else _state.value.cloudTerrainKey,
                 ).withProviderStatus()
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -408,6 +436,7 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                 _state.value = _state.value.copy(
                     isSending = false,
                     cloudError = error.localizedMessage ?: "Cloud AI request failed",
+                    cloudStage = "Cloud AI request stopped",
                 ).withProviderStatus()
             }
         }
@@ -419,11 +448,13 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                 AiMessage(
                     id = ids.getAndIncrement(),
                     role = AiMessageRole.MODEL,
-                    text = "Conversation cleared. OpenAI remains primary, Gemini 3.1 Pro remains fallback, and local analysis is independent.",
+                    text = "Conversation cleared. OpenAI remains primary, Gemini remains fallback, and local analysis is independent.",
                 ),
             ),
             cloudError = null,
+            cloudStage = "Cloud AI ready",
             cloudMapTargets = emptyList(),
+            cloudTerrainKey = null,
         ).withProviderStatus()
     }
 
@@ -491,7 +522,7 @@ fun GeminiAssistantScreen(
                         Text("Terrain intelligence", fontWeight = FontWeight.Bold)
                         Text(
                             when (state.activeProvider) {
-                                TerrainAiProvider.OPENAI -> "OpenAI ${OpenAiApiClient.configuredModel()} primary · Gemini 3.1 Pro fallback"
+                                TerrainAiProvider.OPENAI -> "OpenAI ${OpenAiApiClient.configuredModel()} primary · Gemini ${GeminiApiClient.configuredModel()} fallback"
                                 TerrainAiProvider.GEMINI -> "Gemini ${GeminiApiClient.configuredModel()} fallback active · OpenAI not configured"
                                 null -> "Offline analysis ready · add OpenAI or Gemini for cloud analysis"
                             },
@@ -698,13 +729,7 @@ fun GeminiAssistantScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     CircularProgressIndicator(modifier = Modifier.width(22.dp).height(22.dp), strokeWidth = 2.dp)
-                    Text(
-                        if (state.activeProvider == TerrainAiProvider.OPENAI) {
-                            "OpenAI is analyzing the terrain…"
-                        } else {
-                            "Gemini 3.1 Pro is analyzing with high thinking…"
-                        },
-                    )
+                    Text(state.cloudStage)
                 }
             }
         }
@@ -769,7 +794,7 @@ private fun ProviderKeyEditor(
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Cloud provider keys", fontWeight = FontWeight.Bold)
             Text(
-                "OpenAI is tried first. Gemini 3.1 Pro with high thinking is used automatically when OpenAI is unavailable.",
+                "OpenAI is tried first. Gemini ${GeminiApiClient.configuredModel()} is used automatically when OpenAI is unavailable.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

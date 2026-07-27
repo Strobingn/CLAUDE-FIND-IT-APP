@@ -76,6 +76,8 @@ data class LidarOverlayTarget(
     val colorHex: Long = 0xFF29B6F6,
 )
 
+private const val MAX_VISIBLE_TARGET_LABELS = 12
+
 @OptIn(FlowPreview::class)
 @Composable
 fun LidarMapCanvas(
@@ -144,7 +146,15 @@ fun LidarMapCanvas(
     val overlayLabelPaint = remember {
         NativePaint(NativePaint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE
-            textSize = 26f
+            textSize = 20f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+    }
+    val overlayMarkerNumberPaint = remember {
+        NativePaint(NativePaint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            textSize = 15f
+            textAlign = NativePaint.Align.CENTER
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
     }
@@ -405,32 +415,72 @@ fun LidarMapCanvas(
                     drawCircle(color = Color.White, radius = 4f, center = Offset(px, py))
                     drawCircle(color = pinColor, radius = 18f, center = Offset(px, py), style = Stroke(width = 2f))
                 }
-                for (target in overlayTargets) {
+                val occupiedTargetLabels = mutableListOf<RectF>()
+                overlayTargets.forEachIndexed { targetIndex, target ->
                     val px = imageLeft + (target.xPercent.coerceIn(0f, 100f) / 100f) * displayWidth
                     val py = imageTop + (target.yPercent.coerceIn(0f, 100f) / 100f) * displayHeight
                     val pinColor = runCatching { Color(target.colorHex) }.getOrDefault(Color(0xFF29B6F6))
                     val marker = Offset(px, py)
-                    drawCircle(color = Color.Black, radius = 17f, center = marker, alpha = 0.72f)
-                    drawCircle(color = pinColor, radius = 13f, center = marker)
-                    drawCircle(color = Color.White, radius = 13f, center = marker, style = Stroke(width = 2.5f))
+                    drawCircle(color = Color.Black, radius = 15f, center = marker, alpha = 0.72f)
+                    drawCircle(color = pinColor, radius = 12f, center = marker)
+                    drawCircle(color = Color.White, radius = 12f, center = marker, style = Stroke(width = 2f))
+                    drawContext.canvas.nativeCanvas.drawText(
+                        "${targetIndex + 1}",
+                        px,
+                        py - (overlayMarkerNumberPaint.ascent() + overlayMarkerNumberPaint.descent()) / 2f,
+                        overlayMarkerNumberPaint,
+                    )
 
-                    val label = target.label.take(52)
+                    val label = target.label
+                        .replace("Cloud AI ", "AI ")
+                        .replace("Possible trash / refuse pit", "Refuse pit")
+                        .replace("Foundation / building platform", "Foundation")
+                        .take(36)
                     val textWidth = overlayLabelPaint.measureText(label)
                     val textHeight = overlayLabelPaint.textSize
-                    val labelX = (px + 20f).coerceIn(8f, (canvasWidth - textWidth - 12f).coerceAtLeast(8f))
-                    val labelBaseline = (py - 16f).coerceIn(textHeight + 8f, canvasHeight - 8f)
-                    drawContext.canvas.nativeCanvas.drawRoundRect(
-                        RectF(
-                            labelX - 7f,
-                            labelBaseline - textHeight - 6f,
-                            labelX + textWidth + 7f,
-                            labelBaseline + 7f,
-                        ),
-                        8f,
-                        8f,
-                        overlayLabelBackgroundPaint,
+                    val placements = listOf(
+                        px + 18f to py - 13f,
+                        px + 18f to py + textHeight + 17f,
+                        px - textWidth - 18f to py - 13f,
+                        px - textWidth - 18f to py + textHeight + 17f,
                     )
-                    drawContext.canvas.nativeCanvas.drawText(label, labelX, labelBaseline, overlayLabelPaint)
+                    val placement = placements.takeIf { targetIndex < MAX_VISIBLE_TARGET_LABELS }
+                        ?.firstNotNullOfOrNull { (candidateX, candidateBaseline) ->
+                        val labelX = candidateX.coerceIn(
+                            imageLeft + 6f,
+                            (imageLeft + displayWidth - textWidth - 10f).coerceAtLeast(imageLeft + 6f),
+                        )
+                        val labelBaseline = candidateBaseline.coerceIn(
+                            imageTop + textHeight + 7f,
+                            imageTop + displayHeight - 7f,
+                        )
+                        val bounds = RectF(
+                            labelX - 5f,
+                            labelBaseline - textHeight - 4f,
+                            labelX + textWidth + 5f,
+                            labelBaseline + 5f,
+                        )
+                        if (occupiedTargetLabels.none { RectF.intersects(it, bounds) }) {
+                            Triple(labelX, labelBaseline, bounds)
+                        } else {
+                            null
+                        }
+                        }
+                    placement?.let { (labelX, labelBaseline, bounds) ->
+                        occupiedTargetLabels += bounds
+                        drawContext.canvas.nativeCanvas.drawRoundRect(
+                            bounds,
+                            6f,
+                            6f,
+                            overlayLabelBackgroundPaint,
+                        )
+                        drawContext.canvas.nativeCanvas.drawText(
+                            label,
+                            labelX,
+                            labelBaseline,
+                            overlayLabelPaint,
+                        )
+                    }
                 }
                 inspectionPoint?.let { point ->
                     val px = imageLeft + (point.first.coerceIn(0f, 100f) / 100f) * displayWidth

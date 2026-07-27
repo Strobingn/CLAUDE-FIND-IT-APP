@@ -2,6 +2,7 @@ package com.example.ai
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import com.example.BuildConfig
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -79,12 +80,13 @@ internal class OpenAiApiClient(
             }
         }
 
+        val model = configuredModel()
         val body = JSONObject()
-            .put("model", configuredModel())
+            .put("model", model)
             .put("instructions", instructions)
             .put("input", input)
-            .put("reasoning", JSONObject().put("effort", "high"))
-            .put("max_output_tokens", 4_096)
+            .put("reasoning", JSONObject().put("effort", "low"))
+            .put("max_output_tokens", 2_048)
 
         val request = Request.Builder()
             .url(endpoint)
@@ -93,7 +95,11 @@ internal class OpenAiApiClient(
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
 
+        val startedAt = System.nanoTime()
+        Log.i(LOG_TAG, "Starting Responses request model=$model image=${image != null}")
         httpClient.newCall(request).execute().use { response ->
+            val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+            Log.i(LOG_TAG, "Responses request finished model=$model http=${response.code} elapsedMs=$elapsedMs")
             val responseText = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 val message = runCatching {
@@ -106,9 +112,9 @@ internal class OpenAiApiClient(
     }
 
     companion object {
-        private const val DEFAULT_MODEL = "gpt-5.1"
-        private const val STALE_MODEL = "gpt-5.2"
+        private const val DEFAULT_MODEL = "gpt-5.5"
         private const val DEFAULT_ENDPOINT = "https://api.openai.com/v1/responses"
+        private const val LOG_TAG = "FindItOpenAI"
         private const val MAX_HISTORY_TURNS = 16
         private const val PREFS_NAME = "openai_credentials"
         private const val PREF_API_KEY = "api_key"
@@ -151,9 +157,7 @@ internal class OpenAiApiClient(
 
         fun configuredModel(): String {
             val configured = BuildConfig.OPENAI_MODEL.trim()
-            return configured
-                .takeIf { it.isNotBlank() && !it.equals(STALE_MODEL, ignoreCase = true) }
-                ?: DEFAULT_MODEL
+            return configured.ifBlank { DEFAULT_MODEL }
         }
 
         fun configuredEndpoint(): String = BuildConfig.OPENAI_BASE_URL.trim().ifBlank { DEFAULT_ENDPOINT }
@@ -204,10 +208,10 @@ internal class OpenAiApiClient(
         }
 
         private fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(90, TimeUnit.SECONDS)
-            .readTimeout(180, TimeUnit.SECONDS)
-            .callTimeout(210, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(45, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(65, TimeUnit.SECONDS)
             .build()
     }
 }

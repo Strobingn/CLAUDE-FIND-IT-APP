@@ -49,6 +49,8 @@ import com.example.geospatial.GeoSpatialLibrary
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarMapCanvas
 import com.example.ui.components.LidarOverlayTarget
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 internal const val AI_HISTORIC_TARGETS_DEFAULT_VISIBLE = true
 
 /**
@@ -79,6 +81,7 @@ fun AiAnalysisWorkspace(
     val centerMarkerMode = rememberSaveable { mutableStateOf(false) }
     val showTargetDetails = rememberSaveable { mutableStateOf(false) }
     val showHistoricTargets = rememberSaveable { mutableStateOf(AI_HISTORIC_TARGETS_DEFAULT_VISIBLE) }
+    val showCloudTargets = rememberSaveable { mutableStateOf(true) }
     val showDatasetComparison = rememberSaveable { mutableStateOf(false) }
     val analyzedDatasets by viewModel.analyzedDatasets.collectAsStateWithLifecycle()
     val analysisBitmap = if (aiState.showSourceHillshade) {
@@ -105,12 +108,50 @@ fun AiAnalysisWorkspace(
                 )
             }
     }
-    val cloudTargetOverlays = remember(aiState.cloudMapTargets) {
-        aiState.cloudMapTargets.mapIndexed { index, target ->
+    val savedCloudTargets = remember(signals) {
+        signals.filter { it.source == DetectionSource.CLOUD_AI }.map { signal ->
+            CloudMapTarget(
+                xPercent = signal.gridX,
+                yPercent = signal.gridY,
+                label = signal.notes.substringAfter(CLOUD_AI_NOTE_PREFIX).substringBefore(" ·").ifBlank { "AI target" },
+                confidence = (signal.signalStrength / 100f).coerceIn(0f, 1f),
+            )
+        }
+    }
+    val currentCloudTargets = cloudTargetsForTerrain(aiState, terrainKey)
+    val visibleCloudTargets = remember(savedCloudTargets, currentCloudTargets) {
+        (savedCloudTargets + currentCloudTargets)
+            .distinctBy { cloudTargetIdentity(it) }
+    }
+    val cloudTargetOverlays = remember(visibleCloudTargets, showCloudTargets.value) {
+        if (!showCloudTargets.value) return@remember emptyList()
+        visibleCloudTargets.mapIndexed { index, target ->
             LidarOverlayTarget(
                 xPercent = target.xPercent,
                 yPercent = target.yPercent,
                 label = "Cloud AI ${index + 1}. ${target.label} · ${(target.confidence * 100f).toInt()}%",
+            )
+        }
+    }
+
+    LaunchedEffect(currentCloudTargets, terrainKey, metadata) {
+        currentCloudTargets.forEach { target ->
+            val coordinate = GeoSpatialLibrary.gridToGeographic(target.xPercent, target.yPercent, metadata)
+            viewModel.updateLoggedSignal(
+                TargetSignal(
+                    id = stableCloudTargetId(terrainKey, target),
+                    gridX = target.xPercent,
+                    gridY = target.yPercent,
+                    metalType = MetalType.MAGNETIC_ANOMALY,
+                    signalStrength = target.confidence * 100f,
+                    latitude = coordinate?.first,
+                    longitude = coordinate?.second,
+                    source = DetectionSource.CLOUD_AI,
+                    notes = "$CLOUD_AI_NOTE_PREFIX${target.label} · Generated from the attached AI viewport; terrain evidence only.",
+                    status = "AI suggested",
+                    datasetKey = aiState.localResult?.datasetKey,
+                    terrainKey = terrainKey,
+                ),
             )
         }
     }
@@ -289,6 +330,14 @@ fun AiAnalysisWorkspace(
                             modifier = Modifier.testTag("ai_show_target_details_button"),
                         ) { Text(if (showTargetDetails.value) "Hide details" else "Show details") }
                     }
+                    if (visibleCloudTargets.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = { showCloudTargets.value = !showCloudTargets.value },
+                            modifier = Modifier.testTag("ai_toggle_cloud_targets_button"),
+                        ) {
+                            Text(if (showCloudTargets.value) "Hide cloud AI (${visibleCloudTargets.size})" else "Show cloud AI (${visibleCloudTargets.size})")
+                        }
+                    }
                     if (analyzedDatasets.size >= 2) {
                         OutlinedButton(
                             onClick = { showDatasetComparison.value = true },
@@ -319,7 +368,7 @@ fun AiAnalysisWorkspace(
             isRendering = isRendering || aiState.isLocalAnalyzing,
             sweepX = 50f,
             sweepY = 50f,
-            loggedSignals = signals,
+            loggedSignals = signals.filterNot { it.source == DetectionSource.CLOUD_AI },
             onSweepPositionChanged = { _, _ -> },
             onStopSweeping = {},
             gridSpacing = gridSpacing,
@@ -330,7 +379,7 @@ fun AiAnalysisWorkspace(
             viewportResetKey = 0,
             showSurveyCursor = false,
             showCoordinateHud = false,
-            overlayTargets = (if (showHistoricTargets.value) targetOverlays else emptyList()) + cloudTargetOverlays,
+            overlayTargets = cloudTargetOverlays + if (showHistoricTargets.value) targetOverlays else emptyList(),
             onViewportChanged = { bounds, zoom, _, _ ->
                 visibleBounds.value = bounds
                 zoomLevel.value = zoom
@@ -365,6 +414,7 @@ fun AiAnalysisWorkspace(
             terrainSummary = summary,
             grid = grid,
             metadata = metadata,
+            terrainKey = terrainKey,
             assistantViewModel = assistantViewModel,
             // weight(1f), not fillMaxSize(): this Column isn't scrollable, and the header +
             // map above already claim their own height, so a fillMaxSize() panel here asked
@@ -381,6 +431,20 @@ fun AiAnalysisWorkspace(
             onDismiss = { showDatasetComparison.value = false },
         )
     }
+}
+
+private const val CLOUD_AI_NOTE_PREFIX = "Cloud AI target: "
+
+internal fun cloudTargetIdentity(target: CloudMapTarget): String =
+    "${target.xPercent.toInt()}:${target.yPercent.toInt()}:${target.label.trim().lowercase()}"
+
+internal fun cloudTargetsForTerrain(state: AiTerrainState, terrainKey: String): List<CloudMapTarget> =
+    if (state.cloudTerrainKey == terrainKey) state.cloudMapTargets else emptyList()
+
+internal fun stableCloudTargetId(terrainKey: String, target: CloudMapTarget): Long {
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest("$terrainKey|${cloudTargetIdentity(target)}".toByteArray())
+    return ByteBuffer.wrap(digest, 0, Long.SIZE_BYTES).long and Long.MAX_VALUE
 }
 
 @Composable

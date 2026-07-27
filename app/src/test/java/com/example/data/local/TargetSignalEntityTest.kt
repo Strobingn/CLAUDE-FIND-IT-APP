@@ -8,6 +8,19 @@ import org.junit.Test
 
 class TargetSignalEntityTest {
     @Test
+    fun cloudAiSourceSurvivesPersistenceMapping() {
+        val signal = TargetSignal(
+            gridX = 25f,
+            gridY = 75f,
+            metalType = MetalType.MAGNETIC_ANOMALY,
+            signalStrength = 82f,
+            source = DetectionSource.CLOUD_AI,
+            terrainKey = "lidar:file:///cloud.laz",
+        )
+        assertEquals(DetectionSource.CLOUD_AI, signal.toEntity().toDomain().source)
+    }
+
+    @Test
     fun photoUrisSurviveDatabaseMapping() {
         val signal = TargetSignal(
             id = 42,

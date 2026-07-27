@@ -13,7 +13,7 @@ import kotlin.math.sqrt
 
 // Below this pixel count, thread creation/join overhead outweighs the parallel win — the
 // built-in 100x100 demo sites and default 320x320 imports stay on the single-threaded path;
-// only larger refined-detail grids (up to 1024x1024) actually parallelize.
+// only larger refined-detail grids (up to 1536x1536 on capable devices) actually parallelize.
 private const val MIN_PIXELS_FOR_PARALLEL_RENDER = 200_000
 
 /** A memory-bounded elevation raster used for terrain visualization and screening. */

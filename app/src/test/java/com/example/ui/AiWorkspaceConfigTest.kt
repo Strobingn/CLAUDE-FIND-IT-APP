@@ -8,11 +8,11 @@ import org.junit.Test
 class AiWorkspaceConfigTest {
     @Test
     fun aiRefineResolutionAdaptsToDeviceCapability() {
-        assertEquals(768, chooseAiRefineResolution(256, false, 8))
-        assertEquals(768, chooseAiRefineResolution(1_024, true, 8))
-        assertEquals(768, chooseAiRefineResolution(320, false, 4))
-        assertEquals(768, chooseAiRefineResolution(384, false, 6))
-        assertEquals(1_024, chooseAiRefineResolution(512, false, 8))
+        assertEquals(1_024, chooseAiRefineResolution(256, false, 8, 2_048))
+        assertEquals(768, chooseAiRefineResolution(1_024, true, 8, 8_192))
+        assertEquals(1_536, chooseAiRefineResolution(320, false, 4, 4_096))
+        assertEquals(1_536, chooseAiRefineResolution(384, false, 6, 4_096))
+        assertEquals(1_536, chooseAiRefineResolution(256, false, 8, 3_498))
     }
 
     @Test
@@ -45,5 +45,29 @@ class AiWorkspaceConfigTest {
         assertEquals(40f, targets.single().xPercent, 0.001f)
         assertEquals(50f, targets.single().yPercent, 0.001f)
         assertEquals("possible cellar rim", targets.single().label)
+    }
+
+    @Test
+    fun cloudTargetIdsAreStableAndTerrainSpecific() {
+        val target = CloudMapTarget(40f, 50f, "possible cellar rim", 0.8f)
+        assertEquals(
+            stableCloudTargetId("lidar:file:///first.laz", target),
+            stableCloudTargetId("lidar:file:///first.laz", target),
+        )
+        assertTrue(
+            stableCloudTargetId("lidar:file:///first.laz", target) !=
+                stableCloudTargetId("lidar:file:///second.laz", target),
+        )
+    }
+
+    @Test
+    fun delayedCloudTargetsCannotCrossIntoAnotherTerrain() {
+        val target = CloudMapTarget(40f, 50f, "possible cellar rim", 0.8f)
+        val state = AiTerrainState(
+            cloudMapTargets = listOf(target),
+            cloudTerrainKey = "lidar:file:///first.laz",
+        )
+        assertEquals(listOf(target), cloudTargetsForTerrain(state, "lidar:file:///first.laz"))
+        assertTrue(cloudTargetsForTerrain(state, "lidar:file:///second.laz").isEmpty())
     }
 }

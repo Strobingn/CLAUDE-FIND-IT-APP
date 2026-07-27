@@ -68,6 +68,7 @@ fun AiCloudPanel(
     terrainSummary: String,
     grid: ElevationGrid,
     metadata: GeoSpatialMetadata,
+    terrainKey: String,
     assistantViewModel: AiTerrainViewModel,
     modifier: Modifier = Modifier,
 ) {
@@ -115,33 +116,61 @@ fun AiCloudPanel(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("AI analysis", fontWeight = FontWeight.Bold)
-                        Text(
-                            when (state.activeProvider) {
-                                TerrainAiProvider.OPENAI -> "OpenAI ${OpenAiApiClient.configuredModel()} primary · Gemini fallback ready"
-                                TerrainAiProvider.GEMINI -> "Gemini ${GeminiApiClient.configuredModel()} active"
-                                null -> "Add an OpenAI or Gemini key"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("AI analysis", fontWeight = FontWeight.Bold)
+                            Text(
+                                when (state.activeProvider) {
+                                    TerrainAiProvider.OPENAI -> "OpenAI ${OpenAiApiClient.configuredModel()} primary · Gemini fallback ready"
+                                    TerrainAiProvider.GEMINI -> "Gemini ${GeminiApiClient.configuredModel()} active"
+                                    null -> "Add an OpenAI or Gemini key"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        FilterChip(
+                            selected = attachImage && imageReady,
+                            onClick = { attachImage = !attachImage },
+                            enabled = imageReady && !state.isSending,
+                            label = { Text(if (attachImage && imageReady) "Map attached" else "Attach map") },
+                            leadingIcon = { Icon(Icons.Default.ImageSearch, contentDescription = null) },
                         )
+                        TextButton(onClick = { showKeys = !showKeys }) { Text("Keys") }
+                        IconButton(onClick = assistantViewModel::clearConversation) {
+                            Icon(Icons.Default.DeleteSweep, contentDescription = "Clear conversation")
+                        }
                     }
-                    FilterChip(
-                        selected = attachImage && imageReady,
-                        onClick = { attachImage = !attachImage },
-                        enabled = imageReady && !state.isSending,
-                        label = { Text(if (attachImage && imageReady) "Map attached" else "Attach map") },
-                        leadingIcon = { Icon(Icons.Default.ImageSearch, contentDescription = null) },
-                    )
-                    TextButton(onClick = { showKeys = !showKeys }) { Text("Keys") }
-                    IconButton(onClick = assistantViewModel::clearConversation) {
-                        Icon(Icons.Default.DeleteSweep, contentDescription = "Clear conversation")
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = state.providerPreference == null,
+                            onClick = { assistantViewModel.selectCloudProvider(null) },
+                            enabled = !state.isSending,
+                            label = { Text("Auto") },
+                        )
+                        FilterChip(
+                            selected = state.providerPreference == TerrainAiProvider.OPENAI,
+                            onClick = { assistantViewModel.selectCloudProvider(TerrainAiProvider.OPENAI) },
+                            enabled = state.openAiConfigured && !state.isSending,
+                            label = { Text("OpenAI") },
+                        )
+                        FilterChip(
+                            selected = state.providerPreference == TerrainAiProvider.GEMINI,
+                            onClick = { assistantViewModel.selectCloudProvider(TerrainAiProvider.GEMINI) },
+                            enabled = state.geminiConfigured && !state.isSending,
+                            label = { Text("Gemini") },
+                        )
                     }
                 }
             }
@@ -255,7 +284,7 @@ fun AiCloudPanel(
             item {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CircularProgressIndicator(modifier = Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
-                    Text("Analyzing the visible map…")
+                    Text(state.cloudStage)
                 }
             }
         }
@@ -286,6 +315,7 @@ fun AiCloudPanel(
                             terrainContext = terrainContext,
                             viewport = viewport,
                             attachViewportImage = attachImage && imageReady,
+                            terrainKey = terrainKey,
                         )
                         draft = ""
                     },

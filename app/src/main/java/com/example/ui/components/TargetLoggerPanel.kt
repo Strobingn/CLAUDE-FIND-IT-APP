@@ -430,7 +430,16 @@ private fun EditSignalDialog(
     var notes by remember(signal.id) { mutableStateOf(signal.notes) }
     var status by remember(signal.id) { mutableStateOf(signal.status) }
     var outcome by remember(signal.id) { mutableStateOf(signal.outcome) }
-    val statuses = listOf("Logged", "Excavated", "Anomalous", "Trash")
+    val statuses = listOf(
+        "AI suggested",
+        "Selected",
+        "Approaching",
+        "Checked",
+        "Productive",
+        "Rejected",
+        "Inconclusive",
+        "Follow up",
+    )
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Edit find") },

@@ -35,11 +35,11 @@ fun projectSecret(name: String): String =
   }
 
 val openAiApiKey = projectSecret("OPENAI_API_KEY")
-val openAiModel = projectSecret("OPENAI_MODEL").ifBlank { "gpt-5.2" }
+val openAiModel = projectSecret("OPENAI_MODEL").ifBlank { "gpt-5.5" }
 val openAiBaseUrl = projectSecret("OPENAI_BASE_URL").ifBlank { "https://api.openai.com/v1/responses" }
 val openAiProxyToken = projectSecret("OPENAI_PROXY_TOKEN").ifBlank { projectSecret("PROXY_AUTH_TOKEN") }
 val geminiApiKey = projectSecret("GEMINI_API_KEY").ifBlank { projectSecret("GOOGLE_API_KEY") }
-val geminiModel = projectSecret("GEMINI_MODEL").ifBlank { "gemini-3.1-pro-preview" }
+val geminiModel = projectSecret("GEMINI_MODEL").ifBlank { "gemini-3.5-flash" }
 val mapsApiKey = projectSecret("MAPS_API_KEY")
 
 val releaseKeystorePath = System.getenv("KEYSTORE_PATH")

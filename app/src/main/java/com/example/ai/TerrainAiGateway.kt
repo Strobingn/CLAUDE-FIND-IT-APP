@@ -16,7 +16,7 @@ data class TerrainAiAnswer(
 )
 
 /**
- * Provider order is intentional: OpenAI first, Gemini 3.1 Pro second.
+ * Provider order is intentional: OpenAI first, Gemini second.
  * Local terrain intelligence is separate and never depends on either cloud provider.
  */
 internal class TerrainAiGateway(context: Context) {
@@ -28,11 +28,32 @@ internal class TerrainAiGateway(context: Context) {
         conversation: List<GeminiConversationTurn>,
         systemContext: String,
         image: GeminiImageInput? = null,
+        requestedProvider: TerrainAiProvider? = null,
+        onProviderStage: (String) -> Unit = {},
     ): TerrainAiAnswer {
         val openAiConfigured = OpenAiApiClient.isConfigured(appContext)
         val geminiConfigured = GeminiApiClient.isConfigured(appContext)
 
+        if (requestedProvider == TerrainAiProvider.OPENAI) {
+            check(openAiConfigured) { "OpenAI is not configured on this device." }
+            onProviderStage("Asking OpenAI ${OpenAiApiClient.configuredModel()}…")
+            return TerrainAiAnswer(
+                text = openAi.generate(conversation, systemContext, image),
+                provider = TerrainAiProvider.OPENAI,
+            )
+        }
+
+        if (requestedProvider == TerrainAiProvider.GEMINI) {
+            check(geminiConfigured) { "Gemini is not configured on this device." }
+            onProviderStage("Asking Gemini ${GeminiApiClient.configuredModel()}…")
+            return TerrainAiAnswer(
+                text = gemini.generate(conversation, systemContext, image),
+                provider = TerrainAiProvider.GEMINI,
+            )
+        }
+
         if (openAiConfigured) {
+            onProviderStage("Asking OpenAI ${OpenAiApiClient.configuredModel()}…")
             try {
                 return TerrainAiAnswer(
                     text = openAi.generate(conversation, systemContext, image),
@@ -49,6 +70,7 @@ internal class TerrainAiGateway(context: Context) {
                     )
                 }
                 try {
+                    onProviderStage("OpenAI failed · trying Gemini ${GeminiApiClient.configuredModel()}…")
                     return TerrainAiAnswer(
                         text = gemini.generate(conversation, systemContext, image),
                         provider = TerrainAiProvider.GEMINI,
@@ -59,7 +81,7 @@ internal class TerrainAiGateway(context: Context) {
                 } catch (geminiError: Throwable) {
                     val geminiReason = geminiError.localizedMessage ?: "Gemini fallback failed"
                     throw IOException(
-                        "Both cloud providers failed. OpenAI: $openAiReason. Gemini 3.1 Pro fallback: $geminiReason",
+                        "Both cloud providers failed. OpenAI: $openAiReason. Gemini: $geminiReason",
                         geminiError,
                     )
                 }
@@ -67,6 +89,7 @@ internal class TerrainAiGateway(context: Context) {
         }
 
         if (geminiConfigured) {
+            onProviderStage("Asking Gemini ${GeminiApiClient.configuredModel()}…")
             try {
                 return TerrainAiAnswer(
                     text = gemini.generate(conversation, systemContext, image),
@@ -77,7 +100,7 @@ internal class TerrainAiGateway(context: Context) {
                 throw cancelled
             } catch (geminiError: Throwable) {
                 throw IOException(
-                    "OpenAI is not configured and Gemini 3.1 Pro failed: ${geminiError.localizedMessage ?: "unknown Gemini error"}",
+                    "OpenAI is not configured and Gemini failed: ${geminiError.localizedMessage ?: "unknown Gemini error"}",
                     geminiError,
                 )
             }
@@ -96,9 +119,13 @@ internal class TerrainAiGateway(context: Context) {
         }
 
         fun providerStatus(context: Context): String = buildString {
-            append("OpenAI=")
+            append("OpenAI ")
+            append(OpenAiApiClient.configuredModel())
+            append("=")
             append(if (OpenAiApiClient.isConfigured(context)) "configured" else "missing")
-            append(" · Gemini 3.1 Pro=")
+            append(" · Gemini ")
+            append(GeminiApiClient.configuredModel())
+            append("=")
             append(if (GeminiApiClient.isConfigured(context)) "configured" else "missing")
         }
     }

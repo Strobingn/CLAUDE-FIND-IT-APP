@@ -93,7 +93,7 @@ fun LidarControlPanel(
         ControlCard("Relief style") {
             OptionGrid(
                 options = listOf(
-                    Option(0, "Standard", "Single light source"),
+                    Option(0, "Hillshade", "Bare-earth terrain with a single light source"),
                     Option(1, "Multi-light", "Four balanced directions"),
                     Option(2, "Slope", "Highlight steep ground"),
                     Option(3, "Local relief", "Banks, walls and cellars"),

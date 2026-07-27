@@ -1,9 +1,13 @@
 package com.example.ai
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Base64
+import android.util.Log
 import com.example.BuildConfig
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -87,24 +91,39 @@ internal class GeminiApiClient(
             .put(
                 "generationConfig",
                 JSONObject()
-                    .put("temperature", 1.0)
-                    .put("topP", 0.95)
-                    .put("maxOutputTokens", 8_192),
+                    .put("temperature", 0.4)
+                    .put("topP", 0.9)
+                    .put("maxOutputTokens", 2_048),
             )
 
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
             .header("x-goog-api-key", apiKey)
             .header("Accept", "application/json")
             .post(requestJson.toString().toRequestBody(JSON_MEDIA_TYPE))
-            .build()
+        androidSigningCertificateSha1(appContext)?.let { certificateSha1 ->
+            requestBuilder
+                .header("X-Android-Package", appContext.packageName)
+                .header("X-Android-Cert", certificateSha1)
+        }
+        val request = requestBuilder.build()
 
+        val startedAt = System.nanoTime()
+        Log.i(LOG_TAG, "Starting generateContent request model=$model image=${image != null}")
         httpClient.newCall(request).execute().use { response ->
+            val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+            Log.i(LOG_TAG, "generateContent finished model=$model http=${response.code} elapsedMs=$elapsedMs")
             val responseText = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 val message = runCatching {
                     JSONObject(responseText).optJSONObject("error")?.optString("message")
                 }.getOrNull().orEmpty()
+                if (response.code == 403 && message.contains("blocked", ignoreCase = true)) {
+                    throw IOException(
+                        "Google blocked this Gemini API key. In Google AI Studio, create a new auth key " +
+                            "or restrict the existing key to Gemini API only, then replace it under Keys.",
+                    )
+                }
                 throw IOException(message.ifBlank { "Gemini request failed with HTTP ${response.code}" })
             }
 
@@ -134,7 +153,8 @@ internal class GeminiApiClient(
     }
 
     companion object {
-        private const val DEFAULT_MODEL = "gemini-3.1-pro-preview"
+        private const val DEFAULT_MODEL = "gemini-3.5-flash"
+        private const val LOG_TAG = "FindItGemini"
         private const val MAX_HISTORY_TURNS = 16
         private const val PREFS_NAME = "gemini_credentials"
         private const val PREF_API_KEY = "api_key"
@@ -170,6 +190,30 @@ internal class GeminiApiClient(
 
         fun configuredModel(): String = BuildConfig.GEMINI_MODEL.trim().ifBlank { DEFAULT_MODEL }
 
+        @Suppress("DEPRECATION")
+        private fun androidSigningCertificateSha1(context: Context): String? {
+            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val info = context.packageManager.getPackageInfo(
+                    context.packageName,
+                    PackageManager.GET_SIGNING_CERTIFICATES,
+                ).signingInfo
+                if (info?.hasMultipleSigners() == true) {
+                    info.apkContentsSigners
+                } else {
+                    info?.signingCertificateHistory
+                }
+            } else {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    PackageManager.GET_SIGNATURES,
+                ).signatures
+            }
+            val certificate = signatures?.firstOrNull()?.toByteArray() ?: return null
+            return MessageDigest.getInstance("SHA-1")
+                .digest(certificate)
+                .joinToString(separator = "") { byte -> "%02X".format(byte) }
+        }
+
         private fun configuredApiKey(context: Context): String {
             val deviceKey = context.applicationContext
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -191,10 +235,10 @@ internal class GeminiApiClient(
         }
 
         private fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(90, TimeUnit.SECONDS)
-            .readTimeout(180, TimeUnit.SECONDS)
-            .callTimeout(210, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(45, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(65, TimeUnit.SECONDS)
             .build()
     }
 }
