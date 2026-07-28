@@ -30,9 +30,18 @@ class AiWorkspaceConfigTest {
     }
 
     @Test
-    fun aiAnalysisDefaultsToSourceHillshade() {
+    fun aiAnalysisDefaultsToSourceRender() {
         assertTrue(AiTerrainState().showSourceHillshade)
         assertTrue(AI_HISTORIC_TARGETS_DEFAULT_VISIBLE)
+    }
+
+    @Test
+    fun aiSourceRenderUsesTheActualTerrainVisualizationLabel() {
+        assertEquals("Standard hillshade", aiSourceVisualizationLabel(0))
+        assertEquals("Multi-directional hillshade", aiSourceVisualizationLabel(1))
+        assertEquals("Slope", aiSourceVisualizationLabel(2))
+        assertEquals("Local relief", aiSourceVisualizationLabel(3))
+        assertEquals("Terrain render", aiSourceVisualizationLabel(99))
     }
 
     @Test
