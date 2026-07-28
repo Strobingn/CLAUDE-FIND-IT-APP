@@ -17,6 +17,7 @@ import com.example.data.field.BreadcrumbTrack
 import com.example.data.LazDatasetStore
 import com.example.data.LazTerrainDiskCache
 import com.example.data.LazTerrainMemoryCache
+import com.example.data.LazSpatialIndex
 import com.example.data.LazTerrainReader
 import com.example.data.LidarImportOptions
 import com.example.data.MetalType
@@ -663,22 +664,52 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                             refinementMemoryCache.put(file, options, it)
                             loadedFromCache = true
                         }
-                        ?: LazTerrainReader.read(file, options) { decoded, total ->
-                            val decodedFraction = if (total > 0L) decoded.toFloat() / total.toFloat() else 0f
-                            _terrainRefinementProgress.value = TerrainRefinementProgress(
-                                fraction = 0.08f + decodedFraction.coerceIn(0f, 1f) * 0.82f,
-                                message = "Decoding ${options.rasterResolution} px source detail · " +
-                                    "${(decodedFraction * 100f).toInt().coerceIn(0, 100)}%",
-                            )
-                        }?.let { laz ->
-                            DemGenerator.TerrainLoadResult(
-                                grid = laz.grid,
-                                summary = laz.note,
-                                isBareEarth = laz.appliedGroundMode != GroundSurfaceMode.SURFACE_MODEL,
-                            )
-                        }?.also {
-                            refinementMemoryCache.put(file, options, it)
-                            decodedNow = true
+                        ?: run {
+                            // Zooming to a small viewport asks the decoder for a tiny fraction of
+                            // a file that can hold hundreds of millions of returns. A spatial
+                            // index lets it seek past whole compressed chunks outside that
+                            // viewport instead of decompressing every point just to discard it.
+                            // This one-time pass only reads X/Y, so it costs far less than a real
+                            // decode, and every later zoom on this file reuses the sidecar it
+                            // writes rather than paying it again.
+                            if (!LazSpatialIndex.exists(file)) {
+                                _terrainRefinementProgress.value = TerrainRefinementProgress(
+                                    fraction = 0.04f,
+                                    message = "Indexing source for fast zoomed reads (one-time)…",
+                                )
+                                LazSpatialIndex.build(
+                                    file,
+                                    onProgress = { indexed, totalPoints ->
+                                        val indexFraction = if (totalPoints > 0L) {
+                                            indexed.toFloat() / totalPoints.toFloat()
+                                        } else {
+                                            0f
+                                        }
+                                        _terrainRefinementProgress.value = TerrainRefinementProgress(
+                                            fraction = 0.04f + indexFraction.coerceIn(0f, 1f) * 0.04f,
+                                            message = "Indexing source for fast zoomed reads · " +
+                                                "${(indexFraction * 100f).toInt().coerceIn(0, 100)}%",
+                                        )
+                                    },
+                                )
+                            }
+                            LazTerrainReader.read(file, options) { decoded, total ->
+                                val decodedFraction = if (total > 0L) decoded.toFloat() / total.toFloat() else 0f
+                                _terrainRefinementProgress.value = TerrainRefinementProgress(
+                                    fraction = 0.08f + decodedFraction.coerceIn(0f, 1f) * 0.82f,
+                                    message = "Decoding ${options.rasterResolution} px source detail · " +
+                                        "${(decodedFraction * 100f).toInt().coerceIn(0, 100)}%",
+                                )
+                            }?.let { laz ->
+                                DemGenerator.TerrainLoadResult(
+                                    grid = laz.grid,
+                                    summary = laz.note,
+                                    isBareEarth = laz.appliedGroundMode != GroundSurfaceMode.SURFACE_MODEL,
+                                )
+                            }?.also {
+                                refinementMemoryCache.put(file, options, it)
+                                decodedNow = true
+                            }
                         }
                 } ?: getApplication<Application>().contentResolver.openInputStream(sourceUri)?.buffered()?.use { input ->
                     _terrainRefinementProgress.value = TerrainRefinementProgress(
