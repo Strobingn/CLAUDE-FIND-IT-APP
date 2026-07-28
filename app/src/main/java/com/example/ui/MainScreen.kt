@@ -106,8 +106,13 @@ private val tabs = listOf(
     AppTab("Import", "Terrain library", Icons.Default.UploadFile),
 )
 
-/** Phones need more map space than tablets; six labelled navigation items are too tall there. */
-internal fun usesCompactBottomNavigation(screenWidthDp: Int): Boolean = screenWidthDp < 600
+/**
+ * Phones need more map space than tablets; six labelled navigation items are too tall there.
+ * Uses the smallest-width bucket (stable across rotation) rather than the current screen width,
+ * which becomes the larger dimension in landscape and would otherwise flip a phone into the
+ * "tablet" layout - full-height labelled items - exactly when landscape height is tightest.
+ */
+internal fun usesCompactBottomNavigation(smallestScreenWidthDp: Int): Boolean = smallestScreenWidthDp < 600
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -117,7 +122,7 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
     val terrainSelected = selectedTab.intValue == 0
     val activeTab = tabs[selectedTab.intValue]
     val compactBottomNavigation = usesCompactBottomNavigation(
-        LocalConfiguration.current.screenWidthDp,
+        LocalConfiguration.current.smallestScreenWidthDp,
     )
     Scaffold(
         modifier = modifier.fillMaxSize(),
