@@ -34,6 +34,7 @@ import com.example.analysis.DatasetComparison
 import com.example.analysis.DatasetComparisonResult
 import com.example.data.local.AnalyzedDatasetEntity
 import com.example.data.local.SavedTarget
+import com.example.geospatial.MeasurementFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -194,7 +195,7 @@ private fun MatchCard(first: SavedTarget, second: SavedTarget, distanceMeters: D
             )
             if (distanceMeters != null) {
                 Text(
-                    "${"%.1f".format(distanceMeters)} m apart",
+                    "${MeasurementFormat.length(distanceMeters)} apart",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

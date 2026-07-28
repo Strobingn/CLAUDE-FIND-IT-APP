@@ -83,6 +83,7 @@ import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
 import com.example.data.export.buildKml
 import com.example.data.export.ProjectExportFiles
+import com.example.geospatial.MeasurementFormat
 import kotlinx.coroutines.launch
 
 @Composable
@@ -585,7 +586,7 @@ private fun FieldNavigationCard(
             }
             currentAccuracyMeters?.takeIf { it.isFinite() && it >= 0f }?.let { accuracy ->
                 Text(
-                    "Current GPS accuracy ±${"%.1f".format(java.util.Locale.US, accuracy)} m",
+                    "Current GPS accuracy ±${MeasurementFormat.length(accuracy)}",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -598,11 +599,8 @@ private fun FieldNavigationCard(
     }
 }
 
-private fun formatNavigationDistance(meters: Double): String = when {
-    meters >= 1_000.0 -> "${"%.2f".format(java.util.Locale.US, meters / 1_000.0)} km away"
-    meters >= 100.0 -> "${meters.toInt()} m away"
-    else -> "${"%.1f".format(java.util.Locale.US, meters)} m away"
-}
+private fun formatNavigationDistance(meters: Double): String =
+    "${MeasurementFormat.length(meters)} away"
 
 @Composable
 private fun SignalCard(
@@ -641,7 +639,7 @@ private fun SignalCard(
                 )
                 signal.gpsAccuracyMeters?.let { accuracy ->
                     Text(
-                        "GPS captured ${"%.1f".format(java.util.Locale.US, accuracy)} m accuracy",
+                        "GPS captured ${MeasurementFormat.length(accuracy)} accuracy",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.secondary,
                     )

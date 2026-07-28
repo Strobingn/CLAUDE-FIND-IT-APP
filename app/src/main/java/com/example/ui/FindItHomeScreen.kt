@@ -60,6 +60,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.geospatial.MeasurementFormat
 import com.example.ui.theme.Grey200
 import com.example.ui.theme.Grey400
 import com.example.ui.theme.Grey700
@@ -169,10 +170,10 @@ private fun FindItHomeScreen(
                     terrainSummary = terrainSummary,
                     gridLabel = String.format(
                         Locale.US,
-                        "%d×%d cells · %.2f m/cell",
+                        "%d×%d cells · %s/cell",
                         grid.width,
                         grid.height,
-                        grid.cellSizeMeters,
+                        MeasurementFormat.resolution(grid.cellSizeMeters),
                     ),
                     onOpenWorkspace = onOpenWorkspace,
                 )
@@ -196,7 +197,7 @@ private fun FindItHomeScreen(
                 ) {
                     MetricCard(
                         title = "Coverage",
-                        value = String.format(Locale.US, "%.0f × %.0f m", widthMeters, heightMeters),
+                        value = "${MeasurementFormat.length(widthMeters)} × ${MeasurementFormat.length(heightMeters)}",
                         subtitle = if (isDetailed) "Detailed viewport" else "Current raster",
                         icon = Icons.Default.CenterFocusStrong,
                         modifier = Modifier.weight(1f),

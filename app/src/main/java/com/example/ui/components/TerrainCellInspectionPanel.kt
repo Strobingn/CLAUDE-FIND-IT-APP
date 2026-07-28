@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.analysis.TerrainCellInspection
 import com.example.geospatial.GeoSpatialLibrary
+import com.example.geospatial.MeasurementFormat
 import java.util.Locale
 
 @Composable
@@ -76,9 +77,9 @@ fun TerrainCellInspectionPanel(
             )
             HorizontalDivider()
             if (inspection.valid) {
-                InspectionValue("Elevation", meters(inspection.elevationMeters))
-                InspectionValue("Bare earth", meters(inspection.bareEarthMeters))
-                InspectionValue("Canopy height", meters(inspection.canopyHeightMeters))
+                InspectionValue("Elevation", MeasurementFormat.feet(inspection.elevationMeters, 2))
+                InspectionValue("Bare earth", MeasurementFormat.feet(inspection.bareEarthMeters, 2))
+                InspectionValue("Canopy height", MeasurementFormat.length(inspection.canopyHeightMeters))
                 InspectionValue("Slope", decimal(inspection.slopeDegrees, "°"))
                 InspectionValue(
                     "Aspect",
@@ -86,13 +87,13 @@ fun TerrainCellInspectionPanel(
                         "${decimal(it, "°")} ${compassDirection(it)}"
                     } ?: "Flat",
                 )
-                InspectionValue("Curvature", decimal(inspection.curvaturePerMeter, " m⁻¹", 4))
-                InspectionValue("Local relief", signedMeters(inspection.localReliefMeters))
-                InspectionValue("Ruggedness", meters(inspection.ruggednessMeters))
-                InspectionValue("Depression depth", meters(inspection.depressionDepthMeters))
+                InspectionValue("Curvature", MeasurementFormat.perFoot(inspection.curvaturePerMeter))
+                InspectionValue("Local relief", MeasurementFormat.signedLength(inspection.localReliefMeters))
+                InspectionValue("Ruggedness", MeasurementFormat.length(inspection.ruggednessMeters))
+                InspectionValue("Depression depth", MeasurementFormat.length(inspection.depressionDepthMeters))
                 InspectionValue("Positive openness", decimal(inspection.positiveOpennessDegrees, "°"))
                 InspectionValue("Negative openness", decimal(inspection.negativeOpennessDegrees, "°"))
-                InspectionValue("Linearity response", decimal(inspection.linearityResponse, " m⁻¹", 4))
+                InspectionValue("Linearity response", MeasurementFormat.perFoot(inspection.linearityResponse))
             } else {
                 Text(
                     "This raster location contains no valid source measurement. Select a nearby " +
@@ -102,10 +103,10 @@ fun TerrainCellInspectionPanel(
                 )
             }
             HorizontalDivider()
-            InspectionValue("Cell resolution", "${decimal(inspection.cellSizeMeters, " m")} square")
+            InspectionValue("Cell resolution", "${MeasurementFormat.resolution(inspection.cellSizeMeters)} square")
             InspectionValue(
                 "Neighborhood",
-                "${decimal(inspection.neighborhoodRadiusMeters, " m")} · " +
+                "${MeasurementFormat.length(inspection.neighborhoodRadiusMeters)} · " +
                     "${inspection.validNeighborhoodCells} valid cells",
             )
             val latitude = inspection.latitude
@@ -141,11 +142,6 @@ private fun InspectionValue(label: String, value: String) {
         )
     }
 }
-
-private fun meters(value: Float): String = decimal(value, " m", 3)
-
-private fun signedMeters(value: Float): String =
-    String.format(Locale.US, "%+.3f m", value)
 
 private fun decimal(value: Float, suffix: String, digits: Int = 2): String =
     String.format(Locale.US, "%.${digits}f%s", value, suffix)

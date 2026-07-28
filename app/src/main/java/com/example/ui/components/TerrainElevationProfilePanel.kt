@@ -23,7 +23,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.analysis.TerrainElevationProfile
-import java.util.Locale
+import com.example.geospatial.MeasurementFormat
 
 /** Compact chart for an exact raster-cell profile selected on the terrain canvas. */
 @Composable
@@ -103,8 +103,4 @@ private fun RowScope.ProfileMetric(label: String, value: String) {
     }
 }
 
-private fun formatMeters(value: Float): String = when {
-    value >= 1_000f -> String.format(Locale.US, "%.2f km", value / 1_000f)
-    value >= 10f -> String.format(Locale.US, "%.0f m", value)
-    else -> String.format(Locale.US, "%.1f m", value)
-}
+private fun formatMeters(value: Float): String = MeasurementFormat.length(value)

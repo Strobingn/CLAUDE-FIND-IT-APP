@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 import kotlin.math.roundToInt
+import com.example.geospatial.MeasurementFormat
 
 @Composable
 fun LidarControlPanel(
@@ -220,7 +221,7 @@ fun LidarControlPanel(
         ControlCard("Feature screening") {
             LabeledSlider(
                 label = "Feature scale",
-                displayValue = String.format(Locale.US, "%.1f m", featureScaleMeters),
+                displayValue = MeasurementFormat.length(featureScaleMeters),
                 value = featureScaleMeters,
                 range = 1f..40f,
                 onValueChange = onFeatureScaleChanged,
@@ -239,7 +240,7 @@ fun LidarControlPanel(
                 displayValue = if (contourIntervalMeters < 0.05f) {
                     "Off"
                 } else {
-                    String.format(Locale.US, "%.2f m", contourIntervalMeters)
+                    MeasurementFormat.length(contourIntervalMeters)
                 },
                 value = contourIntervalMeters,
                 range = 0f..5f,
