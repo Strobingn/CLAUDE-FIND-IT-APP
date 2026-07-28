@@ -50,6 +50,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlin.math.cos
+import com.example.geospatial.MeasurementFormat
 
 /**
  * Manual geo-reference mode for LAZ files without GPS coordinates.
@@ -221,7 +222,10 @@ fun ManualGeoReferenceOverlay(
                 tonalElevation = 4.dp,
             ) {
                 Column(Modifier.padding(10.dp)) {
-                    Text("Overlay size: ${overlayScaleMeters.toInt()}m", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        "Overlay size: ${MeasurementFormat.length(overlayScaleMeters)}",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                     Slider(
                         value = overlayScaleMeters,
                         onValueChange = { overlayScaleMeters = it },

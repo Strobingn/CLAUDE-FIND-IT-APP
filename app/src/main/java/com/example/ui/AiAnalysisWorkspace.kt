@@ -92,7 +92,10 @@ fun AiAnalysisWorkspace(
     val analysisBitmap = when {
         aiState.showSourceHillshade -> sourceBitmap
         localLayerPending -> null
-        else -> aiState.localLayerBitmap
+        // Falling back to the source hillshade keeps a map on screen when the derived layer is
+        // gone. Handing null to LidarMapCanvas makes it render "Import a LAZ/LAS dataset to
+        // begin", which is both blank and untrue while a dataset is loaded.
+        else -> aiState.localLayerBitmap ?: sourceBitmap
     }
 
     LaunchedEffect(aiState.localLayerBitmap, pendingLocalLayer.value) {
@@ -102,6 +105,22 @@ fun AiAnalysisWorkspace(
         ) {
             pendingLocalLayer.value = null
             localBitmapAtRequest.value = aiState.localLayerBitmap
+        }
+    }
+
+    // Refining reloads the point cloud at a new resolution, producing a grid whose signature has
+    // no cached analysis, so restoreLocalAnalysis clears localResult and the derived layers. The
+    // layer chips are hidden while localResult is null, so a viewer left in derived-layer mode had
+    // no control to get back to a visible map. Return to the source hillshade, which the refine
+    // just regenerated at the new detail, and leave the status line telling them to tap Analyze.
+    LaunchedEffect(aiState.localResult, aiState.isLocalRestoring, aiState.isLocalAnalyzing) {
+        if (aiState.localResult == null &&
+            !aiState.isLocalRestoring &&
+            !aiState.isLocalAnalyzing &&
+            !aiState.showSourceHillshade
+        ) {
+            pendingLocalLayer.value = null
+            assistantViewModel.selectSourceHillshade()
         }
     }
 

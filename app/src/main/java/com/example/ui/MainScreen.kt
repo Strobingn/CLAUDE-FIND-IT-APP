@@ -77,6 +77,7 @@ import com.example.analysis.TerrainCellInspector
 import com.example.analysis.TerrainElevationProfiler
 import com.example.data.NormalizedRasterBounds
 import com.example.geospatial.GeoSpatialLibrary
+import com.example.geospatial.MeasurementFormat
 import com.example.ui.components.CustomFileLoader
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarControlPanel
@@ -521,12 +522,12 @@ private fun TerrainTab(
             Text(
                 String.format(
                     Locale.US,
-                    "%d×%d · %.0f×%.0f m · %.2f m/cell · %s",
+                    "%d×%d · %s×%s · %s/cell · %s",
                     elevationGrid.width,
                     elevationGrid.height,
-                    widthMeters,
-                    heightMeters,
-                    elevationGrid.cellSizeMeters,
+                    MeasurementFormat.length(widthMeters),
+                    MeasurementFormat.length(heightMeters),
+                    MeasurementFormat.resolution(elevationGrid.cellSizeMeters),
                     if (showControls.value) "tools open" else "pinch / drag",
                 ),
                 modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),

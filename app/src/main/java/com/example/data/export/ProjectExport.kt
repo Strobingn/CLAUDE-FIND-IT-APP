@@ -17,6 +17,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
+import com.example.geospatial.MeasurementFormat
 
 const val PROJECT_REPORT_SCHEMA_VERSION = 1
 
@@ -544,7 +545,7 @@ object ProjectExportRenderer {
             "Local grid"
         }
 
-    private fun formatMeters(value: Double): String = String.format(Locale.US, "%.2f m", value)
+    private fun formatMeters(value: Double): String = MeasurementFormat.length(value)
 
     private fun formatTimestamp(timestamp: Long): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm z", Locale.US).format(Date(timestamp))

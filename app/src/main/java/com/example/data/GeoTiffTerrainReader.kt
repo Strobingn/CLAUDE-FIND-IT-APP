@@ -14,6 +14,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
 import mil.nga.tiff.TiffReader
+import com.example.geospatial.MeasurementFormat
 
 /** Reads elevation from classic GeoTIFF files while preserving WGS84/UTM positioning. */
 object GeoTiffTerrainReader {
@@ -106,7 +107,8 @@ object GeoTiffTerrainReader {
         return Result(
             grid = grid,
             metadata = metadata,
-            summary = "Loaded georeferenced GeoTIFF → ${width}×${height}, ${"%.2f".format(cellSize)} m/cell$downsample",
+            summary = "Loaded georeferenced GeoTIFF → ${width}×${height}, " +
+                "${MeasurementFormat.resolution(cellSize.toFloat())}/cell$downsample",
         )
     }
 

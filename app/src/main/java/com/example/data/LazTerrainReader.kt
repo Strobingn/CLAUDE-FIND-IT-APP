@@ -36,7 +36,7 @@ internal object LazTerrainReader {
     ): DemGenerator.LasLoadResult? {
         val optimized = runCatching {
             SeekableLaszipReader.open(file, TERRAIN_DECOMPRESS_FIELDS)?.use { reader ->
-                readOpenedLowLevel(reader, options, shouldContinue, onProgress)
+                readOpenedLowLevel(reader, options, shouldContinue, onProgress, indexSource = file)
             }
         }.onFailure { exception ->
             System.err.println("Seekable selective LAZ decode failed for ${file.name}: ${exception.message}")
@@ -60,7 +60,7 @@ internal object LazTerrainReader {
         }
         val reader = LASreaderLAS()
         if (!reader.open(buffered, TERRAIN_DECOMPRESS_FIELDS)) return@runCatching null
-        reader.use { readOpenedLowLevel(it, options, shouldContinue, onProgress) }
+        reader.use { readOpenedLowLevel(it, options, shouldContinue, onProgress, indexSource = null) }
     }.onFailure { it.printStackTrace() }.getOrNull()
 
     private fun readOpenedLowLevel(
@@ -68,6 +68,8 @@ internal object LazTerrainReader {
         options: LidarImportOptions,
         shouldContinue: () -> Boolean,
         onProgress: ((decodedPoints: Long, totalPoints: Long) -> Unit)?,
+        /** The on-disk LAZ, when there is one, so its .lax sidecar can be used. */
+        indexSource: File?,
     ): DemGenerator.LasLoadResult? {
         val sourceHeader = reader.header
         val pointCount = sourceHeader.extended_number_of_point_records.takeIf { it > 0L }
@@ -89,7 +91,15 @@ internal object LazTerrainReader {
             minY = sourceHeader.min_y,
         )
         val focus = options.sanitized().focusBounds
-        if (focus != null) applyFocus(reader, header, focus)
+        if (focus != null) {
+            // Attach the spatial index before the rectangle: with one, the reader seeks past whole
+            // compressed chunks that cannot intersect the viewport instead of decompressing every
+            // point to test it. Without one this is unchanged, just slower.
+            indexSource?.let { file ->
+                LazSpatialIndex.load(file)?.let(reader::set_index)
+            }
+            applyFocus(reader, header, focus)
+        }
         val estimatedPoints = estimatedPoints(header.pointCount, focus)
         return rasterizeLowLevel(
             reader = reader,
