@@ -795,25 +795,36 @@ object TerrainIntelligenceRenderer {
         val needsPositive = type != TerrainDerivedLayer.ASPECT && !needsSigned
         val normalizedPositive = if (needsPositive) normalizeForRendering(values, signed = false) else EMPTY_FLOAT_ARRAY
         val normalizedSigned = if (needsSigned) normalizeForRendering(values, signed = true) else EMPTY_FLOAT_ARRAY
-        for (i in values.indices) {
-            pixels[i] = when (type) {
-                TerrainDerivedLayer.ASPECT -> {
-                    val hue = ((values[i] % 360f) + 360f) % 360f
-                    Color.HSVToColor(floatArrayOf(hue, 0.82f, 0.95f))
+        // The layer type is fixed for the whole raster, so resolve it once instead of re-running
+        // the enum dispatch - and rebuilding the constant endpoint colors - on every pixel.
+        when (type) {
+            TerrainDerivedLayer.ASPECT -> {
+                // Color.HSVToColor takes an array; allocating one per pixel put a full
+                // width x height of short-lived FloatArrays through the collector per render.
+                val hsv = floatArrayOf(0f, 0.82f, 0.95f)
+                for (i in values.indices) {
+                    hsv[0] = ((values[i] % 360f) + 360f) % 360f
+                    pixels[i] = Color.HSVToColor(hsv)
                 }
-                TerrainDerivedLayer.CURVATURE,
-                TerrainDerivedLayer.LOCAL_RELIEF -> diverging(normalizedSigned[i])
-                TerrainDerivedLayer.POSITIVE_OPENNESS,
-                TerrainDerivedLayer.NEGATIVE_OPENNESS,
-                TerrainDerivedLayer.SKY_VIEW_FACTOR -> gradient(normalizedPositive[i], Color.rgb(18, 35, 60), Color.rgb(244, 226, 151))
-                TerrainDerivedLayer.ANCIENT_STREAM -> gradient(normalizedPositive[i], Color.rgb(42, 38, 32), Color.rgb(30, 150, 210))
-                TerrainDerivedLayer.ARTIFACT_HOTSPOT -> heat(normalizedPositive[i])
-                TerrainDerivedLayer.SLOPE -> gradient(normalizedPositive[i], Color.rgb(42, 70, 45), Color.rgb(235, 75, 36))
-                TerrainDerivedLayer.DEPRESSION_DEPTH -> gradient(normalizedPositive[i], Color.rgb(235, 232, 208), Color.rgb(30, 84, 180))
-                TerrainDerivedLayer.RUGGEDNESS,
-                TerrainDerivedLayer.LINEARITY,
-                TerrainDerivedLayer.HILLSHADE_COMPARISON -> heat(normalizedPositive[i])
             }
+            TerrainDerivedLayer.CURVATURE,
+            TerrainDerivedLayer.LOCAL_RELIEF ->
+                for (i in values.indices) pixels[i] = diverging(normalizedSigned[i])
+            TerrainDerivedLayer.POSITIVE_OPENNESS,
+            TerrainDerivedLayer.NEGATIVE_OPENNESS,
+            TerrainDerivedLayer.SKY_VIEW_FACTOR ->
+                fillGradient(pixels, normalizedPositive, Color.rgb(18, 35, 60), Color.rgb(244, 226, 151))
+            TerrainDerivedLayer.ANCIENT_STREAM ->
+                fillGradient(pixels, normalizedPositive, Color.rgb(42, 38, 32), Color.rgb(30, 150, 210))
+            TerrainDerivedLayer.SLOPE ->
+                fillGradient(pixels, normalizedPositive, Color.rgb(42, 70, 45), Color.rgb(235, 75, 36))
+            TerrainDerivedLayer.DEPRESSION_DEPTH ->
+                fillGradient(pixels, normalizedPositive, Color.rgb(235, 232, 208), Color.rgb(30, 84, 180))
+            TerrainDerivedLayer.ARTIFACT_HOTSPOT,
+            TerrainDerivedLayer.RUGGEDNESS,
+            TerrainDerivedLayer.LINEARITY,
+            TerrainDerivedLayer.HILLSHADE_COMPARISON ->
+                for (i in values.indices) pixels[i] = heat(normalizedPositive[i])
         }
         bitmap.setPixels(pixels, 0, layers.width, 0, 0, layers.width, layers.height)
         return bitmap
@@ -861,5 +872,27 @@ object TerrainIntelligenceRenderer {
             (Color.green(start) * (1f - t) + Color.green(end) * t).roundToInt(),
             (Color.blue(start) * (1f - t) + Color.blue(end) * t).roundToInt(),
         )
+    }
+
+    /**
+     * Two-stop ramp over a whole layer. The endpoints are constant, so their channels are unpacked
+     * once here rather than re-extracted from the packed ints on every pixel.
+     */
+    private fun fillGradient(pixels: IntArray, normalized: FloatArray, start: Int, end: Int) {
+        val startRed = Color.red(start)
+        val startGreen = Color.green(start)
+        val startBlue = Color.blue(start)
+        val endRed = Color.red(end)
+        val endGreen = Color.green(end)
+        val endBlue = Color.blue(end)
+        for (i in normalized.indices) {
+            val t = normalized[i].coerceIn(0f, 1f)
+            val inverse = 1f - t
+            pixels[i] = Color.rgb(
+                (startRed * inverse + endRed * t).roundToInt(),
+                (startGreen * inverse + endGreen * t).roundToInt(),
+                (startBlue * inverse + endBlue * t).roundToInt(),
+            )
+        }
     }
 }

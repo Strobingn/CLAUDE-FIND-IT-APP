@@ -508,6 +508,11 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                             featureScaleMeters = _featureScaleMeters.value,
                             analysisSensitivity = _analysisSensitivity.value,
                             contourIntervalMeters = _contourIntervalMeters.value,
+                            // The render loop never suspends, so cancelling this coroutine cannot
+                            // stop it. Dragging a slider would otherwise run every superseded
+                            // frame to completion while holding renderMutex, making the frame the
+                            // user is waiting on queue behind work whose result is thrown away.
+                            shouldContinue = { generation == renderGeneration },
                         )
                     }
                     if (generation == renderGeneration) _hillshadeBitmap.value = bitmap

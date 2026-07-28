@@ -77,6 +77,13 @@ class ElevationGrid(
      * 4 curvature, 5 disturbance candidates, 6 aspect, 7 elevation, and 8 canopy height.
      * Candidate views are screening aids, not proof of
      * archaeological origin; field verification and source-quality review remain essential.
+     *
+     * [shouldContinue] is polled once per raster row. Returning false abandons the render as soon
+     * as the current row finishes, and the returned bitmap is then partially drawn - callers that
+     * pass a real predicate must discard the result, which is what they wanted by cancelling. This
+     * exists because the render loop never suspends, so coroutine cancellation alone cannot stop
+     * it: a superseded frame would otherwise run to completion while the frame the user is
+     * actually waiting for sits blocked behind it.
      */
     fun renderHillshade(
         sunAzimuth: Float,
@@ -92,6 +99,7 @@ class ElevationGrid(
         featureScaleMeters: Float = 6f,
         analysisSensitivity: Float = 1.2f,
         contourIntervalMeters: Float = 0f,
+        shouldContinue: () -> Boolean = { true },
     ): Bitmap {
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val pixels = scratchPixels ?: IntArray(width * height).also { scratchPixels = it }
@@ -233,17 +241,30 @@ class ElevationGrid(
                 } else {
                     0f
                 }
+                // The surface normal depends only on the gradient, so it is identical for all four
+                // light directions. Deriving it once here rather than inside each shade turns the
+                // multi-directional modes from four square roots and twelve divisions per pixel
+                // into one and three.
+                var normalX = 0f
+                var normalY = 0f
+                var normalZ = 0f
+                if (needsPrimaryShade) {
+                    val normalLength = sqrt(gradientX * gradientX + gradientY * gradientY + 1f)
+                    normalX = -gradientX / normalLength
+                    normalY = -gradientY / normalLength
+                    normalZ = 1f / normalLength
+                }
                 val primaryShade = if (needsPrimaryShade) {
-                    shadeWith(gradientX, gradientY, primaryLight)
+                    illumination(normalX, normalY, normalZ, primaryLight)
                 } else {
                     0f
                 }
                 val multiShade = if (needsMultiShade) {
                     (
                         primaryShade * 0.45f +
-                            shadeWith(gradientX, gradientY, rightLight) * 0.2f +
-                            shadeWith(gradientX, gradientY, oppositeLight) * 0.15f +
-                            shadeWith(gradientX, gradientY, leftLight) * 0.2f
+                            illumination(normalX, normalY, normalZ, rightLight) * 0.2f +
+                            illumination(normalX, normalY, normalZ, oppositeLight) * 0.15f +
+                            illumination(normalX, normalY, normalZ, leftLight) * 0.2f
                         ).coerceIn(0f, 1f)
                 } else {
                     0f
@@ -295,18 +316,26 @@ class ElevationGrid(
             }
         }
 
-        renderRowsInParallel(::renderRow)
-
-        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        // Skip the pixel upload for an abandoned frame; the caller discards it either way, and on
+        // a refined grid that copy alone is several megabytes.
+        if (renderRowsInParallel(::renderRow, shouldContinue)) {
+            bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+        }
         return bitmap
     }
 
-    /** Splits row rendering across available cores; each worker writes disjoint pixel rows. */
-    private fun renderRowsInParallel(renderRow: (Int) -> Unit) {
+    /**
+     * Splits row rendering across available cores; each worker writes disjoint pixel rows.
+     * Returns false if the render was abandoned before every row was drawn.
+     */
+    private fun renderRowsInParallel(renderRow: (Int) -> Unit, shouldContinue: () -> Boolean): Boolean {
         val threadCount = RENDER_PARALLELISM
         if (threadCount <= 1 || width * height < MIN_PIXELS_FOR_PARALLEL_RENDER || height < threadCount) {
-            for (y in 0 until height) renderRow(y)
-            return
+            for (y in 0 until height) {
+                if (!shouldContinue()) return false
+                renderRow(y)
+            }
+            return true
         }
         val rowsPerThread = (height + threadCount - 1) / threadCount
         // The calling thread renders the first chunk itself, so only threadCount-1 tasks are
@@ -316,11 +345,25 @@ class ElevationGrid(
             val startY = chunk * rowsPerThread
             val endY = min(startY + rowsPerThread, height)
             renderPool.submit {
-                for (y in startY until endY) renderRow(y)
+                for (y in startY until endY) {
+                    if (!shouldContinue()) return@submit
+                    renderRow(y)
+                }
             }
         }
-        for (y in 0 until min(rowsPerThread, height)) renderRow(y)
+        var completed = true
+        for (y in 0 until min(rowsPerThread, height)) {
+            if (!shouldContinue()) {
+                completed = false
+                break
+            }
+            renderRow(y)
+        }
+        // Always join, even when abandoning: the workers write into the shared pixel buffer, so
+        // returning while they are still running would let a discarded frame scribble over the
+        // next one. They observe the same predicate and stop within a row.
         pending.forEach { it.get() }
+        return completed && shouldContinue()
     }
 
     /**
@@ -338,14 +381,9 @@ class ElevationGrid(
         )
     }
 
-    /** Dot product of a terrain normal and a precomputed light vector. */
-    private fun shadeWith(dx: Float, dy: Float, light: LightVector): Float {
-        val normalLength = sqrt(dx * dx + dy * dy + 1f)
-        val nx = -dx / normalLength
-        val ny = -dy / normalLength
-        val nz = 1f / normalLength
-        return (nx * light.lx + ny * light.ly + nz * light.lz).coerceIn(0f, 1f)
-    }
+    /** Dot product of an already-normalized terrain normal and a precomputed light vector. */
+    private fun illumination(nx: Float, ny: Float, nz: Float, light: LightVector): Float =
+        (nx * light.lx + ny * light.ly + nz * light.lz).coerceIn(0f, 1f)
 
     private fun shadePalette(baseColor: Int, rawShade: Float, contrast: Float): Int {
         val adjusted = ((rawShade - 0.5f) * contrast + 0.5f).coerceIn(0f, 1f)
