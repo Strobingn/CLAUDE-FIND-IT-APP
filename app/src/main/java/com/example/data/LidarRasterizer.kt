@@ -82,23 +82,32 @@ internal class LidarRasterizer(
         coverageStride = sampleStride.coerceAtMost(MAX_COVERAGE_STRIDE)
     }
 
+    // Rolling counters replace three per-return Long modulo operations. A 200-million-point tile
+    // ran 600 million divisions purely to decide which returns to keep.
+    private var sampleCountdown = 0
+    private var coverageCountdown = 0
+
     /** Lets the low-level reader avoid coordinate/classification getters for discarded returns. */
-    fun nextPointWork(): LidarPointWork {
-        val index = pointsDecoded
-        return when {
-            index % sampleStride.toLong() == 0L -> LidarPointWork.ELEVATION
-            index % coverageStride.toLong() == 0L -> LidarPointWork.COVERAGE
-            else -> LidarPointWork.SKIP
-        }
+    fun nextPointWork(): LidarPointWork = when {
+        sampleCountdown == 0 -> LidarPointWork.ELEVATION
+        coverageCountdown == 0 -> LidarPointWork.COVERAGE
+        else -> LidarPointWork.SKIP
+    }
+
+    /** Advances both strides exactly as `pointsDecoded % stride == 0` used to. */
+    private fun advance() {
+        pointsDecoded++
+        if (++sampleCountdown >= sampleStride) sampleCountdown = 0
+        if (++coverageCountdown >= coverageStride) coverageCountdown = 0
     }
 
     fun skipPoint(): Boolean {
-        pointsDecoded++
+        advance()
         return true
     }
 
     fun addCoveragePoint(x: Double, y: Double): Boolean {
-        pointsDecoded++
+        advance()
         cellIndex(x, y)?.let { coverageCount[it]++ }
         return true
     }
@@ -108,12 +117,13 @@ internal class LidarRasterizer(
      * the method retains its own stride guard for compatibility.
      */
     fun addPoint(x: Double, y: Double, z: Float, classification: Int, isKeyPoint: Boolean = false): Boolean {
-        val pointIndex = pointsDecoded++
+        val wasSampleReturn = sampleCountdown == 0
+        advance()
         if (!z.isFinite()) return true
         val index = cellIndex(x, y) ?: return true
 
         coverageCount[index]++
-        if (pointIndex % sampleStride.toLong() != 0L) return true
+        if (!wasSampleReturn) return true
 
         if (z < allMin[index]) allMin[index] = z
         if (z > allMax[index]) allMax[index] = z

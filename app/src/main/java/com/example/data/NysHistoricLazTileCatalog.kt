@@ -28,6 +28,8 @@ class NysHistoricLazTileCatalog(
         val minLatitude: Double?,
         val maxLongitude: Double?,
         val maxLatitude: Double?,
+        /** Source acquisition project, so the picker can show which survey a tile came from. */
+        val project: String = "",
     )
 
     data class DownloadEstimate(
@@ -148,7 +150,6 @@ class NysHistoricLazTileCatalog(
             for (index in 0 until items.length()) {
                 val item = items.optJSONObject(index) ?: continue
                 val title = item.optString("title")
-                if (!title.contains(NATIONAL_MAP_PROJECT_ID, ignoreCase = true)) continue
                 val downloadUrl = item.optString("downloadURL")
                 if (!downloadUrl.startsWith("https://", ignoreCase = true)) continue
                 if (!downloadUrl.endsWith(".laz", ignoreCase = true) &&
@@ -170,10 +171,17 @@ class NysHistoricLazTileCatalog(
                         minLatitude = minY,
                         maxLongitude = maxX,
                         maxLatitude = maxY,
+                        project = title,
                     ),
                 )
             }
-        }.distinctBy(Tile::downloadUrl)
+        }
+            .distinctBy(Tile::downloadUrl)
+            // Any LPC tile whose footprint covers the query is usable. Restricting results to the
+            // Hudson Valley SE 4-county 2022 project meant every coordinate outside that one
+            // survey returned nothing at all; it is now merely ranked first as the best-known
+            // source for this app's primary search area.
+            .sortedBy { if (it.project.contains(NATIONAL_MAP_PROJECT_ID, ignoreCase = true)) 0 else 1 }
     }
 
     internal fun buildQueryUrl(geometry: String, geometryType: String): String {
@@ -226,6 +234,7 @@ class NysHistoricLazTileCatalog(
                         minLatitude = bounds?.getOrNull(1),
                         maxLongitude = bounds?.getOrNull(2),
                         maxLatitude = bounds?.getOrNull(3),
+                        project = PROJECT_NAME,
                     ),
                 )
             }

@@ -124,7 +124,7 @@ fun NysLazTilePicker(
                 tiles = catalog.tilesAt(lon, lat)
                 selectedUrls = tiles.map { it.downloadUrl }.toSet()
                 status = if (tiles.isEmpty()) {
-                    "No Southeast 4 County 2022 tile covers that coordinate."
+                    "No published LiDAR tile covers that coordinate."
                 } else {
                     "Found ${tiles.size} matching tile${if (tiles.size == 1) "" else "s"}."
                 }
@@ -406,16 +406,16 @@ fun NysLazTilePicker(
                 Icon(Icons.Default.LocationOn, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Column {
-                    Text("NYS historic LAZ tiles", style = MaterialTheme.typography.titleLarge)
+                    Text("Public LiDAR tiles", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        NysHistoricLazTileCatalog.PROJECT_NAME,
+                        "USGS 3DEP point clouds · ${NysHistoricLazTileCatalog.PROJECT_NAME} first",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
             Text(
-                "Enter a coordinate in the woods. The app checks the official NYS tile polygons, identifies the exact file, downloads it, and opens the source-classified bare-earth surface.",
+                "Enter a coordinate in the woods. The app finds every published LiDAR tile whose footprint covers it, downloads the file, and opens the source-classified bare-earth surface.",
                 style = MaterialTheme.typography.bodyMedium,
             )
             Text(
@@ -527,7 +527,11 @@ fun NysLazTilePicker(
                         Spacer(Modifier.width(8.dp))
                         Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
                             Text(tile.name, maxLines = 1)
-                            Text("Open this one tile", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                tile.project.ifBlank { "Open this one tile" },
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                            )
                         }
                         if (downloadingUrl == tile.downloadUrl) {
                             CircularProgressIndicator(modifier = Modifier.width(22.dp).height(22.dp), strokeWidth = 2.dp)
