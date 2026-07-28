@@ -325,6 +325,26 @@ class ElevationGrid(
     }
 
     /**
+     * Runs [rowAction] for every row, spread across the render pool. Rows write disjoint output,
+     * so splitting them changes no value - only how long the pass takes.
+     */
+    private inline fun forEachRowInParallel(crossinline rowAction: (Int) -> Unit) {
+        val threadCount = RENDER_PARALLELISM
+        if (threadCount <= 1 || width * height < MIN_PIXELS_FOR_PARALLEL_RENDER || height < threadCount) {
+            for (y in 0 until height) rowAction(y)
+            return
+        }
+        val rowsPerThread = (height + threadCount - 1) / threadCount
+        val pending = (1 until threadCount).map { chunk ->
+            val startY = chunk * rowsPerThread
+            val endY = min(startY + rowsPerThread, height)
+            renderPool.submit { for (y in startY until endY) rowAction(y) }
+        }
+        for (y in 0 until min(rowsPerThread, height)) rowAction(y)
+        pending.forEach { it.get() }
+    }
+
+    /**
      * Splits row rendering across available cores; each worker writes disjoint pixel rows.
      * Returns false if the render was abandoned before every row was drawn.
      */
@@ -417,7 +437,10 @@ class ElevationGrid(
         }
         val residual = FloatArray(elevations.size)
         val roughness = FloatArray(elevations.size)
-        for (y in 0 until height) {
+        // The prefix-sum pass above is inherently sequential, but this one only reads it, so rows
+        // are independent. Local relief and the disturbance view both wait on this before their
+        // first frame can appear.
+        forEachRowInParallel { y ->
             val y0 = (y - radius).coerceAtLeast(0)
             val y1 = (y + radius).coerceAtMost(height - 1)
             for (x in 0 until width) {
@@ -439,13 +462,27 @@ class ElevationGrid(
     private fun curvature(elevations: FloatArray, cellDistance: Float): FloatArray {
         val output = FloatArray(elevations.size)
         val divisor = cellDistance * cellDistance
-        for (y in 0 until height) {
+        val lastX = width - 1
+        val lastY = height - 1
+        forEachRowInParallel { y ->
+            val interiorRow = y > 0 && y < lastY
+            val rowStart = y * width
             for (x in 0 until width) {
-                val center = elevations[index(x, y)]
-                output[y * width + x] = (
-                    elevations[index(x - 1, y)] + elevations[index(x + 1, y)] +
-                        elevations[index(x, y - 1)] + elevations[index(x, y + 1)] - 4f * center
-                    ) / divisor
+                val i = rowStart + x
+                // As in the render loop, only the border needs index()'s clamping; interior cells
+                // reach their four neighbours directly.
+                output[i] = if (interiorRow && x > 0 && x < lastX) {
+                    (
+                        elevations[i - 1] + elevations[i + 1] +
+                            elevations[i - width] + elevations[i + width] - 4f * elevations[i]
+                        ) / divisor
+                } else {
+                    (
+                        elevations[index(x - 1, y)] + elevations[index(x + 1, y)] +
+                            elevations[index(x, y - 1)] + elevations[index(x, y + 1)] -
+                            4f * elevations[index(x, y)]
+                        ) / divisor
+                }
             }
         }
         return output

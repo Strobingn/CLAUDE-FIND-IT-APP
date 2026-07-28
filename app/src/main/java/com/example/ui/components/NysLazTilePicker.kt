@@ -37,9 +37,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.DemGenerator
 import com.example.data.GroundSurfaceMode
-import com.example.data.LazDatasetStore
-import com.example.data.LazDownloadManager
-import com.example.data.LazImportRepository
 import com.example.data.LazTerrainCache
 import com.example.data.LazTerrainDiskCache
 import com.example.data.LazTerrainMemoryCache
@@ -64,6 +61,22 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
+import com.example.data.download.LazDownloadTask
+import com.example.data.download.LazDownloadState
+import com.example.data.download.LazDownloadService
+import com.example.data.download.LazDownloadQueue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.ContextCompat
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import android.os.Build
+import android.content.pm.PackageManager
+import android.Manifest
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 
 /** Visible NYS Southeast 4 County tile resolver and downloader for historic-site work. */
 @Composable
@@ -74,11 +87,7 @@ fun NysLazTilePicker(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val catalog = remember { NysHistoricLazTileCatalog() }
-    val downloader = remember { LazImportRepository(LazDownloadManager()) }
-    val store = remember(context) {
-        val base = context.getExternalFilesDir(null) ?: context.filesDir
-        LazDatasetStore(File(base, "lidar"))
-    }
+    val store = remember(context) { LazDownloadQueue.store(context) }
     val diskCache = remember(context) { LazTerrainDiskCache(File(context.cacheDir, "decoded-terrain")) }
     val terrainCache = remember(diskCache) { LazTerrainCache(LazTerrainMemoryCache(), diskCache) }
     val decodeCoordinator = remember(terrainCache) { TerrainDecodeCoordinator(terrainCache) }
@@ -97,10 +106,16 @@ fun NysLazTilePicker(
     var downloadEstimate by remember { mutableStateOf<NysHistoricLazTileCatalog.DownloadEstimate?>(null) }
     var isLookingUp by remember { mutableStateOf(false) }
     var isEstimatingDownload by remember { mutableStateOf(false) }
-    var downloadingUrl by remember { mutableStateOf<String?>(null) }
     var downloadJob by remember { mutableStateOf<Job?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Downloads live in LazDownloadService, so they survive leaving this screen. The picker only
+    // observes them and opens a tile once its bytes have landed.
+    val downloadTasks by LazDownloadQueue.tasks.collectAsStateWithLifecycle()
+    var awaitingOpenUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* Declined only costs the progress notification; the transfer itself still runs. */ }
 
     LaunchedEffect(mosaicProjectDao) {
         mosaicProjectDao.observeAll().collect { stored ->
@@ -214,26 +229,10 @@ fun NysLazTilePicker(
         }
     }
 
-    fun downloadAndOpen(tile: NysHistoricLazTileCatalog.Tile) {
-        if (downloadingUrl != null) return
-        downloadingUrl = tile.downloadUrl
-        error = null
-        status = "Downloading ${tile.name}…"
+    /** Decodes an already-downloaded file and hands the terrain to the workspace. */
+    fun openDownloadedFile(file: File, displayName: String) {
         scope.launch {
             try {
-                val file = downloader.importFromUrl(
-                    url = tile.downloadUrl,
-                    store = store,
-                    onProgress = { downloaded, total ->
-                        scope.launch {
-                            status = if (total > 0L) {
-                                "Downloading ${tile.name}: ${percent(downloaded, total)}%"
-                            } else {
-                                "Downloading ${tile.name}: ${formatBytesCompact(downloaded)}"
-                            }
-                        }
-                    },
-                )
                 status = "Building bare-earth terrain from source ground classes…"
                 val options = LidarImportOptions(
                     groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
@@ -242,31 +241,105 @@ fun NysLazTilePicker(
                 )
                 val outcome = decodeCoordinator.decode(
                     file = file,
-                    displayName = tile.name,
+                    displayName = displayName,
                     options = options,
-                    onStage = { stage ->
-                        scope.launch { status = stage }
-                    },
+                    onStage = { stage -> scope.launch { status = stage } },
                 )
                 TerrainPerformanceSession.publish(outcome.gpuScene)
                 onCustomTerrainLoaded(
                     outcome.terrain,
                     TerrainImportSource(
                         uri = Uri.fromFile(file).toString(),
-                        displayName = tile.name,
+                        displayName = displayName,
                         options = options,
                     ),
                 )
-                status = "Opened ${tile.name} using ASPRS ground class 2 with class 8 fallback."
+                status = "Opened $displayName using ASPRS ground class 2 with class 8 fallback."
             } catch (_: CancellationException) {
-                status = "Tile download cancelled."
-            } catch (t: Throwable) {
-                error = t.localizedMessage ?: "Tile download or decode failed."
                 status = null
-            } finally {
-                downloadingUrl = null
+            } catch (t: Throwable) {
+                error = t.localizedMessage ?: "Tile decode failed."
+                status = null
             }
         }
+    }
+
+    fun downloadAndOpen(tile: NysHistoricLazTileCatalog.Tile) {
+        error = null
+        // Already on disk from an earlier background download - skip straight to decoding.
+        val existing = store.list().firstOrNull { it.displayName == tile.name }?.file
+        if (existing != null) {
+            openDownloadedFile(existing, tile.name)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        // Open this one automatically when its bytes land, but only if the user is still here.
+        awaitingOpenUrl = tile.downloadUrl
+        LazDownloadService.enqueue(context, tile.downloadUrl, tile.name)
+        status = "Downloading ${tile.name} in the background. You can leave this screen."
+    }
+
+    // The service owns the transfer, so completion can arrive while this screen is composed or
+    // long after it was left and re-entered. Either way, act on it exactly once.
+    LaunchedEffect(downloadTasks, awaitingOpenUrl) {
+        val url = awaitingOpenUrl ?: return@LaunchedEffect
+        val task = downloadTasks.firstOrNull { it.url == url } ?: return@LaunchedEffect
+        when (task.state) {
+            LazDownloadState.COMPLETED -> {
+                awaitingOpenUrl = null
+                LazDownloadQueue.dismiss(url)
+                task.filePath?.let { openDownloadedFile(File(it), task.displayName) }
+            }
+            LazDownloadState.FAILED -> {
+                awaitingOpenUrl = null
+                error = task.error ?: "Tile download failed."
+                status = null
+                LazDownloadQueue.dismiss(url)
+            }
+            LazDownloadState.CANCELLED -> {
+                awaitingOpenUrl = null
+                status = "Tile download cancelled."
+                LazDownloadQueue.dismiss(url)
+            }
+            LazDownloadState.QUEUED, LazDownloadState.RUNNING -> Unit
+        }
+    }
+
+    /**
+     * Returns the tile's local file, downloading it through the background service first if
+     * needed. The transfer itself is owned by the service, so leaving this screen mid-mosaic
+     * keeps the bytes coming; returning and tapping again picks up the already-finished files
+     * instead of starting over.
+     */
+    suspend fun awaitDownloadedFile(
+        tile: NysHistoricLazTileCatalog.Tile,
+        onProgress: (LazDownloadTask) -> Unit,
+    ): File {
+        store.list().firstOrNull { it.displayName == tile.name }?.file?.let { return it }
+        LazDownloadService.enqueue(context, tile.downloadUrl, tile.name)
+        val finished = LazDownloadQueue.tasks
+            .map { list -> list.firstOrNull { it.url == tile.downloadUrl } }
+            .onEach { task -> task?.let(onProgress) }
+            // A null task means something else already dismissed the entry, so fall through to
+            // the disk check below rather than waiting on a record that no longer exists.
+            .first { it == null || it.isFinished }
+        if (finished != null && finished.state == LazDownloadState.COMPLETED) {
+            LazDownloadQueue.dismiss(tile.downloadUrl)
+            finished.filePath?.let { return File(it) }
+        }
+        if (finished != null && finished.state == LazDownloadState.CANCELLED) {
+            LazDownloadQueue.dismiss(tile.downloadUrl)
+            throw CancellationException("Download cancelled")
+        }
+        store.list().firstOrNull { it.displayName == tile.name }?.file?.let { return it }
+        val message = finished?.error ?: "Download of ${tile.name} did not complete"
+        LazDownloadQueue.dismiss(tile.downloadUrl)
+        error(message)
     }
 
     fun downloadSelectedMosaic() {
@@ -286,6 +359,12 @@ fun NysLazTilePicker(
             return
         }
         error = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         downloadJob = scope.launch {
             try {
                 val options = LidarImportOptions(
@@ -296,18 +375,11 @@ fun NysLazTilePicker(
                 val projectTiles = mutableListOf<MosaicProjectTile>()
                 val decodedTiles = selected.mapIndexed { index, tile ->
                     status = "${index + 1}/${selected.size}: preparing ${tile.name}…"
-                    val existing = store.list().firstOrNull { it.displayName == tile.name }?.file
-                    val file = existing ?: downloader.importFromUrl(
-                        url = tile.downloadUrl,
-                        store = store,
-                        onProgress = { downloaded, total ->
-                            status = if (total > 0L) {
-                                "${index + 1}/${selected.size}: ${tile.name} ${percent(downloaded, total)}%"
-                            } else {
-                                "${index + 1}/${selected.size}: ${formatBytesCompact(downloaded)} downloaded"
-                            }
-                        },
-                    )
+                    val file = awaitDownloadedFile(tile) { task ->
+                        status = task.fraction?.let {
+                            "${index + 1}/${selected.size}: ${tile.name} ${(it * 100).toInt()}%"
+                        } ?: "${index + 1}/${selected.size}: ${formatBytesCompact(task.downloadedBytes)} downloaded"
+                    }
                     status = "${index + 1}/${selected.size}: decoding ${tile.name}…"
                     val outcome = decodeCoordinator.decode(file, tile.name, options) { stage -> status = stage }
                     val bounds = com.example.geospatial.GeoSpatialLibrary.GeographicBounds(
@@ -451,7 +523,7 @@ fun NysLazTilePicker(
             }
             Button(
                 onClick = ::lookup,
-                enabled = !isLookingUp && downloadingUrl == null,
+                enabled = !isLookingUp,
                 modifier = Modifier.fillMaxWidth().height(52.dp).testTag("find_nys_laz_tiles"),
             ) {
                 if (isLookingUp) {
@@ -501,7 +573,7 @@ fun NysLazTilePicker(
             }
             OutlinedButton(
                 onClick = ::lookupArea,
-                enabled = !isLookingUp && downloadingUrl == null && downloadJob?.isActive != true,
+                enabled = !isLookingUp && downloadJob?.isActive != true,
                 modifier = Modifier.fillMaxWidth().height(52.dp).testTag("find_nys_laz_area"),
             ) {
                 Icon(Icons.Default.LocationOn, contentDescription = null)
@@ -520,7 +592,7 @@ fun NysLazTilePicker(
                     )
                     OutlinedButton(
                         onClick = { downloadAndOpen(tile) },
-                        enabled = downloadingUrl == null && downloadJob?.isActive != true,
+                        enabled = downloadJob?.isActive != true,
                         modifier = Modifier.weight(1f).height(64.dp),
                     ) {
                         Icon(Icons.Default.CloudDownload, contentDescription = null)
@@ -533,7 +605,7 @@ fun NysLazTilePicker(
                                 maxLines = 1,
                             )
                         }
-                        if (downloadingUrl == tile.downloadUrl) {
+                        if (downloadTasks.any { it.url == tile.downloadUrl && !it.isFinished }) {
                             CircularProgressIndicator(modifier = Modifier.width(22.dp).height(22.dp), strokeWidth = 2.dp)
                         }
                     }
@@ -543,7 +615,7 @@ fun NysLazTilePicker(
             if (tiles.isNotEmpty()) {
                 OutlinedButton(
                     onClick = ::estimateSelectedDownload,
-                    enabled = downloadingUrl == null && downloadJob?.isActive != true &&
+                    enabled = downloadJob?.isActive != true &&
                         !isLookingUp && !isEstimatingDownload && selectedUrls.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth().height(52.dp).testTag("estimate_nys_mosaic_download"),
                 ) {
@@ -564,7 +636,7 @@ fun NysLazTilePicker(
                 }
                 Button(
                     onClick = ::downloadSelectedMosaic,
-                    enabled = downloadingUrl == null && downloadJob?.isActive != true &&
+                    enabled = downloadJob?.isActive != true &&
                         !isEstimatingDownload && selectedUrls.isNotEmpty() &&
                         downloadEstimate?.unknownTileCount == 0,
                     modifier = Modifier.fillMaxWidth().height(54.dp).testTag("download_nys_mosaic"),
@@ -586,7 +658,7 @@ fun NysLazTilePicker(
                 savedMosaicProjects.forEach { project ->
                     OutlinedButton(
                         onClick = { openMosaicProject(project) },
-                        enabled = downloadingUrl == null && downloadJob?.isActive != true,
+                        enabled = downloadJob?.isActive != true,
                         modifier = Modifier.fillMaxWidth().height(60.dp),
                     ) {
                         Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
@@ -605,14 +677,57 @@ fun NysLazTilePicker(
                 }
             }
 
+            val activeDownloads = downloadTasks.filterNot(LazDownloadTask::isFinished)
+            if (activeDownloads.isNotEmpty()) {
+                Text(
+                    "Background downloads",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Text(
+                    "These keep running if you leave this screen or close the app.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                activeDownloads.forEach { task ->
+                    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(task.displayName, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    when (task.state) {
+                                        LazDownloadState.QUEUED -> "Waiting for the current download to finish"
+                                        else -> task.fraction
+                                            ?.let { "${(it * 100).toInt()}% of ${formatBytesCompact(task.totalBytes)}" }
+                                            ?: "${formatBytesCompact(task.downloadedBytes)} downloaded"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(
+                                onClick = { LazDownloadService.cancel(context, task.url) },
+                            ) { Text("Cancel") }
+                        }
+                        val fraction = task.fraction
+                        if (fraction != null) {
+                            LinearProgressIndicator(
+                                progress = { fraction },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+            }
+
             status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         }
     }
 }
 
-private fun percent(downloaded: Long, total: Long): Int =
-    ((downloaded.coerceAtLeast(0L) * 100L) / total.coerceAtLeast(1L)).toInt().coerceIn(0, 100)
 
 private fun formatBytesCompact(bytes: Long): String {
     val mib = bytes / (1024.0 * 1024.0)
