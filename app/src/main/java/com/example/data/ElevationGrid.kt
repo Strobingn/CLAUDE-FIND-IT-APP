@@ -2,6 +2,8 @@ package com.example.data
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.atan
 import kotlin.math.cos
@@ -11,10 +13,18 @@ import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-// Below this pixel count, thread creation/join overhead outweighs the parallel win — the
+// Below this pixel count, the fan-out and join overhead outweighs the parallel win — the
 // built-in 100x100 demo sites and default 320x320 imports stay on the single-threaded path;
 // only larger refined-detail grids (up to 1536x1536 on capable devices) actually parallelize.
 private const val MIN_PIXELS_FOR_PARALLEL_RENDER = 200_000
+
+private val RENDER_PARALLELISM = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
+
+// Shared across grids and reused between renders. Daemon threads so an idle pool never keeps
+// the process alive.
+private val renderPool: ExecutorService = Executors.newFixedThreadPool(RENDER_PARALLELISM) { task ->
+    Thread(task, "terrain-render").apply { isDaemon = true }
+}
 
 /** A memory-bounded elevation raster used for terrain visualization and screening. */
 class ElevationGrid(
@@ -48,6 +58,10 @@ class ElevationGrid(
     private var cachedCurvatureScale = 1f
     private val cachedCanopyScale: Float by lazy { robustPositiveScale(canopySpikes) }
 
+    // Reused across renders under the same serialization invariant as the caches above. A refined
+    // 1536x1536 grid would otherwise allocate a fresh ~9 MB int array on every drag frame.
+    private var scratchPixels: IntArray? = null
+
     /** 0 shows the full surface model; 1 shows the extracted bare-earth model. */
     fun getElevationAt(col: Int, row: Int, vegetationFilter: Float): Float {
         val c = col.coerceIn(0, width - 1)
@@ -80,7 +94,7 @@ class ElevationGrid(
         contourIntervalMeters: Float = 0f,
     ): Bitmap {
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val pixels = IntArray(width * height)
+        val pixels = scratchPixels ?: IntArray(width * height).also { scratchPixels = it }
         val cellDistance = cellSizeMeters.coerceAtLeast(0.001f)
 
         val intermediateKey = vegetationFilter to featureScaleMeters
@@ -149,17 +163,91 @@ class ElevationGrid(
         val contourInterval = contourIntervalMeters.coerceAtLeast(0f)
         val boundedMode = visualizationMode.coerceIn(0, 8)
 
+        // Sun direction is constant across the raster, but shade() used to recompute
+        // toRadians/sin/cos from it on every pixel - and it was called five times per pixel
+        // (once directly, four more inside multiDirectionalShade), so a single pass burned
+        // ~30 transcendental calls per pixel purely to rebuild the same four light vectors.
+        val primaryLight = lightVector(azimuth, altitude)
+        val rightLight = lightVector(azimuth + 90f, altitude)
+        val oppositeLight = lightVector(azimuth + 180f, altitude)
+        val leftLight = lightVector(azimuth + 270f, altitude)
+
+        // Each mode consumes at most one of these, yet all three were computed unconditionally.
+        val needsMultiShade = boundedMode == 1 || boundedMode in 3..6 || boundedMode == 8
+        val needsPrimaryShade = needsMultiShade || boundedMode == 0
+        val needsSlope = boundedMode == 2 || boundedMode == 6
+        val needsGradient = needsPrimaryShade || needsSlope
+        val gradientDivisor = 8f * cellDistance
+        val lastX = width - 1
+        val lastY = height - 1
+
         fun renderRow(y: Int) {
+            val interiorRow = y > 0 && y < lastY
             for (x in 0 until width) {
                 val index = y * width + x
                 if (!validData[index]) {
                     pixels[index] = Color.TRANSPARENT
                     continue
                 }
-                val gradient = hornGradient(elevations, x, y, cellDistance, zMultiplier)
-                val slopeRadians = atan(sqrt(gradient.dx * gradient.dx + gradient.dy * gradient.dy))
-                val primaryShade = shade(gradient.dx, gradient.dy, azimuth, altitude)
-                val multiShade = multiDirectionalShade(gradient.dx, gradient.dy, azimuth, altitude)
+                var gradientX = 0f
+                var gradientY = 0f
+                if (needsGradient) {
+                    val z00: Float
+                    val z01: Float
+                    val z02: Float
+                    val z10: Float
+                    val z12: Float
+                    val z20: Float
+                    val z21: Float
+                    val z22: Float
+                    if (interiorRow && x > 0 && x < lastX) {
+                        // Interior pixels cannot leave the raster, so skip the per-neighbour
+                        // clamping that index() would otherwise apply sixteen times per pixel.
+                        val above = index - width
+                        val below = index + width
+                        z00 = elevations[above - 1]
+                        z01 = elevations[above]
+                        z02 = elevations[above + 1]
+                        z10 = elevations[index - 1]
+                        z12 = elevations[index + 1]
+                        z20 = elevations[below - 1]
+                        z21 = elevations[below]
+                        z22 = elevations[below + 1]
+                    } else {
+                        z00 = elevations[index(x - 1, y - 1)]
+                        z01 = elevations[index(x, y - 1)]
+                        z02 = elevations[index(x + 1, y - 1)]
+                        z10 = elevations[index(x - 1, y)]
+                        z12 = elevations[index(x + 1, y)]
+                        z20 = elevations[index(x - 1, y + 1)]
+                        z21 = elevations[index(x, y + 1)]
+                        z22 = elevations[index(x + 1, y + 1)]
+                    }
+                    gradientX = ((z02 + 2f * z12 + z22) - (z00 + 2f * z10 + z20)) /
+                        gradientDivisor * zMultiplier
+                    gradientY = ((z20 + 2f * z21 + z22) - (z00 + 2f * z01 + z02)) /
+                        gradientDivisor * zMultiplier
+                }
+                val slopeRadians = if (needsSlope) {
+                    atan(sqrt(gradientX * gradientX + gradientY * gradientY))
+                } else {
+                    0f
+                }
+                val primaryShade = if (needsPrimaryShade) {
+                    shadeWith(gradientX, gradientY, primaryLight)
+                } else {
+                    0f
+                }
+                val multiShade = if (needsMultiShade) {
+                    (
+                        primaryShade * 0.45f +
+                            shadeWith(gradientX, gradientY, rightLight) * 0.2f +
+                            shadeWith(gradientX, gradientY, oppositeLight) * 0.15f +
+                            shadeWith(gradientX, gradientY, leftLight) * 0.2f
+                        ).coerceIn(0f, 1f)
+                } else {
+                    0f
+                }
                 val elevationPercent = ((elevations[index] - minElevation) / elevationRange).coerceIn(0f, 1f)
 
                 var color = when (boundedMode) {
@@ -182,7 +270,7 @@ class ElevationGrid(
                             analysisSensitivity.coerceIn(0.4f, 2.5f)).coerceIn(0f, 1f)
                         disturbanceCandidateColor(score, multiShade)
                     }
-                    6 -> aspectColor(gradient.dx, gradient.dy, slopeRadians, multiShade)
+                    6 -> aspectColor(gradientX, gradientY, slopeRadians, multiShade)
                     7 -> getPaletteColor(palette, elevationPercent)
                     8 -> canopyHeightColor(canopySpikes[index], canopyScale, multiShade)
                     else -> shadePalette(getPaletteColor(palette, elevationPercent), primaryShade, contrastValue)
@@ -213,70 +301,50 @@ class ElevationGrid(
         return bitmap
     }
 
-    /** Splits row rendering across available cores; each thread writes disjoint pixel rows. */
+    /** Splits row rendering across available cores; each worker writes disjoint pixel rows. */
     private fun renderRowsInParallel(renderRow: (Int) -> Unit) {
-        val threadCount = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
+        val threadCount = RENDER_PARALLELISM
         if (threadCount <= 1 || width * height < MIN_PIXELS_FOR_PARALLEL_RENDER || height < threadCount) {
             for (y in 0 until height) renderRow(y)
             return
         }
         val rowsPerThread = (height + threadCount - 1) / threadCount
-        (0 until threadCount).map { chunk ->
+        // The calling thread renders the first chunk itself, so only threadCount-1 tasks are
+        // submitted. Dragging a slider re-renders every ~80 ms; spawning a fresh set of raw
+        // Threads each time cost more than the pooled hand-off it replaces.
+        val pending = (1 until threadCount).map { chunk ->
             val startY = chunk * rowsPerThread
             val endY = min(startY + rowsPerThread, height)
-            Thread {
+            renderPool.submit {
                 for (y in startY until endY) renderRow(y)
-            }.apply { start() }
-        }.forEach { it.join() }
+            }
+        }
+        for (y in 0 until min(rowsPerThread, height)) renderRow(y)
+        pending.forEach { it.get() }
     }
 
-    private fun hornGradient(
-        elevations: FloatArray,
-        x: Int,
-        y: Int,
-        cellDistance: Float,
-        zScale: Float,
-    ): Gradient {
-        fun at(px: Int, py: Int): Float = elevations[index(px, py)]
-        val z00 = at(x - 1, y - 1)
-        val z01 = at(x, y - 1)
-        val z02 = at(x + 1, y - 1)
-        val z10 = at(x - 1, y)
-        val z12 = at(x + 1, y)
-        val z20 = at(x - 1, y + 1)
-        val z21 = at(x, y + 1)
-        val z22 = at(x + 1, y + 1)
-        return Gradient(
-            dx = ((z02 + 2f * z12 + z22) - (z00 + 2f * z10 + z20)) /
-                (8f * cellDistance) * zScale,
-            dy = ((z20 + 2f * z21 + z22) - (z00 + 2f * z01 + z02)) /
-                (8f * cellDistance) * zScale,
+    /**
+     * Resolves a sun direction into a fixed light vector. Azimuth is clockwise from north; raster
+     * y increases south, hence north carries a negative y component.
+     */
+    private fun lightVector(azimuthDegrees: Float, altitudeDegrees: Float): LightVector {
+        val azimuth = Math.toRadians(azimuthDegrees.toDouble())
+        val altitude = Math.toRadians(altitudeDegrees.toDouble())
+        val horizontal = cos(altitude).toFloat()
+        return LightVector(
+            lx = (sin(azimuth) * horizontal).toFloat(),
+            ly = (-cos(azimuth) * horizontal).toFloat(),
+            lz = sin(altitude).toFloat(),
         )
     }
 
-    /** Dot product of a terrain normal and a light vector; azimuth is clockwise from north. */
-    private fun shade(dx: Float, dy: Float, azimuthDegrees: Float, altitudeDegrees: Float): Float {
-        val azimuth = Math.toRadians(azimuthDegrees.toDouble())
-        val altitude = Math.toRadians(altitudeDegrees.toDouble())
+    /** Dot product of a terrain normal and a precomputed light vector. */
+    private fun shadeWith(dx: Float, dy: Float, light: LightVector): Float {
         val normalLength = sqrt(dx * dx + dy * dy + 1f)
         val nx = -dx / normalLength
         val ny = -dy / normalLength
         val nz = 1f / normalLength
-        val horizontal = cos(altitude).toFloat()
-        val lx = (sin(azimuth) * horizontal).toFloat()
-        // Raster y increases south, hence north has a negative y component.
-        val ly = (-cos(azimuth) * horizontal).toFloat()
-        val lz = sin(altitude).toFloat()
-        return (nx * lx + ny * ly + nz * lz).coerceIn(0f, 1f)
-    }
-
-    private fun multiDirectionalShade(dx: Float, dy: Float, azimuth: Float, altitude: Float): Float {
-        val primary = shade(dx, dy, azimuth, altitude)
-        val right = shade(dx, dy, azimuth + 90f, altitude)
-        val opposite = shade(dx, dy, azimuth + 180f, altitude)
-        val left = shade(dx, dy, azimuth + 270f, altitude)
-        return (primary * 0.45f + right * 0.2f + opposite * 0.15f + left * 0.2f)
-            .coerceIn(0f, 1f)
+        return (nx * light.lx + ny * light.ly + nz * light.lz).coerceIn(0f, 1f)
     }
 
     private fun shadePalette(baseColor: Int, rawShade: Float, contrast: Float): Int {
@@ -491,6 +559,6 @@ class ElevationGrid(
 
     private fun normalizeDegrees(value: Float): Float = ((value % 360f) + 360f) % 360f
 
-    private data class Gradient(val dx: Float, val dy: Float)
+    private class LightVector(val lx: Float, val ly: Float, val lz: Float)
     private data class LocalStatistics(val residual: FloatArray, val roughness: FloatArray)
 }
