@@ -53,6 +53,21 @@ class TargetSignalEntityTest {
     }
 
     @Test
+    fun detectedFeatureTypeSurvivesDatabaseMapping() {
+        val signal = TargetSignal(
+            gridX = 5f,
+            gridY = 6f,
+            metalType = MetalType.MAGNETIC_ANOMALY,
+            signalStrength = 40f,
+            source = DetectionSource.AI_ANALYSIS,
+            datasetKey = "analysis-99",
+            detectedFeatureType = "FOUNDATION",
+        )
+
+        assertEquals("FOUNDATION", signal.toEntity().toDomain().detectedFeatureType)
+    }
+
+    @Test
     fun databaseMappingDropsBlankPhotoEntries() {
         val entity = TargetSignal(
             gridX = 0f,

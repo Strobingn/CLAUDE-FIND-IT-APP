@@ -76,6 +76,7 @@ fun AiAnalysisWorkspace(
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
     val gridSpacing by viewModel.gridSpacing.collectAsStateWithLifecycle()
+    val featureTypeCalibration by viewModel.featureTypeCalibration.collectAsStateWithLifecycle()
     val visualizationMode by viewModel.visualizationMode.collectAsStateWithLifecycle()
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
 
@@ -110,10 +111,10 @@ fun AiAnalysisWorkspace(
     // Re-derives live from the current logged finds (not just at "Analyze" time) so marking a
     // find CONFIRMED/REJECTED in the Finds tab immediately re-scores historic targets here too,
     // without needing to re-run the full (much more expensive) derived-layer analysis.
-    val historicTargets = remember(aiState.localResult, signals) {
+    val historicTargets = remember(aiState.localResult, signals, featureTypeCalibration) {
         val result = aiState.localResult ?: return@remember emptyList()
         val feedbackPoints = VerifiedFeedback.derive(signals, result.datasetKey)
-        MetalDetectingTargetRefiner.refine(result, feedbackPoints)
+        MetalDetectingTargetRefiner.refine(result, feedbackPoints, featureTypeCalibration)
     }
     val targetOverlays = remember(historicTargets) {
         historicTargets
@@ -206,6 +207,7 @@ fun AiAnalysisWorkspace(
         source: DetectionSource,
         strength: Float,
         notes: String,
+        detectedFeatureType: String? = null,
     ) {
         val coordinate = GeoSpatialLibrary.gridToGeographic(x, y, metadata)
         viewModel.updateLoggedSignal(
@@ -224,6 +226,10 @@ fun AiAnalysisWorkspace(
                 // candidates instead of being unattributable.
                 datasetKey = aiState.localResult?.datasetKey,
                 terrainKey = terrainKey,
+                // Ties this find back to the specific candidate type that was predicted, so a
+                // later verified outcome also feeds FeatureTypeCalibration - the app's per-type
+                // confidence, generalized across every dataset, not just this exact spot.
+                detectedFeatureType = detectedFeatureType,
             ),
         )
     }
@@ -416,7 +422,20 @@ fun AiAnalysisWorkspace(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(historicTargets.sortedByDescending { it.score }, key = { "${it.type}-${it.xPercent}-${it.yPercent}" }) { target ->
-                            TargetDetailCard(target)
+                            TargetDetailCard(
+                                target = target,
+                                onLog = {
+                                    saveMarker(
+                                        target.xPercent,
+                                        target.yPercent,
+                                        MetalType.MAGNETIC_ANOMALY,
+                                        DetectionSource.AI_ANALYSIS,
+                                        target.score * 100f,
+                                        "Historic AI candidate: ${target.type.label} · ${target.evidence.joinToString(" · ")}",
+                                        detectedFeatureType = target.type.name,
+                                    )
+                                },
+                            )
                         }
                     }
                 }
@@ -521,7 +540,8 @@ internal fun stableCloudTargetId(terrainKey: String, target: CloudMapTarget): Lo
 }
 
 @Composable
-private fun TargetDetailCard(target: MetalDetectingTarget) {
+private fun TargetDetailCard(target: MetalDetectingTarget, onLog: () -> Unit) {
+    val logged = rememberSaveable(target.type, target.xPercent, target.yPercent) { mutableStateOf(false) }
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -542,6 +562,17 @@ private fun TargetDetailCard(target: MetalDetectingTarget) {
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
+                OutlinedButton(
+                    onClick = {
+                        onLog()
+                        logged.value = true
+                    },
+                    enabled = !logged.value,
+                    modifier = Modifier.height(CompactButtonHeight),
+                    contentPadding = CompactButtonPadding,
+                ) {
+                    Text(if (logged.value) "Logged" else "Log", style = MaterialTheme.typography.labelSmall)
+                }
             }
             Text(
                 target.evidence.joinToString(" · "),
@@ -553,6 +584,16 @@ private fun TargetDetailCard(target: MetalDetectingTarget) {
                     "⚠ $reason",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
+                )
+            }
+            // Once logged, this candidate's later Confirmed/Rejected outcome (set in the Finds
+            // tab after checking it in the field) feeds FeatureTypeCalibration for this type,
+            // generalized across every dataset - not just re-scoring this exact spot.
+            if (logged.value) {
+                Text(
+                    "Logged to Finds - set its outcome there once field-checked to improve future ${target.type.label} scoring.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
         }

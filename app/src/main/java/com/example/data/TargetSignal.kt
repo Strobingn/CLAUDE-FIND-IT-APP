@@ -42,6 +42,14 @@ data class TargetSignal(
      * this remains unchanged when the same file is re-rendered or refined at another resolution.
      */
     val terrainKey: String? = null,
+    /**
+     * Name of the [com.example.analysis.MetalDetectingTargetType] this marker was logged from,
+     * when it came from an AI candidate. Lets a later field-verified [outcome] be attributed back
+     * to the specific feature type that was predicted, so per-type detection confidence can be
+     * calibrated from real outcomes across every dataset the user has ever checked - not just the
+     * one exact spot [datasetKey]-based feedback already re-scores.
+     */
+    val detectedFeatureType: String? = null,
 ) : Serializable
 
 fun targetsForTerrain(signals: List<TargetSignal>, terrainKey: String): List<TargetSignal> =

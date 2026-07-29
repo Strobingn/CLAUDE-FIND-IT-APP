@@ -6,6 +6,8 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.analysis.FeatureTypeCalibration
+import com.example.analysis.MetalDetectingTargetType
 import com.example.data.DemGenerator
 import com.example.data.DetectionSource
 import com.example.data.ElevationGrid
@@ -189,6 +191,15 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _loggedSignals = MutableStateFlow<List<TargetSignal>>(emptyList())
     val loggedSignals = _loggedSignals.asStateFlow()
 
+    /**
+     * Per-type detection-confidence bias derived from every field-verified signal across every
+     * dataset the user has ever logged (see [FeatureTypeCalibration]) - deliberately not scoped
+     * to the active terrain like [loggedSignals], since the whole point is generalizing what the
+     * user has confirmed/rejected beyond just the one site currently open.
+     */
+    private val _featureTypeCalibration = MutableStateFlow<Map<MetalDetectingTargetType, Float>>(emptyMap())
+    val featureTypeCalibration: StateFlow<Map<MetalDetectingTargetType, Float>> = _featureTypeCalibration.asStateFlow()
+
     private val _analyzedDatasets = MutableStateFlow<List<AnalyzedDatasetEntity>>(emptyList())
     val analyzedDatasets: StateFlow<List<AnalyzedDatasetEntity>> = _analyzedDatasets.asStateFlow()
     private val _surveyLayers = MutableStateFlow<List<SurveyLayer>>(emptyList())
@@ -255,6 +266,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             signalDao.observeAll().collect { stored ->
                 allLoggedSignals = stored.map { it.toDomain() }
+                _featureTypeCalibration.value = FeatureTypeCalibration.derive(allLoggedSignals)
                 refreshVisibleSignals()
             }
         }

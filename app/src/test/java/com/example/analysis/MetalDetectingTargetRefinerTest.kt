@@ -1,11 +1,34 @@
 package com.example.analysis
 
 import java.util.EnumMap
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MetalDetectingTargetRefinerTest {
+    @Test
+    fun positiveCalibrationBiasLowersEffectiveThreshold() {
+        val baseline = MetalDetectingTargetRefiner.calibratedThreshold(0.66f, 0f)
+        val calibrated = MetalDetectingTargetRefiner.calibratedThreshold(0.66f, 0.12f)
+        assertTrue("A type the user keeps confirming should need a lower score to surface", calibrated < baseline)
+        assertEquals(0.54f, calibrated, 1e-6f)
+    }
+
+    @Test
+    fun negativeCalibrationBiasRaisesEffectiveThreshold() {
+        val baseline = MetalDetectingTargetRefiner.calibratedThreshold(0.66f, 0f)
+        val calibrated = MetalDetectingTargetRefiner.calibratedThreshold(0.66f, -0.12f)
+        assertTrue("A type the user keeps rejecting should need a higher score to surface", calibrated > baseline)
+        assertEquals(0.78f, calibrated, 1e-6f)
+    }
+
+    @Test
+    fun calibratedThresholdIsClampedToASaneRange() {
+        assertEquals(0.95f, MetalDetectingTargetRefiner.calibratedThreshold(0.66f, -1f), 1e-6f)
+        assertEquals(0.3f, MetalDetectingTargetRefiner.calibratedThreshold(0.66f, 1f), 1e-6f)
+    }
+
     @Test
     fun historicProfileFindsStructuredOccupationAndTravelFeatures() {
         val width = 64
