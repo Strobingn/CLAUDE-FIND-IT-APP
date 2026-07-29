@@ -72,12 +72,14 @@ class HistoricMapOverlayRepository(
         defaultBaseWidthMeters: Float,
     ): HistoricMapOverlay {
         val destination = destinationFor(requestedName)
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(destination).use { output -> input.copyTo(output, bufferSize = 1024 * 1024) }
-        } ?: error("Could not open selected historic map file")
-        if (destination.length() !in 1..MAX_HISTORIC_MAP_IMPORT_BYTES) {
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(destination).use { output -> copyAtMost(input, output, MAX_HISTORIC_MAP_IMPORT_BYTES) }
+            } ?: error("Could not open selected historic map file")
+            require(destination.length() > 0L) { "$requestedName is empty" }
+        } catch (error: Throwable) {
             destination.delete()
-            error("Historic map image must be smaller than ${MAX_HISTORIC_MAP_IMPORT_BYTES / (1024 * 1024)} MB")
+            throw error
         }
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -174,6 +176,23 @@ class HistoricMapOverlayRepository(
     }
 
     private fun key(id: String, field: String) = "$id.$field"
+
+    /** Streams with a hard ceiling so an oversized pick fails fast instead of filling the device first. */
+    private fun copyAtMost(input: java.io.InputStream, output: java.io.OutputStream, maxBytes: Long) {
+        val buffer = ByteArray(256 * 1024)
+        var copied = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            if (read == 0) continue
+            copied += read
+            require(copied <= maxBytes) {
+                "Historic map image must be smaller than ${maxBytes / (1024 * 1024)} MB"
+            }
+            output.write(buffer, 0, read)
+        }
+        output.flush()
+    }
 
     private companion object {
         const val KEY_IDS = "ids"

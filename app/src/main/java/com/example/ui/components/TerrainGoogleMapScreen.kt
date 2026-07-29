@@ -149,8 +149,8 @@ fun TerrainGoogleMapScreen(
     var historicMaps by remember { mutableStateOf(historicMapRepository.list()) }
     val historicBitmaps = remember { mutableStateMapOf<String, Bitmap>() }
     var historicOverlayObjects by remember { mutableStateOf<Map<String, GroundOverlay>>(emptyMap()) }
-    var activeHistoricMapId by remember { mutableStateOf<String?>(null) }
-    var historicPanelExpanded by remember { mutableStateOf(false) }
+    var activeHistoricMapId by rememberSaveable { mutableStateOf<String?>(null) }
+    var historicPanelExpanded by rememberSaveable { mutableStateOf(false) }
     var historicMapMessage by remember { mutableStateOf<String?>(null) }
 
     fun refreshHistoricMaps() {
@@ -252,13 +252,15 @@ fun TerrainGoogleMapScreen(
 
     LaunchedEffect(googleMap, historicMaps, historicBitmaps.toMap()) {
         val map = googleMap ?: return@LaunchedEffect
-        val visibleIds = historicMaps.filter { it.visible }.map { it.id }.toSet()
-        historicOverlayObjects.forEach { (id, mapObject) -> if (id !in visibleIds) mapObject.remove() }
+        // Rebuild wholesale rather than diffing. Anything left on the map but absent from the
+        // replacement tracking map below becomes unreachable - onDispose only removes what it
+        // holds - so a record that is visible but whose bitmap is not ready yet would otherwise
+        // strand its previous overlay on screen permanently.
+        historicOverlayObjects.values.forEach { it.remove() }
         val updated = mutableMapOf<String, GroundOverlay>()
         historicMaps.forEach { record ->
             if (!record.visible) return@forEach
             val bitmap = historicBitmaps[record.id]?.takeIf { !it.isRecycled } ?: return@forEach
-            historicOverlayObjects[record.id]?.remove()
             val added = map.addGroundOverlay(
                 GroundOverlayOptions()
                     .image(BitmapDescriptorFactory.fromBitmap(bitmap))
@@ -1193,8 +1195,10 @@ private fun decodeSampledBitmap(file: File, maxDimension: Int): Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(file.absolutePath, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    // Test the current sample size, not the next one: comparing against sampleSize * 2 stops one
+    // step early and lets the decoded bitmap come back at up to twice the requested ceiling.
     var sampleSize = 1
-    while (bounds.outWidth / (sampleSize * 2) >= maxDimension || bounds.outHeight / (sampleSize * 2) >= maxDimension) {
+    while (bounds.outWidth / sampleSize > maxDimension || bounds.outHeight / sampleSize > maxDimension) {
         sampleSize *= 2
     }
     val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }

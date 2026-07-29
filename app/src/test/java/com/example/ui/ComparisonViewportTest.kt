@@ -44,12 +44,31 @@ class ComparisonViewportTest {
     }
 
     @Test
+    fun whenTheLayerIsLetterboxedTheShortAxisStaysPinned() {
+        // Contain-fit on a 2:1 raster in a 400x1000 pane is width-driven, so at 4x the image is
+        // 1600x800 - still shorter than the pane. There is no vertical overflow to pan into.
+        val result = applyComparisonGesture(
+            current = ComparisonViewport(zoom = 4f, pan = Offset.Zero),
+            centroid = Offset(200f, 500f),
+            panChange = Offset(0f, 400f),
+            zoomChange = 1f,
+            viewportWidth = 400f,
+            viewportHeight = 1000f,
+            sourceWidth = 2000f,
+            sourceHeight = 1000f,
+        )
+
+        assertEquals(0f, result.pan.y, 1e-4f)
+    }
+
+    @Test
     fun zoomKeepsThePointUnderTheCentroidFixed() {
         val paneWidth = 400f
         val paneHeight = 1000f
         val sourceWidth = 2000f
         val sourceHeight = 1000f
-        val start = ComparisonViewport(zoom = 2f, pan = Offset.Zero)
+        // 6x overflows the pane on both axes (2400x1200), so anchoring is observable in both.
+        val start = ComparisonViewport(zoom = 6f, pan = Offset.Zero)
         val centroid = Offset(120f, 400f)
 
         fun imageFractionUnder(state: ComparisonViewport): Offset {
@@ -66,7 +85,7 @@ class ComparisonViewportTest {
             current = start,
             centroid = centroid,
             panChange = Offset.Zero,
-            zoomChange = 1.75f,
+            zoomChange = 1.5f,
             viewportWidth = paneWidth,
             viewportHeight = paneHeight,
             sourceWidth = sourceWidth,
@@ -74,14 +93,15 @@ class ComparisonViewportTest {
         )
         val after = imageFractionUnder(zoomed)
 
-        assertEquals(3.5f, zoomed.zoom, 1e-4f)
+        assertEquals(9f, zoomed.zoom, 1e-4f)
         assertEquals("zoom must stay anchored horizontally", before.x, after.x, 1e-3f)
         assertEquals("zoom must stay anchored vertically", before.y, after.y, 1e-3f)
     }
 
     @Test
     fun panIsClampedToTheOverflowSoTheRasterCannotLeaveThePane() {
-        val start = ComparisonViewport(zoom = 4f, pan = Offset.Zero)
+        // 8x gives 3200x1600 against a 400x1000 pane, so there is real overflow on both axes.
+        val start = ComparisonViewport(zoom = 8f, pan = Offset.Zero)
 
         val result = applyComparisonGesture(
             current = start,
@@ -95,9 +115,10 @@ class ComparisonViewportTest {
         )
 
         val fit = comparisonFitScale(400f, 1000f, 2000f, 1000f)
-        val maxPanX = (2000f * fit * 4f - 400f) * 0.5f
-        val maxPanY = (1000f * fit * 4f - 1000f) * 0.5f
+        val maxPanX = (2000f * fit * 8f - 400f) * 0.5f
+        val maxPanY = (1000f * fit * 8f - 1000f) * 0.5f
 
+        assertTrue("both axes must overflow for this to test clamping", maxPanX > 0f && maxPanY > 0f)
         assertEquals(maxPanX, result.pan.x, 1e-3f)
         assertEquals(maxPanY, result.pan.y, 1e-3f)
     }

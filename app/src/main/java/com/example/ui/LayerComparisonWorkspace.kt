@@ -255,6 +255,9 @@ fun LayerComparisonWorkspace(
                     // the fit calculation reads the source dimensions, which change when analysis reruns.
                     .pointerInput(leftBitmap, result) {
                         detectTransformGestures { centroid, panChange, zoomChange, _ ->
+                            // Ignore gestures until the canvas has been measured, otherwise the
+                            // header offset below is computed against a zero-height pane.
+                            if (paneSize.width == 0 || paneSize.height == 0) return@detectTransformGestures
                             // Centroid arrives in Row coordinates; the right pane starts one pane
                             // width across, so fold it back into pane-local space.
                             val paneWidth = (size.width / 2).toFloat().coerceAtLeast(1f)

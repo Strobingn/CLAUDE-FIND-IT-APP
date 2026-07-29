@@ -111,6 +111,55 @@ class HistoricMapOverlayRepositoryTest {
     }
 
     @Test
+    fun anEmptySourceIsRejectedAndLeavesNothingBehind() {
+        val repository = HistoricMapOverlayRepository(context, storeDirectory)
+        val empty = File(context.cacheDir, "empty-${System.nanoTime()}.png").apply { writeBytes(ByteArray(0)) }
+
+        val failure = runCatching {
+            repository.importImage(context, Uri.fromFile(empty), "empty.png", 0.0, 0.0, 100f)
+        }
+
+        assertTrue(failure.isFailure)
+        assertTrue("no record should be stored", repository.list().isEmpty())
+        assertTrue(
+            "no partial file should remain",
+            storeDirectory.listFiles().orEmpty().none { it.name.startsWith("empty") },
+        )
+    }
+
+    @Test
+    fun aNonImageFileIsRejectedAndLeavesNothingBehind() {
+        val repository = HistoricMapOverlayRepository(context, storeDirectory)
+        val notAnImage = File(context.cacheDir, "notes-${System.nanoTime()}.png")
+            .apply { writeText("this is plainly not a PNG") }
+
+        val failure = runCatching {
+            repository.importImage(context, Uri.fromFile(notAnImage), "notes.png", 0.0, 0.0, 100f)
+        }
+
+        assertTrue(failure.isFailure)
+        assertTrue("no record should be stored", repository.list().isEmpty())
+        assertTrue(
+            "the copied file should be cleaned up",
+            storeDirectory.listFiles().orEmpty().none { it.name.startsWith("notes") },
+        )
+    }
+
+    @Test
+    fun deletingOneOverlayLeavesTheOthersIntact() {
+        val repository = HistoricMapOverlayRepository(context, storeDirectory)
+        val first = repository.importImage(context, sourceImageUri(), "first.png", 1.0, 2.0, 100f)
+        val second = repository.importImage(context, sourceImageUri(), "second.png", 3.0, 4.0, 200f)
+
+        repository.delete(first)
+
+        val remaining = HistoricMapOverlayRepository(context, storeDirectory).list()
+        assertEquals(listOf(second.id), remaining.map { it.id })
+        assertEquals(3.0, remaining.single().latitude, 1e-9)
+        assertTrue(second.file.exists())
+    }
+
+    @Test
     fun distinctFilesWithSameRequestedNameAreNotOverwritten() {
         val repository = HistoricMapOverlayRepository(context, storeDirectory)
         val first = repository.importImage(context, sourceImageUri(), "map.png", 0.0, 0.0, 100f)
