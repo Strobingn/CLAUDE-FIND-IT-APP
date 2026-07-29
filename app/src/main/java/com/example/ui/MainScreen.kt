@@ -100,7 +100,7 @@ private data class AppTab(
 
 private val tabs = listOf(
     AppTab("Terrain", "Terrain workspace", Icons.Default.Landscape),
-    AppTab("Map", "Google Maps overlay", Icons.Default.Layers),
+    AppTab("Map", "Google Maps + historic overlays", Icons.Default.Layers),
     AppTab("Gemini", "Gemini field assistant", Icons.Default.AutoAwesome),
     AppTab("Compare", "Layer comparison", Icons.Default.Compare),
     AppTab("Finds", "Field finds", Icons.Default.Flag),
