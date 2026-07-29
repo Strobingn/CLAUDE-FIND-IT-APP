@@ -256,14 +256,15 @@ fun TerrainGoogleMapScreen(
             if (!record.visible) return@forEach
             val bitmap = historicBitmaps[record.id]?.takeIf { !it.isRecycled } ?: return@forEach
             historicOverlayObjects[record.id]?.remove()
-            updated[record.id] = map.addGroundOverlay(
+            val added = map.addGroundOverlay(
                 GroundOverlayOptions()
                     .image(BitmapDescriptorFactory.fromBitmap(bitmap))
                     .position(LatLng(record.latitude, record.longitude), record.widthMeters, record.heightMeters)
                     .bearing(record.bearingDegrees)
                     .transparency(1f - record.opacity.coerceIn(0.1f, 1f))
                     .zIndex(3f),
-            )
+            ) ?: return@forEach
+            updated[record.id] = added
         }
         historicOverlayObjects = updated
     }
