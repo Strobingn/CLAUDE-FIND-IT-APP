@@ -15,6 +15,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -31,6 +32,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.EditLocationAlt
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MyLocation
@@ -476,7 +479,7 @@ fun TerrainGoogleMapScreen(
                     updateHistoricMap(record.copy(latitude = center.latitude, longitude = center.longitude))
                 },
                 onClose = { historicPanelExpanded = false },
-                modifier = Modifier.align(Alignment.CenterEnd).padding(12.dp).width(300.dp),
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 92.dp, end = 12.dp).width(264.dp),
             )
         } else {
             SmallFloatingActionButton(
@@ -574,92 +577,138 @@ private fun OverlayControls(
     onReset: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Aligning is a visual task: the controls must not sit on top of the thing being aligned.
+    // Collapsing leaves a single slim row, and only one field's slider is shown at a time.
+    var collapsed by rememberSaveable { mutableStateOf(false) }
+    var field by rememberSaveable { mutableStateOf(AlignField.WIDTH) }
+
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f)),
         shape = RoundedCornerShape(18.dp),
         modifier = modifier,
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Button(onClick = { onAlignmentModeChanged(!alignmentMode) }, enabled = canPlace) {
-                    Icon(Icons.Default.EditLocationAlt, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(if (alignmentMode) "Done aligning" else "Align LAZ")
-                }
-                OutlinedButton(onClick = onPlaceAtCenter, enabled = canPlace) {
-                    Icon(Icons.Default.CenterFocusStrong, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Center here")
-                }
-                OutlinedButton(onClick = onShowSurvey, enabled = canShowSurvey) {
-                    Icon(Icons.Default.Layers, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Show survey")
-                }
-                if (canReset) {
-                    OutlinedButton(onClick = onReset) {
-                        Icon(Icons.Default.MyLocation, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Reset")
-                    }
-                }
-            }
-            if (alignmentMode) {
-                AlignmentSlider(
-                    label = "Width",
-                    valueLabel = "${((alignment?.widthScale ?: 1f) * 100).toInt()}%",
-                    value = alignment?.widthScale ?: 1f,
-                    onValueChange = onWidthScaleChanged,
-                    range = 0.2f..5f,
-                    enabled = alignment != null,
-                )
-                AlignmentSlider(
-                    label = "Height",
-                    valueLabel = "${((alignment?.heightScale ?: 1f) * 100).toInt()}%",
-                    value = alignment?.heightScale ?: 1f,
-                    onValueChange = onHeightScaleChanged,
-                    range = 0.2f..5f,
-                    enabled = alignment != null,
-                )
-                AlignmentSlider(
-                    label = "Rotation",
-                    valueLabel = "${(alignment?.bearingDegrees ?: 0f).toInt()}°",
-                    value = alignment?.bearingDegrees ?: 0f,
-                    onValueChange = onBearingChanged,
-                    range = -180f..180f,
-                    enabled = alignment != null,
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    listOf(
-                        "←" to (-0.02f to 0f),
-                        "↑" to (0f to 0.02f),
-                        "↓" to (0f to -0.02f),
-                        "→" to (0.02f to 0f),
-                    ).forEach { (label, direction) ->
-                        OutlinedButton(
-                            onClick = { onNudge(direction.first, direction.second) },
-                            enabled = alignment != null,
-                        ) { Text(label) }
-                    }
-                    OutlinedButton(onClick = onEditBounds, enabled = alignment != null) {
-                        Text("Exact bounds")
-                    }
-                }
-            }
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Opacity", style = MaterialTheme.typography.labelLarge)
-                Spacer(Modifier.weight(1f))
-                Text("${(opacity * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
+                Row(
+                    modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Button(onClick = { onAlignmentModeChanged(!alignmentMode) }, enabled = canPlace) {
+                        Icon(Icons.Default.EditLocationAlt, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (alignmentMode) "Done" else "Align LAZ")
+                    }
+                    OutlinedButton(onClick = onPlaceAtCenter, enabled = canPlace) {
+                        Icon(Icons.Default.CenterFocusStrong, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Center here")
+                    }
+                    OutlinedButton(onClick = onShowSurvey, enabled = canShowSurvey) {
+                        Icon(Icons.Default.Layers, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Survey")
+                    }
+                    if (canReset) {
+                        OutlinedButton(onClick = onReset) {
+                            Icon(Icons.Default.MyLocation, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Reset")
+                        }
+                    }
+                }
+                IconButton(onClick = { collapsed = !collapsed }) {
+                    Icon(
+                        if (collapsed) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (collapsed) "Show overlay controls" else "Hide overlay controls to see the map",
+                    )
+                }
             }
-            Slider(value = opacity, onValueChange = onOpacityChanged, valueRange = 0.1f..1f)
+
+            if (!collapsed) {
+                if (alignmentMode) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        AlignField.entries.forEach { candidate ->
+                            FilterChip(
+                                selected = field == candidate,
+                                onClick = { field = candidate },
+                                label = { Text(candidate.label) },
+                            )
+                        }
+                    }
+                }
+
+                when {
+                    alignmentMode && field == AlignField.WIDTH -> AlignmentSlider(
+                        label = "Width",
+                        valueLabel = "${((alignment?.widthScale ?: 1f) * 100).toInt()}%",
+                        value = alignment?.widthScale ?: 1f,
+                        onValueChange = onWidthScaleChanged,
+                        range = 0.2f..5f,
+                        enabled = alignment != null,
+                    )
+                    alignmentMode && field == AlignField.HEIGHT -> AlignmentSlider(
+                        label = "Height",
+                        valueLabel = "${((alignment?.heightScale ?: 1f) * 100).toInt()}%",
+                        value = alignment?.heightScale ?: 1f,
+                        onValueChange = onHeightScaleChanged,
+                        range = 0.2f..5f,
+                        enabled = alignment != null,
+                    )
+                    alignmentMode && field == AlignField.ROTATION -> AlignmentSlider(
+                        label = "Rotation",
+                        valueLabel = "${(alignment?.bearingDegrees ?: 0f).toInt()}°",
+                        value = alignment?.bearingDegrees ?: 0f,
+                        onValueChange = onBearingChanged,
+                        range = -180f..180f,
+                        enabled = alignment != null,
+                    )
+                    else -> AlignmentSlider(
+                        label = "Opacity",
+                        valueLabel = "${(opacity * 100).toInt()}%",
+                        value = opacity,
+                        onValueChange = onOpacityChanged,
+                        range = 0.1f..1f,
+                        enabled = true,
+                    )
+                }
+
+                if (alignmentMode) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        listOf(
+                            "←" to (-0.02f to 0f),
+                            "↑" to (0f to 0.02f),
+                            "↓" to (0f to -0.02f),
+                            "→" to (0.02f to 0f),
+                        ).forEach { (label, direction) ->
+                            OutlinedButton(
+                                onClick = { onNudge(direction.first, direction.second) },
+                                enabled = alignment != null,
+                                contentPadding = PaddingValues(horizontal = 14.dp),
+                            ) { Text(label) }
+                        }
+                        OutlinedButton(
+                            onClick = onEditBounds,
+                            enabled = alignment != null,
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                        ) { Text("Exact bounds") }
+                    }
+                }
+            }
         }
     }
+}
+
+private enum class AlignField(val label: String) {
+    WIDTH("Width"),
+    HEIGHT("Height"),
+    ROTATION("Rotate"),
+    OPACITY("Opacity"),
 }
 
 @Composable
@@ -703,73 +752,112 @@ private fun HistoricMapPanel(
     modifier: Modifier = Modifier,
 ) {
     val active = historicMaps.firstOrNull { it.id == activeId }
+    // Same constraint as the LAZ controls: keep the footprint small, show one slider at a time, and
+    // let the list of imported maps collapse away once the user is actually aligning one.
+    var listExpanded by rememberSaveable { mutableStateOf(true) }
+    var field by rememberSaveable { mutableStateOf(AlignField.WIDTH) }
+
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.90f)),
         shape = RoundedCornerShape(18.dp),
-        modifier = modifier.heightIn(max = 440.dp),
+        modifier = modifier.heightIn(max = 340.dp),
     ) {
         Column(
-            modifier = Modifier.padding(12.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Historic maps", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                TextButton(onClick = onClose) { Text("Close") }
-            }
-            Button(onClick = onImport, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.UploadFile, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text("Import map image")
+                Text("Historic maps", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                IconButton(onClick = { listExpanded = !listExpanded }) {
+                    Icon(
+                        if (listExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (listExpanded) "Hide map list" else "Show map list",
+                    )
+                }
+                TextButton(onClick = onClose, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Close") }
             }
             message?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
-            if (historicMaps.isEmpty()) {
-                Text(
-                    "Import a scanned plat, survey, or old topographic map, then align its footprint over the terrain.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            historicMaps.forEach { record ->
-                HistoricMapRow(
-                    overlay = record,
-                    selected = record.id == activeId,
-                    onSelect = { onSelect(record.id) },
-                    onToggleVisible = { onToggleVisible(record) },
-                    onDelete = { onDelete(record) },
-                )
+            if (listExpanded) {
+                OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.UploadFile, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import map image")
+                }
+                if (historicMaps.isEmpty()) {
+                    Text(
+                        "Import a scanned plat, survey, or old topographic map, then align its footprint over the terrain.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                historicMaps.forEach { record ->
+                    HistoricMapRow(
+                        overlay = record,
+                        selected = record.id == activeId,
+                        onSelect = { onSelect(record.id) },
+                        onToggleVisible = { onToggleVisible(record) },
+                        onDelete = { onDelete(record) },
+                    )
+                }
             }
             if (active != null) {
-                HorizontalDivider()
-                Text("Align “${active.displayName}”", style = MaterialTheme.typography.labelLarge)
-                AlignmentSlider(
-                    label = "Width",
-                    valueLabel = "${(active.widthScale * 100).toInt()}%",
-                    value = active.widthScale,
-                    onValueChange = { onWidthScaleChanged(active, it) },
-                    range = 0.2f..5f,
-                    enabled = true,
-                )
-                AlignmentSlider(
-                    label = "Height",
-                    valueLabel = "${(active.heightScale * 100).toInt()}%",
-                    value = active.heightScale,
-                    onValueChange = { onHeightScaleChanged(active, it) },
-                    range = 0.2f..5f,
-                    enabled = true,
-                )
-                AlignmentSlider(
-                    label = "Rotation",
-                    valueLabel = "${active.bearingDegrees.toInt()}°",
-                    value = active.bearingDegrees,
-                    onValueChange = { onBearingChanged(active, it) },
-                    range = -180f..180f,
-                    enabled = true,
+                if (listExpanded) HorizontalDivider()
+                Text(
+                    active.displayName,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    AlignField.entries.forEach { candidate ->
+                        FilterChip(
+                            selected = field == candidate,
+                            onClick = { field = candidate },
+                            label = { Text(candidate.label) },
+                        )
+                    }
+                }
+                when (field) {
+                    AlignField.WIDTH -> AlignmentSlider(
+                        label = "Width",
+                        valueLabel = "${(active.widthScale * 100).toInt()}%",
+                        value = active.widthScale,
+                        onValueChange = { onWidthScaleChanged(active, it) },
+                        range = 0.2f..5f,
+                        enabled = true,
+                    )
+                    AlignField.HEIGHT -> AlignmentSlider(
+                        label = "Height",
+                        valueLabel = "${(active.heightScale * 100).toInt()}%",
+                        value = active.heightScale,
+                        onValueChange = { onHeightScaleChanged(active, it) },
+                        range = 0.2f..5f,
+                        enabled = true,
+                    )
+                    AlignField.ROTATION -> AlignmentSlider(
+                        label = "Rotation",
+                        valueLabel = "${active.bearingDegrees.toInt()}°",
+                        value = active.bearingDegrees,
+                        onValueChange = { onBearingChanged(active, it) },
+                        range = -180f..180f,
+                        enabled = true,
+                    )
+                    AlignField.OPACITY -> AlignmentSlider(
+                        label = "Opacity",
+                        valueLabel = "${(active.opacity * 100).toInt()}%",
+                        value = active.opacity,
+                        onValueChange = { onOpacityChanged(active, it) },
+                        range = 0.1f..1f,
+                        enabled = true,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     listOf(
                         "←" to (-0.02f to 0f),
@@ -777,20 +865,16 @@ private fun HistoricMapPanel(
                         "↓" to (0f to -0.02f),
                         "→" to (0.02f to 0f),
                     ).forEach { (label, direction) ->
-                        OutlinedButton(onClick = { onNudge(active, direction.first, direction.second) }) { Text(label) }
+                        OutlinedButton(
+                            onClick = { onNudge(active, direction.first, direction.second) },
+                            contentPadding = PaddingValues(horizontal = 14.dp),
+                        ) { Text(label) }
                     }
-                    OutlinedButton(onClick = { onCenterHere(active) }) { Text("Center here") }
+                    OutlinedButton(
+                        onClick = { onCenterHere(active) },
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                    ) { Text("Center here") }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Opacity", style = MaterialTheme.typography.labelLarge)
-                    Spacer(Modifier.weight(1f))
-                    Text("${(active.opacity * 100).toInt()}%", style = MaterialTheme.typography.labelMedium)
-                }
-                Slider(
-                    value = active.opacity,
-                    onValueChange = { onOpacityChanged(active, it) },
-                    valueRange = 0.1f..1f,
-                )
             }
         }
     }
