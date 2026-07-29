@@ -775,7 +775,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     fun updateVisualizationMode(value: Int) { _visualizationMode.value = value.coerceIn(0, 8); scheduleRender() }
     fun updateOverlayType(value: Int) { _overlayType.value = value.coerceIn(0, 2); scheduleRender() }
     fun updateOverlayOpacity(value: Float) { _overlayOpacity.value = value.coerceIn(0.1f, 0.9f); scheduleRender() }
-    fun updateGridSpacing(value: Float) { _gridSpacing.value = value.coerceIn(0f, 20f) }
+    fun updateGridSpacing(value: Float) { _gridSpacing.value = value.coerceIn(0f, 10f) }
     fun updateZScale(value: Float) { _zScale.value = value.coerceIn(0.5f, 4f); scheduleRender() }
     fun updateFeatureScale(value: Float) {
         _featureScaleMeters.value = value.coerceIn(1f, 40f)
