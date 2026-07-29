@@ -15,6 +15,7 @@ import com.example.data.TerrainGpuLevel
 import com.example.data.TerrainGpuScene
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.tan
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
@@ -36,6 +37,12 @@ fun GpuTerrainSurface(
 private class TerrainGlSurfaceView(context: Context) : GLSurfaceView(context) {
     private val terrainRenderer = TerrainGlRenderer()
     private var submittedScene: TerrainGpuScene? = null
+
+    /** True while two or more fingers are down, which drags the camera instead of orbiting it. */
+    private var panning = false
+    private var lastFocusX = 0f
+    private var lastFocusY = 0f
+
     private val scaleDetector = ScaleGestureDetector(
         context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -57,6 +64,8 @@ private class TerrainGlSurfaceView(context: Context) : GLSurfaceView(context) {
                 distanceX: Float,
                 distanceY: Float,
             ): Boolean {
+                // Multi-touch drags pan; a single finger orbits.
+                if (current.pointerCount > 1) return false
                 terrainRenderer.rotate(distanceX * 0.25f, distanceY * 0.16f)
                 requestRender()
                 return true
@@ -85,9 +94,56 @@ private class TerrainGlSurfaceView(context: Context) : GLSurfaceView(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        val scaled = scaleDetector.onTouchEvent(event)
-        val gestured = gestureDetector.onTouchEvent(event)
-        return scaled || gestured || super.onTouchEvent(event)
+        scaleDetector.onTouchEvent(event)
+        gestureDetector.onTouchEvent(event)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> parent?.requestDisallowInterceptTouchEvent(true)
+
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                panning = true
+                captureFocus(event)
+            }
+
+            MotionEvent.ACTION_MOVE -> if (panning && event.pointerCount > 1) {
+                val previousX = lastFocusX
+                val previousY = lastFocusY
+                captureFocus(event)
+                terrainRenderer.pan(lastFocusX - previousX, lastFocusY - previousY)
+                requestRender()
+            }
+
+            // Keep panning while three fingers drop to two; stop once only one remains.
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (event.pointerCount > 2) {
+                    captureFocus(event, event.actionIndex)
+                } else {
+                    panning = false
+                }
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                panning = false
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+        return true
+    }
+
+    /** Stores the centroid of the active pointers, ignoring one that is on its way up. */
+    private fun captureFocus(event: MotionEvent, skipIndex: Int = -1) {
+        var sumX = 0f
+        var sumY = 0f
+        var counted = 0
+        for (index in 0 until event.pointerCount) {
+            if (index == skipIndex) continue
+            sumX += event.getX(index)
+            sumY += event.getY(index)
+            counted++
+        }
+        if (counted == 0) return
+        lastFocusX = sumX / counted
+        lastFocusY = sumY / counted
     }
 }
 
@@ -105,10 +161,12 @@ private class TerrainGlRenderer : GLSurfaceView.Renderer {
     private var uploadedReductionFactor: Int? = null
     private val glBatches = ArrayList<GlBatch>()
     private var scene: TerrainGpuScene? = null
-    private var viewportWidth = 1
-    private var viewportHeight = 1
+    @Volatile private var viewportWidth = 1
+    @Volatile private var viewportHeight = 1
     private val modelMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
+    private val panMatrix = FloatArray(16)
+    private val pannedViewMatrix = FloatArray(16)
     private val projectionMatrix = FloatArray(16)
     private val viewModelMatrix = FloatArray(16)
     private val mvpMatrix = FloatArray(16)
@@ -116,6 +174,8 @@ private class TerrainGlRenderer : GLSurfaceView.Renderer {
     @Volatile private var zoom = 1.4f
     @Volatile private var yawDegrees = -35f
     @Volatile private var pitchDegrees = 58f
+    @Volatile private var panX = 0f
+    @Volatile private var panY = 0f
 
     fun submit(newScene: TerrainGpuScene) {
         if (scene === newScene) return
@@ -132,11 +192,26 @@ private class TerrainGlRenderer : GLSurfaceView.Renderer {
         pitchDegrees = (pitchDegrees - pitchDelta).coerceIn(20f, 82f)
     }
 
+    /**
+     * Slides the camera across the view plane. Deltas arrive in pixels and are converted using the
+     * world height visible at the pivot, so a drag tracks the finger at every zoom level.
+     */
+    fun pan(deltaXPixels: Float, deltaYPixels: Float) {
+        val visibleWorldHeight = 2f * cameraDistance() * HALF_FOV_TANGENT
+        val worldPerPixel = visibleWorldHeight / viewportHeight.coerceAtLeast(1)
+        panX = (panX + deltaXPixels * worldPerPixel).coerceIn(-PAN_LIMIT, PAN_LIMIT)
+        panY = (panY - deltaYPixels * worldPerPixel).coerceIn(-PAN_LIMIT, PAN_LIMIT)
+    }
+
     fun resetCamera() {
         zoom = 1.4f
         yawDegrees = -35f
         pitchDegrees = 58f
+        panX = 0f
+        panY = 0f
     }
+
+    private fun cameraDistance(): Float = 3.2f / zoom.coerceAtLeast(0.2f)
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0.035f, 0.04f, 0.05f, 1f)
@@ -254,7 +329,7 @@ private class TerrainGlRenderer : GLSurfaceView.Renderer {
         Matrix.rotateM(modelMatrix, 0, pitchDegrees, 1f, 0f, 0f)
         Matrix.rotateM(modelMatrix, 0, yawDegrees, 0f, 0f, 1f)
 
-        val distance = 3.2f / zoom.coerceAtLeast(0.2f)
+        val distance = cameraDistance()
         Matrix.setLookAtM(
             viewMatrix,
             0,
@@ -268,9 +343,15 @@ private class TerrainGlRenderer : GLSurfaceView.Renderer {
             0f,
             1f,
         )
+        // Pre-multiplying the offset keeps the translation in eye space, so the terrain slides
+        // straight across the screen no matter which way the model is currently rotated.
+        Matrix.setIdentityM(panMatrix, 0)
+        Matrix.translateM(panMatrix, 0, panX, panY, 0f)
+        Matrix.multiplyMM(pannedViewMatrix, 0, panMatrix, 0, viewMatrix, 0)
+
         val aspect = viewportWidth.toFloat() / viewportHeight.toFloat()
-        Matrix.perspectiveM(projectionMatrix, 0, 42f, aspect, 0.1f, 20f)
-        Matrix.multiplyMM(viewModelMatrix, 0, viewMatrix, 0, modelMatrix, 0)
+        Matrix.perspectiveM(projectionMatrix, 0, FIELD_OF_VIEW_DEGREES, aspect, 0.1f, 20f)
+        Matrix.multiplyMM(viewModelMatrix, 0, pannedViewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, viewModelMatrix, 0)
     }
 
@@ -300,6 +381,13 @@ private class TerrainGlRenderer : GLSurfaceView.Renderer {
     }
 
     companion object {
+        private const val FIELD_OF_VIEW_DEGREES = 42f
+        private val HALF_FOV_TANGENT =
+            tan(Math.toRadians(FIELD_OF_VIEW_DEGREES / 2.0)).toFloat()
+
+        /** The mesh spans roughly two world units, so this keeps it reachable but never lost. */
+        private const val PAN_LIMIT = 2f
+
         private const val VERTEX_SHADER = """
             uniform mat4 uMvp;
             attribute vec3 aPosition;
