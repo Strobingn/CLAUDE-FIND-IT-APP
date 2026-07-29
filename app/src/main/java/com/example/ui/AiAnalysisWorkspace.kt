@@ -52,6 +52,8 @@ import com.example.ui.components.LidarOverlayTarget
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 internal const val AI_HISTORIC_TARGETS_DEFAULT_VISIBLE = true
+private val CompactButtonHeight = 32.dp
+private val CompactButtonPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
 
 /**
  * One-map AI workspace tailored to historic-site reconnaissance for metal detecting.
@@ -267,17 +269,24 @@ fun AiAnalysisWorkspace(
                             viewModel.refineTerrain(requested, viewModel.recommendedAiRefineResolution())
                         },
                         enabled = canRefine && !isRefining && !centerMarkerMode.value,
-                        modifier = Modifier.testTag("ai_refine_now_button"),
-                    ) { Text(if (!canRefine) "No LAZ source" else if (isRefining) "Refining…" else "Refine") }
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_refine_now_button"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text(
+                            if (!canRefine) "No LAZ source" else if (isRefining) "Refining…" else "Refine",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                     Button(
                         onClick = { assistantViewModel.runLocalAnalysis(grid, summary, signals) },
                         enabled = !aiState.isLocalAnalyzing,
-                        modifier = Modifier.testTag("ai_run_local_analysis_button"),
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_run_local_analysis_button"),
+                        contentPadding = CompactButtonPadding,
                     ) {
                         if (aiState.isLocalAnalyzing) {
-                            CircularProgressIndicator(modifier = Modifier.height(16.dp), strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.height(14.dp), strokeWidth = 2.dp)
                         } else {
-                            Text(if (aiState.localResult == null) "Analyze" else "Re-run")
+                            Text(if (aiState.localResult == null) "Analyze" else "Re-run", style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }
@@ -298,7 +307,8 @@ fun AiAnalysisWorkspace(
                                 pendingLocalLayer.value = null
                                 assistantViewModel.selectSourceHillshade()
                             },
-                            label = { Text("Source: $sourceRenderLabel") },
+                            label = { Text("Source: $sourceRenderLabel", style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.height(CompactButtonHeight),
                         )
                         TerrainDerivedLayer.entries.forEach { layer ->
                             FilterChip(
@@ -309,7 +319,8 @@ fun AiAnalysisWorkspace(
                                     assistantViewModel.selectLocalLayer(layer)
                                 },
                                 enabled = pendingLocalLayer.value == null,
-                                label = { Text(layer.label) },
+                                label = { Text(layer.label, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.height(CompactButtonHeight),
                             )
                         }
                     }
@@ -322,8 +333,14 @@ fun AiAnalysisWorkspace(
                 ) {
                     OutlinedButton(
                         onClick = { centerMarkerMode.value = !centerMarkerMode.value },
-                        modifier = Modifier.testTag("ai_marker_mode_button"),
-                    ) { Text(if (centerMarkerMode.value) "Cancel marker" else "Mark map center") }
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_marker_mode_button"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text(
+                            if (centerMarkerMode.value) "Cancel marker" else "Mark map center",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                     Button(
                         onClick = {
                             val bounds = visibleBounds.value.sanitized()
@@ -340,34 +357,52 @@ fun AiAnalysisWorkspace(
                             centerMarkerMode.value = false
                         },
                         enabled = centerMarkerMode.value,
-                        modifier = Modifier.testTag("ai_save_manual_marker_button"),
-                    ) { Text("Save center") }
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_save_manual_marker_button"),
+                        contentPadding = CompactButtonPadding,
+                    ) { Text("Save center", style = MaterialTheme.typography.labelSmall) }
                     Button(
                         onClick = {
                             showHistoricTargets.value = !showHistoricTargets.value
                         },
                         enabled = historicTargets.isNotEmpty(),
-                        modifier = Modifier.testTag("ai_add_target_markers_button"),
-                    ) { Text(if (showHistoricTargets.value) "Hide historic targets" else "Mark historic targets") }
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_add_target_markers_button"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text(
+                            if (showHistoricTargets.value) "Hide historic targets" else "Mark historic targets",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                     if (historicTargets.isNotEmpty()) {
                         OutlinedButton(
                             onClick = { showTargetDetails.value = !showTargetDetails.value },
-                            modifier = Modifier.testTag("ai_show_target_details_button"),
-                        ) { Text(if (showTargetDetails.value) "Hide details" else "Show details") }
+                            modifier = Modifier.height(CompactButtonHeight).testTag("ai_show_target_details_button"),
+                            contentPadding = CompactButtonPadding,
+                        ) {
+                            Text(
+                                if (showTargetDetails.value) "Hide details" else "Show details",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                     }
                     if (visibleCloudTargets.isNotEmpty()) {
                         OutlinedButton(
                             onClick = { showCloudTargets.value = !showCloudTargets.value },
-                            modifier = Modifier.testTag("ai_toggle_cloud_targets_button"),
+                            modifier = Modifier.height(CompactButtonHeight).testTag("ai_toggle_cloud_targets_button"),
+                            contentPadding = CompactButtonPadding,
                         ) {
-                            Text(if (showCloudTargets.value) "Hide cloud AI (${visibleCloudTargets.size})" else "Show cloud AI (${visibleCloudTargets.size})")
+                            Text(
+                                if (showCloudTargets.value) "Hide cloud AI (${visibleCloudTargets.size})" else "Show cloud AI (${visibleCloudTargets.size})",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
                         }
                     }
                     if (analyzedDatasets.size >= 2) {
                         OutlinedButton(
                             onClick = { showDatasetComparison.value = true },
-                            modifier = Modifier.testTag("ai_compare_datasets_button"),
-                        ) { Text("Compare datasets") }
+                            modifier = Modifier.height(CompactButtonHeight).testTag("ai_compare_datasets_button"),
+                            contentPadding = CompactButtonPadding,
+                        ) { Text("Compare datasets", style = MaterialTheme.typography.labelSmall) }
                     }
                     Text("${signals.size} saved", style = MaterialTheme.typography.labelMedium)
                 }
