@@ -29,6 +29,7 @@ data class TargetSignalEntity(
     val outcome: String = VerificationOutcome.UNVERIFIED.name,
     val datasetKey: String? = null,
     val terrainKey: String? = null,
+    val detectedFeatureType: String? = null,
 )
 
 fun TargetSignal.toEntity() = TargetSignalEntity(
@@ -52,6 +53,7 @@ fun TargetSignal.toEntity() = TargetSignalEntity(
     outcome = outcome.name,
     datasetKey = datasetKey,
     terrainKey = terrainKey,
+    detectedFeatureType = detectedFeatureType,
 )
 
 fun TargetSignalEntity.toDomain() = TargetSignal(
@@ -75,6 +77,7 @@ fun TargetSignalEntity.toDomain() = TargetSignal(
     outcome = enumValueOrDefault(outcome, VerificationOutcome.UNVERIFIED),
     datasetKey = datasetKey,
     terrainKey = terrainKey,
+    detectedFeatureType = detectedFeatureType,
 )
 
 private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String, fallback: T): T =

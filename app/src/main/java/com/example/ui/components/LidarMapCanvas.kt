@@ -77,6 +77,8 @@ data class LidarOverlayTarget(
 )
 
 private const val MAX_VISIBLE_TARGET_LABELS = 12
+private const val FEET_TO_METERS = 0.3048f
+private const val GRID_LINE_ALPHA = 0.75f
 
 @OptIn(FlowPreview::class)
 @Composable
@@ -359,26 +361,32 @@ fun LidarMapCanvas(
                     }
                 }
                 if (gridSpacing >= 1f) {
-                    val cols = (100f / gridSpacing).toInt().coerceIn(1, 50)
-                    val rows = (100f / gridSpacing).toInt().coerceIn(1, 50)
+                    // gridSpacing is a real-world spacing in feet (e.g. 3 ft or 10 ft survey
+                    // squares), so the on-screen line count is derived from the site's actual
+                    // width/height rather than a fixed percentage of the image.
+                    val widthMeters = geoMetadata.widthMeters.toFloat().coerceAtLeast(0.01f)
+                    val heightMeters = geoMetadata.heightMeters.toFloat().coerceAtLeast(0.01f)
+                    val spacingMeters = (gridSpacing * FEET_TO_METERS).coerceAtLeast(0.01f)
+                    val cols = (widthMeters / spacingMeters).toInt().coerceIn(1, 300)
+                    val rows = (heightMeters / spacingMeters).toInt().coerceIn(1, 300)
                     for (i in 1 until cols) {
-                        val px = imageLeft + (i * gridSpacing / 100f) * displayWidth
+                        val px = imageLeft + (i.toFloat() / cols) * displayWidth
                         drawLine(
                             color = Color(0xFF29B6F6),
                             start = Offset(px, imageTop),
                             end = Offset(px, imageTop + displayHeight),
-                            strokeWidth = 1f,
-                            alpha = 0.35f,
+                            strokeWidth = 1.5f,
+                            alpha = GRID_LINE_ALPHA,
                         )
                     }
                     for (i in 1 until rows) {
-                        val py = imageTop + (i * gridSpacing / 100f) * displayHeight
+                        val py = imageTop + (i.toFloat() / rows) * displayHeight
                         drawLine(
                             color = Color(0xFF29B6F6),
                             start = Offset(imageLeft, py),
                             end = Offset(imageLeft + displayWidth, py),
-                            strokeWidth = 1f,
-                            alpha = 0.35f,
+                            strokeWidth = 1.5f,
+                            alpha = GRID_LINE_ALPHA,
                         )
                     }
                 }

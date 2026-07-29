@@ -52,6 +52,8 @@ import com.example.ui.components.LidarOverlayTarget
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 internal const val AI_HISTORIC_TARGETS_DEFAULT_VISIBLE = true
+private val CompactButtonHeight = 32.dp
+private val CompactButtonPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
 
 /**
  * One-map AI workspace tailored to historic-site reconnaissance for metal detecting.
@@ -74,6 +76,7 @@ fun AiAnalysisWorkspace(
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
     val gridSpacing by viewModel.gridSpacing.collectAsStateWithLifecycle()
+    val featureTypeCalibration by viewModel.featureTypeCalibration.collectAsStateWithLifecycle()
     val visualizationMode by viewModel.visualizationMode.collectAsStateWithLifecycle()
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
 
@@ -127,10 +130,10 @@ fun AiAnalysisWorkspace(
     // Re-derives live from the current logged finds (not just at "Analyze" time) so marking a
     // find CONFIRMED/REJECTED in the Finds tab immediately re-scores historic targets here too,
     // without needing to re-run the full (much more expensive) derived-layer analysis.
-    val historicTargets = remember(aiState.localResult, signals) {
+    val historicTargets = remember(aiState.localResult, signals, featureTypeCalibration) {
         val result = aiState.localResult ?: return@remember emptyList()
         val feedbackPoints = VerifiedFeedback.derive(signals, result.datasetKey)
-        MetalDetectingTargetRefiner.refine(result, feedbackPoints)
+        MetalDetectingTargetRefiner.refine(result, feedbackPoints, featureTypeCalibration)
     }
     val targetOverlays = remember(historicTargets) {
         historicTargets
@@ -223,6 +226,7 @@ fun AiAnalysisWorkspace(
         source: DetectionSource,
         strength: Float,
         notes: String,
+        detectedFeatureType: String? = null,
     ) {
         val coordinate = GeoSpatialLibrary.gridToGeographic(x, y, metadata)
         viewModel.updateLoggedSignal(
@@ -241,6 +245,10 @@ fun AiAnalysisWorkspace(
                 // candidates instead of being unattributable.
                 datasetKey = aiState.localResult?.datasetKey,
                 terrainKey = terrainKey,
+                // Ties this find back to the specific candidate type that was predicted, so a
+                // later verified outcome also feeds FeatureTypeCalibration - the app's per-type
+                // confidence, generalized across every dataset, not just this exact spot.
+                detectedFeatureType = detectedFeatureType,
             ),
         )
     }
@@ -286,17 +294,24 @@ fun AiAnalysisWorkspace(
                             viewModel.refineTerrain(requested, viewModel.recommendedAiRefineResolution())
                         },
                         enabled = canRefine && !isRefining && !centerMarkerMode.value,
-                        modifier = Modifier.testTag("ai_refine_now_button"),
-                    ) { Text(if (!canRefine) "No LAZ source" else if (isRefining) "Refining…" else "Refine") }
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_refine_now_button"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text(
+                            if (!canRefine) "No LAZ source" else if (isRefining) "Refining…" else "Refine",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                     Button(
                         onClick = { assistantViewModel.runLocalAnalysis(grid, summary, signals) },
                         enabled = !aiState.isLocalAnalyzing,
-                        modifier = Modifier.testTag("ai_run_local_analysis_button"),
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_run_local_analysis_button"),
+                        contentPadding = CompactButtonPadding,
                     ) {
                         if (aiState.isLocalAnalyzing) {
-                            CircularProgressIndicator(modifier = Modifier.height(16.dp), strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.height(14.dp), strokeWidth = 2.dp)
                         } else {
-                            Text(if (aiState.localResult == null) "Analyze" else "Re-run")
+                            Text(if (aiState.localResult == null) "Analyze" else "Re-run", style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }
@@ -317,7 +332,8 @@ fun AiAnalysisWorkspace(
                                 pendingLocalLayer.value = null
                                 assistantViewModel.selectSourceHillshade()
                             },
-                            label = { Text("Source: $sourceRenderLabel") },
+                            label = { Text("Source: $sourceRenderLabel", style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.height(CompactButtonHeight),
                         )
                         TerrainDerivedLayer.entries.forEach { layer ->
                             FilterChip(
@@ -328,7 +344,8 @@ fun AiAnalysisWorkspace(
                                     assistantViewModel.selectLocalLayer(layer)
                                 },
                                 enabled = pendingLocalLayer.value == null,
-                                label = { Text(layer.label) },
+                                label = { Text(layer.label, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.height(CompactButtonHeight),
                             )
                         }
                     }
@@ -341,8 +358,14 @@ fun AiAnalysisWorkspace(
                 ) {
                     OutlinedButton(
                         onClick = { centerMarkerMode.value = !centerMarkerMode.value },
-                        modifier = Modifier.testTag("ai_marker_mode_button"),
-                    ) { Text(if (centerMarkerMode.value) "Cancel marker" else "Mark map center") }
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_marker_mode_button"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text(
+                            if (centerMarkerMode.value) "Cancel marker" else "Mark map center",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                     Button(
                         onClick = {
                             val bounds = visibleBounds.value.sanitized()
@@ -359,34 +382,52 @@ fun AiAnalysisWorkspace(
                             centerMarkerMode.value = false
                         },
                         enabled = centerMarkerMode.value,
-                        modifier = Modifier.testTag("ai_save_manual_marker_button"),
-                    ) { Text("Save center") }
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_save_manual_marker_button"),
+                        contentPadding = CompactButtonPadding,
+                    ) { Text("Save center", style = MaterialTheme.typography.labelSmall) }
                     Button(
                         onClick = {
                             showHistoricTargets.value = !showHistoricTargets.value
                         },
                         enabled = historicTargets.isNotEmpty(),
-                        modifier = Modifier.testTag("ai_add_target_markers_button"),
-                    ) { Text(if (showHistoricTargets.value) "Hide historic targets" else "Mark historic targets") }
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_add_target_markers_button"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text(
+                            if (showHistoricTargets.value) "Hide historic targets" else "Mark historic targets",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
                     if (historicTargets.isNotEmpty()) {
                         OutlinedButton(
                             onClick = { showTargetDetails.value = !showTargetDetails.value },
-                            modifier = Modifier.testTag("ai_show_target_details_button"),
-                        ) { Text(if (showTargetDetails.value) "Hide details" else "Show details") }
+                            modifier = Modifier.height(CompactButtonHeight).testTag("ai_show_target_details_button"),
+                            contentPadding = CompactButtonPadding,
+                        ) {
+                            Text(
+                                if (showTargetDetails.value) "Hide details" else "Show details",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                     }
                     if (visibleCloudTargets.isNotEmpty()) {
                         OutlinedButton(
                             onClick = { showCloudTargets.value = !showCloudTargets.value },
-                            modifier = Modifier.testTag("ai_toggle_cloud_targets_button"),
+                            modifier = Modifier.height(CompactButtonHeight).testTag("ai_toggle_cloud_targets_button"),
+                            contentPadding = CompactButtonPadding,
                         ) {
-                            Text(if (showCloudTargets.value) "Hide cloud AI (${visibleCloudTargets.size})" else "Show cloud AI (${visibleCloudTargets.size})")
+                            Text(
+                                if (showCloudTargets.value) "Hide cloud AI (${visibleCloudTargets.size})" else "Show cloud AI (${visibleCloudTargets.size})",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
                         }
                     }
                     if (analyzedDatasets.size >= 2) {
                         OutlinedButton(
                             onClick = { showDatasetComparison.value = true },
-                            modifier = Modifier.testTag("ai_compare_datasets_button"),
-                        ) { Text("Compare datasets") }
+                            modifier = Modifier.height(CompactButtonHeight).testTag("ai_compare_datasets_button"),
+                            contentPadding = CompactButtonPadding,
+                        ) { Text("Compare datasets", style = MaterialTheme.typography.labelSmall) }
                     }
                     Text("${signals.size} saved", style = MaterialTheme.typography.labelMedium)
                 }
@@ -400,7 +441,20 @@ fun AiAnalysisWorkspace(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(historicTargets.sortedByDescending { it.score }, key = { "${it.type}-${it.xPercent}-${it.yPercent}" }) { target ->
-                            TargetDetailCard(target)
+                            TargetDetailCard(
+                                target = target,
+                                onLog = {
+                                    saveMarker(
+                                        target.xPercent,
+                                        target.yPercent,
+                                        MetalType.MAGNETIC_ANOMALY,
+                                        DetectionSource.AI_ANALYSIS,
+                                        target.score * 100f,
+                                        "Historic AI candidate: ${target.type.label} · ${target.evidence.joinToString(" · ")}",
+                                        detectedFeatureType = target.type.name,
+                                    )
+                                },
+                            )
                         }
                     }
                 }
@@ -505,7 +559,8 @@ internal fun stableCloudTargetId(terrainKey: String, target: CloudMapTarget): Lo
 }
 
 @Composable
-private fun TargetDetailCard(target: MetalDetectingTarget) {
+private fun TargetDetailCard(target: MetalDetectingTarget, onLog: () -> Unit) {
+    val logged = rememberSaveable(target.type, target.xPercent, target.yPercent) { mutableStateOf(false) }
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -526,6 +581,17 @@ private fun TargetDetailCard(target: MetalDetectingTarget) {
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
+                OutlinedButton(
+                    onClick = {
+                        onLog()
+                        logged.value = true
+                    },
+                    enabled = !logged.value,
+                    modifier = Modifier.height(CompactButtonHeight),
+                    contentPadding = CompactButtonPadding,
+                ) {
+                    Text(if (logged.value) "Logged" else "Log", style = MaterialTheme.typography.labelSmall)
+                }
             }
             Text(
                 target.evidence.joinToString(" · "),
@@ -537,6 +603,16 @@ private fun TargetDetailCard(target: MetalDetectingTarget) {
                     "⚠ $reason",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
+                )
+            }
+            // Once logged, this candidate's later Confirmed/Rejected outcome (set in the Finds
+            // tab after checking it in the field) feeds FeatureTypeCalibration for this type,
+            // generalized across every dataset - not just re-scoring this exact spot.
+            if (logged.value) {
+                Text(
+                    "Logged to Finds - set its outcome there once field-checked to improve future ${target.type.label} scoring.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
         }

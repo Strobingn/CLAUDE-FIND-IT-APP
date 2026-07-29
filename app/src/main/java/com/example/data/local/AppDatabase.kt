@@ -16,7 +16,7 @@ import androidx.room.migration.Migration
         BreadcrumbTrackEntity::class,
         MosaicProjectEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -164,6 +164,11 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE target_signals ADD COLUMN voiceNoteUris TEXT NOT NULL DEFAULT ''")
             }
         }
+        private val migration11To12 = object : Migration(11, 12) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE target_signals ADD COLUMN detectedFeatureType TEXT")
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -182,6 +187,7 @@ abstract class AppDatabase : RoomDatabase() {
                     migration8To9,
                     migration9To10,
                     migration10To11,
+                    migration11To12,
                 )
                 .build()
                 .also { instance = it }

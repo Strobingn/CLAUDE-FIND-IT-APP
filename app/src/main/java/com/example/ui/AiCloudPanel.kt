@@ -4,6 +4,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -61,6 +62,9 @@ internal val AI_BUILT_IN_QUESTIONS = listOf(
     "Rank the strongest field-check locations",
     "Explain what should be verified on site",
 )
+
+private val CompactButtonHeight = 32.dp
+private val CompactButtonPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
 
 /** Cloud controls and conversation only. The interactive analysis map lives above this panel. */
 @Composable
@@ -138,12 +142,17 @@ fun AiCloudPanel(
                             selected = attachImage && imageReady,
                             onClick = { attachImage = !attachImage },
                             enabled = imageReady && !state.isSending,
-                            label = { Text(if (attachImage && imageReady) "Map attached" else "Attach map") },
-                            leadingIcon = { Icon(Icons.Default.ImageSearch, contentDescription = null) },
+                            label = { Text(if (attachImage && imageReady) "Map attached" else "Attach map", style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = { Icon(Icons.Default.ImageSearch, contentDescription = null, modifier = Modifier.height(16.dp)) },
+                            modifier = Modifier.height(CompactButtonHeight),
                         )
-                        TextButton(onClick = { showKeys = !showKeys }) { Text("Keys") }
-                        IconButton(onClick = assistantViewModel::clearConversation) {
-                            Icon(Icons.Default.DeleteSweep, contentDescription = "Clear conversation")
+                        TextButton(
+                            onClick = { showKeys = !showKeys },
+                            modifier = Modifier.height(CompactButtonHeight),
+                            contentPadding = CompactButtonPadding,
+                        ) { Text("Keys", style = MaterialTheme.typography.labelSmall) }
+                        IconButton(onClick = assistantViewModel::clearConversation, modifier = Modifier.height(CompactButtonHeight)) {
+                            Icon(Icons.Default.DeleteSweep, contentDescription = "Clear conversation", modifier = Modifier.height(18.dp))
                         }
                     }
                     Row(
@@ -157,19 +166,22 @@ fun AiCloudPanel(
                             selected = state.providerPreference == null,
                             onClick = { assistantViewModel.selectCloudProvider(null) },
                             enabled = !state.isSending,
-                            label = { Text("Auto") },
+                            label = { Text("Auto", style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.height(CompactButtonHeight),
                         )
                         FilterChip(
                             selected = state.providerPreference == TerrainAiProvider.OPENAI,
                             onClick = { assistantViewModel.selectCloudProvider(TerrainAiProvider.OPENAI) },
                             enabled = state.openAiConfigured && !state.isSending,
-                            label = { Text("OpenAI") },
+                            label = { Text("OpenAI", style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.height(CompactButtonHeight),
                         )
                         FilterChip(
                             selected = state.providerPreference == TerrainAiProvider.GEMINI,
                             onClick = { assistantViewModel.selectCloudProvider(TerrainAiProvider.GEMINI) },
                             enabled = state.geminiConfigured && !state.isSending,
-                            label = { Text("Gemini") },
+                            label = { Text("Gemini", style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.height(CompactButtonHeight),
                         )
                     }
                 }
@@ -195,9 +207,15 @@ fun AiCloudPanel(
                                     openAiKey = ""
                                 },
                                 enabled = openAiKey.length >= 20,
-                            ) { Text("Save OpenAI") }
+                                modifier = Modifier.height(CompactButtonHeight),
+                                contentPadding = CompactButtonPadding,
+                            ) { Text("Save OpenAI", style = MaterialTheme.typography.labelSmall) }
                             if (state.hasDeviceOpenAiKey) {
-                                OutlinedButton(onClick = assistantViewModel::clearOpenAiKey) { Text("Remove") }
+                                OutlinedButton(
+                                    onClick = assistantViewModel::clearOpenAiKey,
+                                    modifier = Modifier.height(CompactButtonHeight),
+                                    contentPadding = CompactButtonPadding,
+                                ) { Text("Remove", style = MaterialTheme.typography.labelSmall) }
                             }
                         }
                         OutlinedTextField(
@@ -215,9 +233,15 @@ fun AiCloudPanel(
                                     geminiKey = ""
                                 },
                                 enabled = geminiKey.length >= 20,
-                            ) { Text("Save Gemini") }
+                                modifier = Modifier.height(CompactButtonHeight),
+                                contentPadding = CompactButtonPadding,
+                            ) { Text("Save Gemini", style = MaterialTheme.typography.labelSmall) }
                             if (state.hasDeviceGeminiKey) {
-                                OutlinedButton(onClick = assistantViewModel::clearGeminiKey) { Text("Remove") }
+                                OutlinedButton(
+                                    onClick = assistantViewModel::clearGeminiKey,
+                                    modifier = Modifier.height(CompactButtonHeight),
+                                    contentPadding = CompactButtonPadding,
+                                ) { Text("Remove", style = MaterialTheme.typography.labelSmall) }
                             }
                         }
                     }
@@ -242,11 +266,12 @@ fun AiCloudPanel(
                                 draft = question
                                 if (imageReady) attachImage = true
                             },
-                            label = { Text(question) },
+                            label = { Text(question, style = MaterialTheme.typography.labelSmall) },
                             leadingIcon = {
-                                Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.height(16.dp))
                             },
                             enabled = !state.isSending,
+                            modifier = Modifier.height(CompactButtonHeight),
                         )
                     }
                 }
@@ -320,11 +345,12 @@ fun AiCloudPanel(
                         draft = ""
                     },
                     enabled = draft.isNotBlank() && !state.isSending && state.activeProvider != null,
-                    modifier = Modifier.height(56.dp),
+                    modifier = Modifier.height(CompactButtonHeight),
+                    contentPadding = CompactButtonPadding,
                 ) {
-                    Icon(Icons.Default.Send, contentDescription = null)
+                    Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.height(16.dp))
                     Spacer(Modifier.width(5.dp))
-                    Text("Send")
+                    Text("Send", style = MaterialTheme.typography.labelSmall)
                 }
             }
         }

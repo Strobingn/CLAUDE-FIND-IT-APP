@@ -85,6 +85,8 @@ object MetalDetectingTargetRefiner {
     fun refine(
         result: TerrainIntelligenceResult,
         feedback: List<VerifiedFeedbackPoint> = emptyList(),
+        /** Per-type threshold bias from [FeatureTypeCalibration]; see that object for how it's derived. */
+        calibration: Map<MetalDetectingTargetType, Float> = emptyMap(),
     ): List<MetalDetectingTarget> {
         val layers = result.layers
         val width = layers.width
@@ -272,13 +274,15 @@ object MetalDetectingTargetRefiner {
             hillCompare, innerRadius, edgeInner, edgeOuter, contextRadius, corridorHalfLength, corridorHalfWidth,
         )
 
+        fun biasFor(type: MetalDetectingTargetType) = calibration[type] ?: 0f
+
         val output = ArrayList<MetalDetectingTarget>()
-        appendTargets(output, MetalDetectingTargetType.FOUNDATION, foundation, width, height, 0.66f, 8f, feedback, ctx)
-        appendTargets(output, MetalDetectingTargetType.ROAD_TRAIL, road, width, height, 0.67f, 7f, feedback, ctx)
-        appendTargets(output, MetalDetectingTargetType.CELLAR_HOLE, cellar, width, height, 0.68f, 7f, feedback, ctx)
-        appendTargets(output, MetalDetectingTargetType.TRASH_PIT, trash, width, height, 0.65f, 5f, feedback, ctx)
-        appendTargets(output, MetalDetectingTargetType.STONE_WALL, wall, width, height, 0.68f, 5f, feedback, ctx)
-        appendTargets(output, MetalDetectingTargetType.OLD_HOMESITE, homesite, width, height, 0.66f, 14f, feedback, ctx)
+        appendTargets(output, MetalDetectingTargetType.FOUNDATION, foundation, width, height, 0.66f, 8f, feedback, ctx, biasFor(MetalDetectingTargetType.FOUNDATION))
+        appendTargets(output, MetalDetectingTargetType.ROAD_TRAIL, road, width, height, 0.67f, 7f, feedback, ctx, biasFor(MetalDetectingTargetType.ROAD_TRAIL))
+        appendTargets(output, MetalDetectingTargetType.CELLAR_HOLE, cellar, width, height, 0.68f, 7f, feedback, ctx, biasFor(MetalDetectingTargetType.CELLAR_HOLE))
+        appendTargets(output, MetalDetectingTargetType.TRASH_PIT, trash, width, height, 0.65f, 5f, feedback, ctx, biasFor(MetalDetectingTargetType.TRASH_PIT))
+        appendTargets(output, MetalDetectingTargetType.STONE_WALL, wall, width, height, 0.68f, 5f, feedback, ctx, biasFor(MetalDetectingTargetType.STONE_WALL))
+        appendTargets(output, MetalDetectingTargetType.OLD_HOMESITE, homesite, width, height, 0.66f, 14f, feedback, ctx, biasFor(MetalDetectingTargetType.OLD_HOMESITE))
 
         return suppressNearbyDuplicates(output)
             .sortedByDescending { it.score }
@@ -295,8 +299,10 @@ object MetalDetectingTargetRefiner {
         radiusMeters: Float,
         feedback: List<VerifiedFeedbackPoint>,
         ctx: RefinerContext,
+        calibrationBias: Float = 0f,
     ) {
-        localMaxima(score, width, height, threshold, MAX_PER_TYPE).forEach { (index, rawValue) ->
+        val effectiveThreshold = calibratedThreshold(threshold, calibrationBias)
+        localMaxima(score, width, height, effectiveThreshold, MAX_PER_TYPE).forEach { (index, rawValue) ->
             val x = index % width
             val y = index / width
             val xPercent = if (width <= 1) 50f else x * 100f / (width - 1)
@@ -312,7 +318,7 @@ object MetalDetectingTargetRefiner {
             // Mirrors TerrainIntelligenceEngine's feedback rule: a rejected match can drop an
             // already-qualified candidate, but feedback never resurrects one that never cleared
             // the raw per-pixel threshold in the first place.
-            if (adjusted < threshold * 0.88f) return@forEach
+            if (adjusted < effectiveThreshold * 0.88f) return@forEach
             output += MetalDetectingTarget(
                 type = type,
                 xPercent = xPercent,
@@ -532,6 +538,16 @@ object MetalDetectingTargetRefiner {
 
     private fun triangularPreference(value: Float, center: Float, halfWidth: Float): Float =
         (1f - abs(value - center) / halfWidth.coerceAtLeast(1e-6f)).coerceIn(0f, 1f)
+
+    /**
+     * Shifts a type's raw threshold by its FeatureTypeCalibration bias: a type the user keeps
+     * confirming in the field surfaces more (lower effective threshold), one mostly rejected
+     * surfaces less (higher threshold). Zero bias (the default, or too few verified samples) is
+     * a no-op. Internal (rather than private) so it's directly unit-testable without needing to
+     * hand-tune a synthetic terrain raster to land a score exactly at a threshold boundary.
+     */
+    internal fun calibratedThreshold(threshold: Float, calibrationBias: Float): Float =
+        (threshold - calibrationBias).coerceIn(0.3f, 0.95f)
 
     private fun metersToCells(meters: Float, cellSize: Float, minimum: Int, maximum: Int): Int =
         (meters / cellSize.coerceAtLeast(0.01f)).roundToInt().coerceIn(minimum, maximum)

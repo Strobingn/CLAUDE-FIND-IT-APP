@@ -153,9 +153,8 @@ fun LidarControlPanel(
             OptionGrid(
                 options = listOf(
                     Option(0, "Off", "No planning grid"),
-                    Option(20, "5 × 5", "Broad coverage"),
-                    Option(10, "10 × 10", "Standard coverage"),
-                    Option(5, "20 × 20", "Detailed coverage"),
+                    Option(3, "3 × 3 ft", "Fine detail search"),
+                    Option(10, "10 × 10 ft", "Standard coverage"),
                 ),
                 selected = gridSpacing.toInt(),
                 onSelected = { onGridSpacingChanged(it.toFloat()) },
