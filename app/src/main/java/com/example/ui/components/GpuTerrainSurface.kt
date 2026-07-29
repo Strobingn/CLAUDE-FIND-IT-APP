@@ -38,8 +38,8 @@ private class TerrainGlSurfaceView(context: Context) : GLSurfaceView(context) {
     private val terrainRenderer = TerrainGlRenderer()
     private var submittedScene: TerrainGpuScene? = null
 
-    /** True while two or more fingers are down, which drags the camera instead of orbiting it. */
-    private var panning = false
+    /** True while two or more fingers are down, which orbits the camera instead of panning it. */
+    private var orbiting = false
     private var lastFocusX = 0f
     private var lastFocusY = 0f
 
@@ -64,9 +64,10 @@ private class TerrainGlSurfaceView(context: Context) : GLSurfaceView(context) {
                 distanceX: Float,
                 distanceY: Float,
             ): Boolean {
-                // Multi-touch drags pan; a single finger orbits.
+                // Multi-touch drags orbit; a single finger pans, matching the 2D map.
                 if (current.pointerCount > 1) return false
-                terrainRenderer.rotate(distanceX * 0.25f, distanceY * 0.16f)
+                // Scroll distances run opposite to finger travel, so negate to follow the touch.
+                terrainRenderer.pan(-distanceX, -distanceY)
                 requestRender()
                 return true
             }
@@ -101,29 +102,33 @@ private class TerrainGlSurfaceView(context: Context) : GLSurfaceView(context) {
             MotionEvent.ACTION_DOWN -> parent?.requestDisallowInterceptTouchEvent(true)
 
             MotionEvent.ACTION_POINTER_DOWN -> {
-                panning = true
+                orbiting = true
                 captureFocus(event)
             }
 
-            MotionEvent.ACTION_MOVE -> if (panning && event.pointerCount > 1) {
+            MotionEvent.ACTION_MOVE -> if (orbiting && event.pointerCount > 1) {
                 val previousX = lastFocusX
                 val previousY = lastFocusY
                 captureFocus(event)
-                terrainRenderer.pan(lastFocusX - previousX, lastFocusY - previousY)
+                // Negated so the terrain turns with the fingers rather than away from them.
+                terrainRenderer.rotate(
+                    (previousX - lastFocusX) * 0.25f,
+                    (previousY - lastFocusY) * 0.16f,
+                )
                 requestRender()
             }
 
-            // Keep panning while three fingers drop to two; stop once only one remains.
+            // Keep orbiting while three fingers drop to two; stop once only one remains.
             MotionEvent.ACTION_POINTER_UP -> {
                 if (event.pointerCount > 2) {
                     captureFocus(event, event.actionIndex)
                 } else {
-                    panning = false
+                    orbiting = false
                 }
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                panning = false
+                orbiting = false
                 parent?.requestDisallowInterceptTouchEvent(false)
             }
         }

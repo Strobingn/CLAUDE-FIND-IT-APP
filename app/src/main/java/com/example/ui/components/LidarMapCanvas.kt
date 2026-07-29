@@ -242,7 +242,7 @@ fun LidarMapCanvas(
                 modifier = Modifier.fillMaxSize().testTag("gpu_terrain_surface"),
             )
             Text(
-                text = "GPU 3D · drag to rotate · two-finger drag to pan · pinch to zoom · double-tap to reset",
+                text = "GPU 3D · drag to pan · two-finger drag to rotate · pinch to zoom · double-tap to reset",
                 color = Color.White,
                 fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace,
