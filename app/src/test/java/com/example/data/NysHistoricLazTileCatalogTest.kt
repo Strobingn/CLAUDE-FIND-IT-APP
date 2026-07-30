@@ -1,6 +1,7 @@
 package com.example.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -98,6 +99,32 @@ class NysHistoricLazTileCatalogTest {
         )
 
         assertTrue(tiles.isEmpty())
+    }
+
+    /**
+     * Area searches page through the product feed; the first request must stay offset-free so the
+     * service returns the head of the list.
+     */
+    @Test
+    fun laterPagesCarryAnOffsetAndTheFirstDoesNot() {
+        val catalog = NysHistoricLazTileCatalog()
+        val firstPage = catalog.buildNationalMapUrl(
+            west = -74.05,
+            south = 41.42,
+            east = -74.03,
+            north = 41.44,
+        )
+        val secondPage = catalog.buildNationalMapUrl(
+            west = -74.05,
+            south = 41.42,
+            east = -74.03,
+            north = 41.44,
+            offset = 100,
+        )
+
+        assertFalse(firstPage.contains("offset="))
+        assertTrue(secondPage.contains("offset=100"))
+        assertTrue(secondPage.contains("max=100"))
     }
 
     private fun item(
