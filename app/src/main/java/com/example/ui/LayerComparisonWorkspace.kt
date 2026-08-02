@@ -5,8 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,14 +43,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -64,7 +66,7 @@ import com.example.data.export.ProjectExportRenderer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Two derived-layer panes rendered side by side from the same local analysis result, sharing one
@@ -126,20 +128,19 @@ fun LayerComparisonWorkspace(
         }
     }
 
-    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
-        val nextZoom = (zoom * zoomChange).coerceIn(1f, 16f)
-        val viewportWidth = paneSize.width.toFloat().coerceAtLeast(1f)
-        val viewportHeight = paneSize.height.toFloat().coerceAtLeast(1f)
-        val sourceWidth = (leftBitmap?.width ?: result?.layers?.width ?: 1).toFloat().coerceAtLeast(1f)
-        val sourceHeight = (leftBitmap?.height ?: result?.layers?.height ?: 1).toFloat().coerceAtLeast(1f)
-        val fit = comparisonCoverScale(viewportWidth, viewportHeight, sourceWidth, sourceHeight)
-        val maxPanX = ((sourceWidth * fit * nextZoom - viewportWidth) * 0.5f).coerceAtLeast(0f)
-        val maxPanY = ((sourceHeight * fit * nextZoom - viewportHeight) * 0.5f).coerceAtLeast(0f)
-        zoom = nextZoom
-        pan = Offset(
-            x = (pan.x + panChange.x).coerceIn(-maxPanX, maxPanX),
-            y = (pan.y + panChange.y).coerceIn(-maxPanY, maxPanY),
+    fun applyTransform(centroid: Offset, panChange: Offset, zoomChange: Float) {
+        val next = applyComparisonGesture(
+            current = ComparisonViewport(zoom, pan),
+            centroid = centroid,
+            panChange = panChange,
+            zoomChange = zoomChange,
+            viewportWidth = paneSize.width.toFloat(),
+            viewportHeight = paneSize.height.toFloat(),
+            sourceWidth = (leftBitmap?.width ?: result?.layers?.width ?: 1).toFloat(),
+            sourceHeight = (leftBitmap?.height ?: result?.layers?.height ?: 1).toFloat(),
         )
+        zoom = next.zoom
+        pan = next.pan
     }
 
     Column(
@@ -250,8 +251,25 @@ fun LayerComparisonWorkspace(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .transformable(transformState)
-                    .onSizeChanged { paneSize = IntSize(it.width / 2, it.height) }
+                    // Keyed on the rendered bitmap: the gesture lambda is captured once per key, and
+                    // the fit calculation reads the source dimensions, which change when analysis reruns.
+                    .pointerInput(leftBitmap, result) {
+                        detectTransformGestures { centroid, panChange, zoomChange, _ ->
+                            // Ignore gestures until the canvas has been measured, otherwise the
+                            // header offset below is computed against a zero-height pane.
+                            if (paneSize.width == 0 || paneSize.height == 0) return@detectTransformGestures
+                            // Centroid arrives in Row coordinates; the right pane starts one pane
+                            // width across, so fold it back into pane-local space.
+                            val paneWidth = (size.width / 2).toFloat().coerceAtLeast(1f)
+                            val localX = centroid.x % paneWidth
+                            val headerOffset = (size.height - paneSize.height).toFloat().coerceAtLeast(0f)
+                            applyTransform(
+                                centroid = Offset(localX, centroid.y - headerOffset),
+                                panChange = panChange,
+                                zoomChange = zoomChange,
+                            )
+                        }
+                    }
                     .testTag("layer_comparison_row"),
             ) {
                 ComparisonPane(
@@ -260,6 +278,10 @@ fun LayerComparisonWorkspace(
                     pan = pan,
                     layer = leftLayer,
                     onLayerSelected = { leftLayer = it },
+                    // Both panes are laid out identically, so the left pane's canvas is the
+                    // authoritative viewport size - measured below the layer header, unlike the
+                    // enclosing Row.
+                    onCanvasSizeChanged = { paneSize = it },
                     modifier = Modifier.weight(1f).fillMaxSize().testTag("comparison_pane_left"),
                 )
                 Box(modifier = Modifier.width(1.dp).fillMaxSize().padding(vertical = 4.dp)) {
@@ -271,6 +293,7 @@ fun LayerComparisonWorkspace(
                     pan = pan,
                     layer = rightLayer,
                     onLayerSelected = { rightLayer = it },
+                    onCanvasSizeChanged = {},
                     modifier = Modifier.weight(1f).fillMaxSize().testTag("comparison_pane_right"),
                 )
             }
@@ -285,6 +308,7 @@ private fun ComparisonPane(
     pan: Offset,
     layer: TerrainDerivedLayer,
     onLayerSelected: (TerrainDerivedLayer) -> Unit,
+    onCanvasSizeChanged: (IntSize) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -324,12 +348,14 @@ private fun ComparisonPane(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .clipToBounds()
+                .onSizeChanged(onCanvasSizeChanged)
                 .testTag("comparison_canvas_${layer.name}"),
         ) {
             if (imageBitmap == null) return@Canvas
             val canvasWidth = size.width.coerceAtLeast(1f)
             val canvasHeight = size.height.coerceAtLeast(1f)
-            val fit = comparisonCoverScale(canvasWidth, canvasHeight, imageBitmap.width.toFloat(), imageBitmap.height.toFloat())
+            val fit = comparisonFitScale(canvasWidth, canvasHeight, imageBitmap.width.toFloat(), imageBitmap.height.toFloat())
             val displayWidth = imageBitmap.width * fit * zoom
             val displayHeight = imageBitmap.height * fit * zoom
             val imageLeft = (canvasWidth - displayWidth) * 0.5f + pan.x
@@ -339,6 +365,11 @@ private fun ComparisonPane(
     }
 }
 
+/**
+ * Draws at float precision via a draw transform. Going through integer offsets/sizes truncates the
+ * placement to whole pixels every frame, which makes the image visibly jitter and shear against the
+ * other pane while pinching.
+ */
 private fun DrawScope.drawImageScaled(
     image: androidx.compose.ui.graphics.ImageBitmap,
     left: Float,
@@ -346,22 +377,88 @@ private fun DrawScope.drawImageScaled(
     width: Float,
     height: Float,
 ) {
-    drawImage(
-        image = image,
-        dstOffset = IntOffset(left.toInt(), top.toInt()),
-        dstSize = IntSize(width.toInt().coerceAtLeast(1), height.toInt().coerceAtLeast(1)),
-    )
+    val sourceWidth = image.width.toFloat().coerceAtLeast(1f)
+    val sourceHeight = image.height.toFloat().coerceAtLeast(1f)
+    withTransform({
+        translate(left, top)
+        scale(
+            scaleX = width / sourceWidth,
+            scaleY = height / sourceHeight,
+            pivot = Offset.Zero,
+        )
+    }) {
+        drawImage(image = image, filterQuality = FilterQuality.Medium)
+    }
 }
 
-private fun comparisonCoverScale(
+/** Shared zoom/pan applied to both comparison panes. */
+internal data class ComparisonViewport(val zoom: Float, val pan: Offset)
+
+/**
+ * Contain-fit: at 1x the whole layer is visible inside the pane. A cover-fit (max) would crop the
+ * raster to fill the pane, which in a half-width comparison pane means the user starts already
+ * zoomed into a fragment with no way to see the full terrain.
+ */
+internal fun comparisonFitScale(
     viewportWidth: Float,
     viewportHeight: Float,
     imageWidth: Float,
     imageHeight: Float,
-): Float = max(
-    viewportWidth / imageWidth.coerceAtLeast(1f),
-    viewportHeight / imageHeight.coerceAtLeast(1f),
-)
+): Float = min(
+    viewportWidth.coerceAtLeast(1f) / imageWidth.coerceAtLeast(1f),
+    viewportHeight.coerceAtLeast(1f) / imageHeight.coerceAtLeast(1f),
+).coerceAtLeast(0.0001f)
+
+/**
+ * Applies one transform gesture. [centroid] is in pane-local coordinates so zoom stays anchored on
+ * the point under the user's fingers rather than snapping toward the pane centre; without the
+ * anchoring the content slides away from whatever they were actually looking at as they pinch.
+ * Pan is clamped so the raster can never be dragged off its own pane.
+ */
+internal fun applyComparisonGesture(
+    current: ComparisonViewport,
+    centroid: Offset,
+    panChange: Offset,
+    zoomChange: Float,
+    viewportWidth: Float,
+    viewportHeight: Float,
+    sourceWidth: Float,
+    sourceHeight: Float,
+): ComparisonViewport {
+    val paneWidth = viewportWidth.coerceAtLeast(1f)
+    val paneHeight = viewportHeight.coerceAtLeast(1f)
+    val imageWidth = sourceWidth.coerceAtLeast(1f)
+    val imageHeight = sourceHeight.coerceAtLeast(1f)
+    val fit = comparisonFitScale(paneWidth, paneHeight, imageWidth, imageHeight)
+
+    val nextZoom = (current.zoom * zoomChange).coerceIn(1f, 16f)
+
+    val previousWidth = imageWidth * fit * current.zoom
+    val previousHeight = imageHeight * fit * current.zoom
+    val nextWidth = imageWidth * fit * nextZoom
+    val nextHeight = imageHeight * fit * nextZoom
+
+    // Fraction of the image sitting under the centroid before the zoom change.
+    val previousLeft = (paneWidth - previousWidth) * 0.5f + current.pan.x
+    val previousTop = (paneHeight - previousHeight) * 0.5f + current.pan.y
+    val anchorU = (centroid.x - previousLeft) / previousWidth
+    val anchorV = (centroid.y - previousTop) / previousHeight
+
+    // Re-derive the pan that keeps that same fraction under the centroid at the new zoom.
+    val zoomedPanX = (centroid.x - anchorU * nextWidth) - (paneWidth - nextWidth) * 0.5f
+    val zoomedPanY = (centroid.y - anchorV * nextHeight) - (paneHeight - nextHeight) * 0.5f
+
+    val maxPanX = ((nextWidth - paneWidth) * 0.5f).coerceAtLeast(0f)
+    val maxPanY = ((nextHeight - paneHeight) * 0.5f).coerceAtLeast(0f)
+
+    return ComparisonViewport(
+        zoom = nextZoom,
+        pan = Offset(
+            x = (zoomedPanX + panChange.x).coerceIn(-maxPanX, maxPanX),
+            y = (zoomedPanY + panChange.y).coerceIn(-maxPanY, maxPanY),
+        ),
+    )
+}
 
 /** Converts this workspace's shared zoom/pan into the same normalized-bounds shape [LidarMapCanvas] reports, so "Refine" can reload detail for exactly what's currently visible. */
 private fun currentViewportBounds(
@@ -373,7 +470,7 @@ private fun currentViewportBounds(
 ): NormalizedRasterBounds {
     val viewportWidth = paneSize.width.toFloat().coerceAtLeast(1f)
     val viewportHeight = paneSize.height.toFloat().coerceAtLeast(1f)
-    val fit = comparisonCoverScale(viewportWidth, viewportHeight, imageWidth, imageHeight)
+    val fit = comparisonFitScale(viewportWidth, viewportHeight, imageWidth, imageHeight)
     val displayWidth = imageWidth * fit * zoom
     val displayHeight = imageHeight * fit * zoom
     val imageLeft = (viewportWidth - displayWidth) * 0.5f + pan.x

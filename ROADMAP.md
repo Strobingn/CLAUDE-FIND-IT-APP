@@ -102,6 +102,7 @@ The current application includes:
 - Per-dataset saved markers
 - Persistent imported-terrain and derived-layer recovery
 - Google Maps terrain overlay with per-file position, width, height, rotation, and opacity alignment
+- Historic map image import with manual position, scale, rotation, opacity, and visibility alignment
 - NYS/USGS coordinate-to-tile lookup and LAZ download
 - Side-by-side layer comparison
 - Multi-dataset candidate comparison

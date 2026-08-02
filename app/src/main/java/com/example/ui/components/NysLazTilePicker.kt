@@ -1,6 +1,8 @@
 package com.example.ui.components
 
 import android.net.Uri
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,6 +21,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -43,6 +46,8 @@ import com.example.data.LazTerrainMemoryCache
 import com.example.data.LidarImportOptions
 import com.example.data.MosaicTerrainBuilder
 import com.example.data.MosaicTerrainTile
+import com.example.data.LidarSearchRequest
+import com.example.data.NortheastLidarRegion
 import com.example.data.NysHistoricLazTileCatalog
 import com.example.data.TerrainDecodeCoordinator
 import com.example.data.TerrainImportSource
@@ -78,7 +83,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 
-/** Visible NYS Southeast 4 County tile resolver and downloader for historic-site work. */
+/**
+ * Public LiDAR tile resolver and downloader for historic-site work.
+ *
+ * Lookups run against USGS 3DEP and are not limited to one state; the region chips seed a search
+ * box for the Northeast states this app is used in most.
+ */
 @Composable
 fun NysLazTilePicker(
     onCustomTerrainLoaded: (DemGenerator.TerrainLoadResult, TerrainImportSource?) -> Unit,
@@ -99,6 +109,7 @@ fun NysLazTilePicker(
     var south by remember { mutableStateOf("") }
     var east by remember { mutableStateOf("") }
     var north by remember { mutableStateOf("") }
+    var selectedRegion by remember { mutableStateOf<NortheastLidarRegion?>(null) }
     var mosaicProjectName by remember { mutableStateOf("") }
     var tiles by remember { mutableStateOf<List<NysHistoricLazTileCatalog.Tile>>(emptyList()) }
     var savedMosaicProjects by remember { mutableStateOf<List<MosaicProject>>(emptyList()) }
@@ -123,6 +134,21 @@ fun NysLazTilePicker(
         }
     }
 
+    /**
+     * Seeds the area box with a state extent. Deliberately does not run the search: a whole state
+     * resolves to far more tiles than anyone wants to download, so the box is a starting point the
+     * user narrows first.
+     */
+    fun applyRegion(region: NortheastLidarRegion) {
+        selectedRegion = region
+        west = region.west.toString()
+        south = region.south.toString()
+        east = region.east.toString()
+        north = region.north.toString()
+        error = null
+        status = "${region.displayName} bounds loaded. Narrow the box, then find tiles in the area."
+    }
+
     fun lookup() {
         val lat = latitude.trim().toDoubleOrNull()
         val lon = longitude.trim().toDoubleOrNull()
@@ -133,7 +159,7 @@ fun NysLazTilePicker(
         isLookingUp = true
         error = null
         downloadEstimate = null
-        status = "Finding the exact NYS LiDAR tile…"
+        status = "Finding the exact LiDAR tile…"
         scope.launch {
             try {
                 tiles = catalog.tilesAt(lon, lat)
@@ -145,7 +171,7 @@ fun NysLazTilePicker(
                 }
             } catch (t: Throwable) {
                 tiles = emptyList()
-                error = t.localizedMessage ?: "NYS tile lookup failed."
+                error = t.localizedMessage ?: "Tile lookup failed."
                 status = null
             } finally {
                 isLookingUp = false
@@ -174,8 +200,12 @@ fun NysLazTilePicker(
             try {
                 tiles = catalog.tilesInBounds(westValue, southValue, eastValue, northValue)
                 selectedUrls = tiles.map { it.downloadUrl }.toSet()
-                status = if (tiles.isEmpty()) "No NYS/USGS LiDAR tiles intersect that area." else
-                    "Found ${tiles.size} intersecting tiles. Select files, then build one mosaic."
+                status = when {
+                    tiles.isEmpty() -> "No published LiDAR tiles intersect that area."
+                    tiles.size >= NysHistoricLazTileCatalog.MAX_NATIONAL_MAP_RESULTS ->
+                        "Found ${tiles.size} tiles — the per-search cap. Narrow the box to see the rest."
+                    else -> "Found ${tiles.size} intersecting tiles. Select files, then build one mosaic."
+                }
             } catch (t: Throwable) {
                 tiles = emptyList()
                 selectedUrls = emptySet()
@@ -185,6 +215,19 @@ fun NysLazTilePicker(
                 isLookingUp = false
             }
         }
+    }
+
+    // A box handed over from the map arrives here after the tab switch. Consuming it means
+    // returning to this tab later does not silently repeat the search.
+    val mapSearchBounds by LidarSearchRequest.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(mapSearchBounds) {
+        val bounds = LidarSearchRequest.consume() ?: return@LaunchedEffect
+        selectedRegion = null
+        west = formatDegrees(bounds.minLon)
+        south = formatDegrees(bounds.minLat)
+        east = formatDegrees(bounds.maxLon)
+        north = formatDegrees(bounds.maxLat)
+        lookupArea()
     }
 
     fun estimateSelectedDownload() {
@@ -402,7 +445,7 @@ fun NysLazTilePicker(
                 }
                 status = "Mosaicking ${decodedTiles.size} source tiles without filling gaps…"
                 val projectName = mosaicProjectName.trim().ifBlank {
-                    "NYS/USGS ${decodedTiles.size}-tile project"
+                    "USGS ${decodedTiles.size}-tile project"
                 }
                 val mosaic = withContext(Dispatchers.Default) {
                     MosaicTerrainBuilder.build(projectName, decodedTiles)
@@ -480,7 +523,7 @@ fun NysLazTilePicker(
                 Column {
                     Text("Public LiDAR tiles", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "USGS 3DEP point clouds · ${NysHistoricLazTileCatalog.PROJECT_NAME} first",
+                        "USGS 3DEP point clouds · nationwide coverage",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -495,6 +538,24 @@ fun NysLazTilePicker(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Text(
+                "Jump to a state, then narrow the box to the area you care about — a whole state returns far more tiles than you want to download. Or pan the Map tab to an area and use its search button to bring the visible bounds straight here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            ) {
+                NortheastLidarRegion.entries.forEach { region ->
+                    FilterChip(
+                        selected = selectedRegion == region,
+                        onClick = { applyRegion(region) },
+                        label = { Text(region.displayName) },
+                        modifier = Modifier.testTag("lidar_region_${region.name}"),
+                    )
+                }
+            }
             OutlinedTextField(
                 value = mosaicProjectName,
                 onValueChange = { mosaicProjectName = it.take(80) },
@@ -733,3 +794,6 @@ private fun formatBytesCompact(bytes: Long): String {
     val mib = bytes / (1024.0 * 1024.0)
     return String.format(Locale.US, "%.1f MiB", mib)
 }
+
+/** Six decimals is roughly 0.1 m of longitude, finer than any tile footprint. */
+private fun formatDegrees(value: Double): String = String.format(Locale.US, "%.6f", value)

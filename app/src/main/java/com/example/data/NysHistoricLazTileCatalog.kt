@@ -11,11 +11,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Resolves the exact NYS Southeast 4 County 2022 LiDAR tiles intersecting a point or map box.
+ * Resolves the public LiDAR tiles intersecting a point or map box.
  *
- * The NYS ITS LAS index is used instead of guessing USGS filenames. Each returned feature
- * contains a DIRECT_DL value that points to the matching LAS/LAZ payload. Results are cached
- * by the caller and downloaded through the existing LazImportRepository.
+ * USGS 3DEP by way of The National Map is the primary source and covers the whole country, so
+ * lookups are not limited to any one state. The New York ITS LAS index remains a fallback for
+ * queries inside New York, where it sometimes indexes surveys ahead of the national feed; each of
+ * its features carries a DIRECT_DL value pointing at the matching LAS/LAZ payload. Results are
+ * cached by the caller and downloaded through the existing LazImportRepository.
  */
 class NysHistoricLazTileCatalog(
     private val httpClient: OkHttpClient = OkHttpClient(),
@@ -38,13 +40,17 @@ class NysHistoricLazTileCatalog(
     )
 
     suspend fun tilesAt(longitude: Double, latitude: Double): List<Tile> = withContext(Dispatchers.IO) {
-        runCatching { queryNationalMap(longitude, latitude, longitude, latitude) }
-            .getOrNull()
-            ?.takeIf { it.isNotEmpty() }
-            ?: queryNys(
+        val national = runCatching { queryNationalMap(longitude, latitude, longitude, latitude) }
+        national.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
+        if (NortheastLidarRegion.NEW_YORK.contains(longitude, latitude)) {
+            return@withContext queryNys(
                 geometry = "$longitude,$latitude",
                 geometryType = "esriGeometryPoint",
             )
+        }
+        // The ITS index holds New York surveys only, so anywhere else its answer would be an empty
+        // result dressed up as a NY failure. Report what USGS actually said instead.
+        national.getOrThrow()
     }
 
     suspend fun tilesInBounds(
@@ -53,13 +59,15 @@ class NysHistoricLazTileCatalog(
         east: Double,
         north: Double,
     ): List<Tile> = withContext(Dispatchers.IO) {
-        runCatching { queryNationalMap(west, south, east, north) }
-            .getOrNull()
-            ?.takeIf { it.isNotEmpty() }
-            ?: queryNys(
+        val national = runCatching { queryNationalMap(west, south, east, north) }
+        national.getOrNull()?.takeIf { it.isNotEmpty() }?.let { return@withContext it }
+        if (NortheastLidarRegion.NEW_YORK.intersects(west, south, east, north)) {
+            return@withContext queryNys(
                 geometry = "$west,$south,$east,$north",
                 geometryType = "esriGeometryEnvelope",
             )
+        }
+        national.getOrThrow()
     }
 
     /** Reads source file sizes without downloading a LAZ payload. */
@@ -101,20 +109,52 @@ class NysHistoricLazTileCatalog(
         }
     }
 
+    private data class NationalMapPage(val tiles: List<Tile>, val rawItemCount: Int)
+
+    /**
+     * Walks the paged product feed. A single page covers only a small area, so a search across a
+     * whole state used to stop at the first 100 products and silently omit the rest.
+     */
     private fun queryNationalMap(
         west: Double,
         south: Double,
         east: Double,
         north: Double,
     ): List<Tile> {
-        val url = buildNationalMapUrl(west, south, east, north)
+        val collected = ArrayList<Tile>()
+        var offset = 0
+        while (offset < MAX_NATIONAL_MAP_RESULTS) {
+            val page = fetchNationalMapPage(west, south, east, north, offset)
+            collected += page.tiles
+            // Paging is decided on the raw product count: a page can parse down to far fewer tiles
+            // once non-LAZ products and near-miss footprints are dropped, and treating that
+            // shrinkage as the end of the feed would cut the search short.
+            if (page.rawItemCount < NATIONAL_MAP_PAGE_SIZE) break
+            offset += NATIONAL_MAP_PAGE_SIZE
+        }
+        return collected
+            .distinctBy(Tile::downloadUrl)
+            .sortedBy { if (it.project.contains(NATIONAL_MAP_PROJECT_ID, ignoreCase = true)) 0 else 1 }
+    }
+
+    private fun fetchNationalMapPage(
+        west: Double,
+        south: Double,
+        east: Double,
+        north: Double,
+        offset: Int,
+    ): NationalMapPage {
+        val url = buildNationalMapUrl(west, south, east, north, offset)
         val request = Request.Builder().url(url).header("Accept", "application/json").get().build()
         httpClient.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 throw IOException("USGS LiDAR tile lookup failed with HTTP ${response.code}")
             }
-            return parseNationalMap(body, west, south, east, north)
+            val rawItemCount = runCatching {
+                JSONObject(body).optJSONArray("items")?.length() ?: 0
+            }.getOrDefault(0)
+            return NationalMapPage(parseNationalMap(body, west, south, east, north), rawItemCount)
         }
     }
 
@@ -123,6 +163,7 @@ class NysHistoricLazTileCatalog(
         south: Double,
         east: Double,
         north: Double,
+        offset: Int = 0,
     ): String {
         fun encoded(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
         val paddedWest = west - QUERY_PADDING_DEGREES
@@ -133,7 +174,8 @@ class NysHistoricLazTileCatalog(
             append(NATIONAL_MAP_PRODUCTS_URL)
             append("?datasets=").append(encoded("Lidar Point Cloud (LPC)"))
             append("&bbox=").append(encoded("$paddedWest,$paddedSouth,$paddedEast,$paddedNorth"))
-            append("&max=100")
+            append("&max=").append(NATIONAL_MAP_PAGE_SIZE)
+            if (offset > 0) append("&offset=").append(offset)
         }
     }
 
@@ -278,6 +320,10 @@ class NysHistoricLazTileCatalog(
         const val SOURCE_DIRECTORY = "https://rockyweb.usgs.gov/vdelivery/Datasets/Staged/Elevation/LPC/Projects/NY_SouthEast4County_A22/NY_SE4County_1_A22/LAZ/"
         const val LAYER_QUERY_URL = "https://orthos.its.ny.gov/arcgis/rest/services/vector/las_indexes/MapServer/4/query"
         const val NATIONAL_MAP_PRODUCTS_URL = "https://tnmaccess.nationalmap.gov/api/v1/products"
+
+        /** Ceiling on a single area search, so a state-sized box cannot exhaust memory. */
+        const val MAX_NATIONAL_MAP_RESULTS = 500
+        private const val NATIONAL_MAP_PAGE_SIZE = 100
         private const val NATIONAL_MAP_PROJECT_ID = "NY_SouthEast4County_A22"
         private const val QUERY_PADDING_DEGREES = 0.001
     }
