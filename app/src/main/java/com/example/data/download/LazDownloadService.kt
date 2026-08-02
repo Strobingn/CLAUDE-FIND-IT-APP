@@ -102,6 +102,9 @@ class LazDownloadService : Service() {
                 },
                 shouldContinue = { !LazDownloadQueue.isCancelled(task.url) },
             )
+            // Recorded before the task is marked done, so anything reacting to completion already
+            // sees the provenance and can reuse this file instead of fetching it again.
+            LazDownloadQueue.store(this).recordSource(task.url, file)
             LazDownloadQueue.markCompleted(task.url, file)
         } catch (error: Throwable) {
             LazDownloadQueue.markFailed(task.url, error.localizedMessage ?: "Tile download failed")

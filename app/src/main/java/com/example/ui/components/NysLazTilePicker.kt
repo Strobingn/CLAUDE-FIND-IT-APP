@@ -307,10 +307,25 @@ fun NysLazTilePicker(
         }
     }
 
+    /**
+     * A copy of this tile already on disk, matched by the URL it came from.
+     *
+     * Tile names are only unique within a survey, so matching on name alone could hand back an
+     * unrelated project's file of the same name. Files stored before provenance was recorded have
+     * no index entry; those still fall back to the name, and the match is recorded so the
+     * association is explicit from then on.
+     */
+    fun reusableFile(tile: NysHistoricLazTileCatalog.Tile): File? {
+        store.fileForSource(tile.downloadUrl)?.let { return it }
+        val byName = store.list().firstOrNull { it.displayName == tile.name }?.file ?: return null
+        store.recordSource(tile.downloadUrl, byName)
+        return byName
+    }
+
     fun downloadAndOpen(tile: NysHistoricLazTileCatalog.Tile) {
         error = null
         // Already on disk from an earlier background download - skip straight to decoding.
-        val existing = store.list().firstOrNull { it.displayName == tile.name }?.file
+        val existing = reusableFile(tile)
         if (existing != null) {
             openDownloadedFile(existing, tile.name)
             return
@@ -365,7 +380,7 @@ fun NysLazTilePicker(
         tile: NysHistoricLazTileCatalog.Tile,
         onProgress: (LazDownloadTask) -> Unit,
     ): File {
-        store.list().firstOrNull { it.displayName == tile.name }?.file?.let { return it }
+        reusableFile(tile)?.let { return it }
         LazDownloadService.enqueue(context, tile.downloadUrl, tile.name)
         val finished = LazDownloadQueue.tasks
             .map { list -> list.firstOrNull { it.url == tile.downloadUrl } }
@@ -381,7 +396,7 @@ fun NysLazTilePicker(
             LazDownloadQueue.dismiss(tile.downloadUrl)
             throw CancellationException("Download cancelled")
         }
-        store.list().firstOrNull { it.displayName == tile.name }?.file?.let { return it }
+        reusableFile(tile)?.let { return it }
         // The failed entry stays in the queue so the retry row can resume it. Dismissing here meant
         // one bad tile in a large mosaic discarded its own partial transfer along with any way to
         // resume it, forcing the whole area to be resolved and fetched again.
