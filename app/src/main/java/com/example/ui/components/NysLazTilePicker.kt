@@ -342,7 +342,9 @@ fun NysLazTilePicker(
                 awaitingOpenUrl = null
                 error = task.error ?: "Tile download failed."
                 status = null
-                LazDownloadQueue.dismiss(url)
+                // Deliberately left in the queue: dismissing here dropped the only record of the
+                // failure, so a part-transferred tile could not be retried without resolving the
+                // whole area again. The row below owns retrying and dismissing it.
             }
             LazDownloadState.CANCELLED -> {
                 awaitingOpenUrl = null
@@ -380,9 +382,10 @@ fun NysLazTilePicker(
             throw CancellationException("Download cancelled")
         }
         store.list().firstOrNull { it.displayName == tile.name }?.file?.let { return it }
-        val message = finished?.error ?: "Download of ${tile.name} did not complete"
-        LazDownloadQueue.dismiss(tile.downloadUrl)
-        error(message)
+        // The failed entry stays in the queue so the retry row can resume it. Dismissing here meant
+        // one bad tile in a large mosaic discarded its own partial transfer along with any way to
+        // resume it, forcing the whole area to be resolved and fetched again.
+        error(finished?.error ?: "Download of ${tile.name} did not complete")
     }
 
     fun downloadSelectedMosaic() {
@@ -779,6 +782,44 @@ fun NysLazTilePicker(
                         } else {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         }
+                    }
+                }
+            }
+
+            val failedDownloads = downloadTasks.filter { it.state == LazDownloadState.FAILED }
+            if (failedDownloads.isNotEmpty()) {
+                Text(
+                    "Failed downloads",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Text(
+                    "Retrying resumes from the bytes already on disk rather than starting the file over.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                failedDownloads.forEach { task ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(task.displayName, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                task.error ?: "Download failed.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                error = null
+                                status = "Retrying ${task.displayName}…"
+                                LazDownloadService.enqueue(context, task.url, task.displayName)
+                            },
+                            modifier = Modifier.testTag("retry_failed_download"),
+                        ) { Text("Retry") }
+                        TextButton(onClick = { LazDownloadQueue.dismiss(task.url) }) { Text("Dismiss") }
                     }
                 }
             }

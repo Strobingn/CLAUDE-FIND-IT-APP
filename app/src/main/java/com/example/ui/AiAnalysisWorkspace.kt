@@ -39,12 +39,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.analysis.MetalDetectingTarget
 import com.example.analysis.MetalDetectingTargetRefiner
 import com.example.analysis.TerrainDerivedLayer
+import com.example.analysis.TerrainIntelligenceEngine
 import com.example.analysis.VerifiedFeedback
 import com.example.data.DetectionSource
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
 import com.example.data.TargetSignal
+import com.example.data.local.SavedTarget
 import com.example.data.local.buildAnalyzedDatasetEntity
+import com.example.data.local.parseTargets
 import com.example.geospatial.GeoSpatialLibrary
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarMapCanvas
@@ -135,7 +138,33 @@ fun AiAnalysisWorkspace(
         val feedbackPoints = VerifiedFeedback.derive(signals, result.datasetKey)
         MetalDetectingTargetRefiner.refine(result, feedbackPoints, featureTypeCalibration)
     }
-    val targetOverlays = remember(historicTargets) {
+    // Falls back to the database snapshot when the derived-layer cache is gone. The cache lives in
+    // the cache directory, which Android may purge at any time; without this the ranked targets
+    // vanish on reopen and only a full re-analysis brings them back, even though they were saved.
+    val snapshotTargets = remember { mutableStateOf<List<SavedTarget>>(emptyList()) }
+    // Keyed on the saved set too, so forgetting a snapshot clears its targets from the map instead
+    // of leaving them drawn until something else happens to retrigger this.
+    LaunchedEffect(grid, aiState.localResult, isRendering, analyzedDatasets) {
+        if (aiState.localResult != null || isRendering || grid.width <= 2 || grid.height <= 2) {
+            snapshotTargets.value = emptyList()
+            return@LaunchedEffect
+        }
+        val datasetKey = TerrainIntelligenceEngine.terrainSignature(grid)
+        snapshotTargets.value = viewModel.savedDatasetSnapshot(datasetKey)?.parseTargets().orEmpty()
+    }
+
+    val targetOverlays = remember(historicTargets, snapshotTargets.value) {
+        if (historicTargets.isEmpty() && snapshotTargets.value.isNotEmpty()) {
+            return@remember snapshotTargets.value
+                .sortedByDescending { it.score }
+                .mapIndexed { index, target ->
+                    LidarOverlayTarget(
+                        xPercent = target.xPercent,
+                        yPercent = target.yPercent,
+                        label = "${index + 1}. ${target.type.label} · ${(target.score * 100f).toInt()}% (saved)",
+                    )
+                }
+        }
         historicTargets
             .sortedByDescending { it.score }
             .mapIndexed { index, target ->
@@ -527,6 +556,7 @@ fun AiAnalysisWorkspace(
         DatasetComparisonDialog(
             datasets = analyzedDatasets,
             onDismiss = { showDatasetComparison.value = false },
+            onDeleteDataset = viewModel::deleteDatasetSnapshot,
         )
     }
 }

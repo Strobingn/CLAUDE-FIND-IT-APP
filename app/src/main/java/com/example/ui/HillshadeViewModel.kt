@@ -283,6 +283,27 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { analyzedDatasetDao.upsert(entity) }
     }
 
+    /**
+     * The durable record of a dataset's targets.
+     *
+     * The derived-layer cache lives in the cache directory, which Android is free to purge under
+     * storage pressure. This snapshot is in the database and survives that, so it can stand in for
+     * the ranked targets when the cache is gone.
+     */
+    suspend fun savedDatasetSnapshot(datasetKey: String): AnalyzedDatasetEntity? =
+        analyzedDatasetDao.getByKey(datasetKey)
+
+    /**
+     * Forgets one dataset's saved targets.
+     *
+     * Snapshots are restored onto the map when the derived-layer cache is gone, so a stale one
+     * keeps resurfacing candidates the user has moved on from. Re-analysing the same dataset
+     * overwrites its snapshot, but nothing else could remove one.
+     */
+    fun deleteDatasetSnapshot(datasetKey: String) {
+        viewModelScope.launch { analyzedDatasetDao.deleteByKey(datasetKey) }
+    }
+
     /** Called by the UI after a runtime permission dialog resolves. */
     fun onLocationPermissionResult(granted: Boolean) {
         _hasLocationPermission.value = granted || locationTracker.hasLocationPermission()
