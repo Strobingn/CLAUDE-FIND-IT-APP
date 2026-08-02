@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -70,6 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -115,6 +117,8 @@ fun TerrainGoogleMapScreen(
     terrainKey: String,
     surveyFeatures: List<SurveyFeature> = emptyList(),
     breadcrumbTracks: List<BreadcrumbTrack> = emptyList(),
+    /** Supplied when the host can act on a search box; omitting it hides the search control. */
+    onFindLidarTiles: ((GeoSpatialLibrary.GeographicBounds) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -483,12 +487,25 @@ fun TerrainGoogleMapScreen(
                 onClose = { historicPanelExpanded = false },
                 modifier = Modifier.align(Alignment.TopEnd).padding(top = 92.dp, end = 12.dp).width(264.dp),
             )
-        } else {
-            SmallFloatingActionButton(
-                onClick = { historicPanelExpanded = true },
-                modifier = Modifier.align(Alignment.CenterEnd).padding(12.dp),
-            ) {
-                Icon(Icons.Default.History, contentDescription = "Historic maps")
+        }
+
+        Column(
+            modifier = Modifier.align(Alignment.CenterEnd).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            val findTiles = onFindLidarTiles
+            if (findTiles != null) {
+                SmallFloatingActionButton(
+                    onClick = { visibleSearchBounds(googleMap)?.let(findTiles) },
+                    modifier = Modifier.testTag("find_lidar_tiles_in_view"),
+                ) {
+                    Icon(Icons.Default.Search, contentDescription = "Find LiDAR tiles in this view")
+                }
+            }
+            if (!historicPanelExpanded) {
+                SmallFloatingActionButton(onClick = { historicPanelExpanded = true }) {
+                    Icon(Icons.Default.History, contentDescription = "Historic maps")
+                }
             }
         }
     }
@@ -1010,6 +1027,25 @@ private fun rememberManagedMapView(): MapView {
 
 private fun GeoSpatialLibrary.GeographicBounds.toLatLngBounds(): LatLngBounds =
     LatLngBounds(LatLng(minLat, minLon), LatLng(maxLat, maxLon))
+
+/**
+ * The currently visible map box, as a tile-search area.
+ *
+ * A view straddling the antimeridian reports a south-west longitude greater than its north-east
+ * one, which would read as an inverted box downstream. No LiDAR source this app queries spans that
+ * line, so such a view is reported as unsearchable rather than silently mangled.
+ */
+private fun visibleSearchBounds(map: GoogleMap?): GeoSpatialLibrary.GeographicBounds? {
+    val bounds = map?.projection?.visibleRegion?.latLngBounds ?: return null
+    if (bounds.southwest.longitude > bounds.northeast.longitude) return null
+    if (bounds.southwest.latitude >= bounds.northeast.latitude) return null
+    return GeoSpatialLibrary.GeographicBounds(
+        minLat = bounds.southwest.latitude,
+        maxLat = bounds.northeast.latitude,
+        minLon = bounds.southwest.longitude,
+        maxLon = bounds.northeast.longitude,
+    )
+}
 
 private fun boundsCenteredAt(
     center: LatLng,

@@ -46,6 +46,7 @@ import com.example.data.LazTerrainMemoryCache
 import com.example.data.LidarImportOptions
 import com.example.data.MosaicTerrainBuilder
 import com.example.data.MosaicTerrainTile
+import com.example.data.LidarSearchRequest
 import com.example.data.NortheastLidarRegion
 import com.example.data.NysHistoricLazTileCatalog
 import com.example.data.TerrainDecodeCoordinator
@@ -214,6 +215,19 @@ fun NysLazTilePicker(
                 isLookingUp = false
             }
         }
+    }
+
+    // A box handed over from the map arrives here after the tab switch. Consuming it means
+    // returning to this tab later does not silently repeat the search.
+    val mapSearchBounds by LidarSearchRequest.pending.collectAsStateWithLifecycle()
+    LaunchedEffect(mapSearchBounds) {
+        val bounds = LidarSearchRequest.consume() ?: return@LaunchedEffect
+        selectedRegion = null
+        west = formatDegrees(bounds.minLon)
+        south = formatDegrees(bounds.minLat)
+        east = formatDegrees(bounds.maxLon)
+        north = formatDegrees(bounds.maxLat)
+        lookupArea()
     }
 
     fun estimateSelectedDownload() {
@@ -525,7 +539,7 @@ fun NysLazTilePicker(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "Jump to a state, then narrow the box to the area you care about — a whole state returns far more tiles than you want to download.",
+                "Jump to a state, then narrow the box to the area you care about — a whole state returns far more tiles than you want to download. Or pan the Map tab to an area and use its search button to bring the visible bounds straight here.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -780,3 +794,6 @@ private fun formatBytesCompact(bytes: Long): String {
     val mib = bytes / (1024.0 * 1024.0)
     return String.format(Locale.US, "%.1f MiB", mib)
 }
+
+/** Six decimals is roughly 0.1 m of longitude, finer than any tile footprint. */
+private fun formatDegrees(value: Double): String = String.format(Locale.US, "%.6f", value)

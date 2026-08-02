@@ -75,6 +75,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.analysis.TerrainCellInspector
 import com.example.analysis.TerrainElevationProfiler
+import com.example.data.LidarSearchRequest
 import com.example.data.NormalizedRasterBounds
 import com.example.geospatial.GeoSpatialLibrary
 import com.example.geospatial.MeasurementFormat
@@ -198,7 +199,11 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
                 focusMode = terrainFocusMode.value,
                 onFocusModeChanged = { terrainFocusMode.value = it },
             )
-            1 -> GoogleMapTab(viewModel, padding)
+            1 -> GoogleMapTab(viewModel, padding) { bounds ->
+                // The picker lives on the Import tab, so hand the box over and follow it there.
+                LidarSearchRequest.request(bounds)
+                selectedTab.intValue = tabs.lastIndex
+            }
             2 -> GeminiTab(viewModel, padding)
             3 -> CompareTab(viewModel, padding)
             4 -> FindsTab(viewModel, padding)
@@ -617,7 +622,11 @@ private fun TerrainQuickAction(
 }
 
 @Composable
-private fun GoogleMapTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
+private fun GoogleMapTab(
+    viewModel: HillshadeViewModel,
+    padding: PaddingValues,
+    onFindLidarTiles: (GeoSpatialLibrary.GeographicBounds) -> Unit,
+) {
     val bitmap by viewModel.hillshadeBitmap.collectAsStateWithLifecycle()
     val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
     val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
@@ -631,6 +640,7 @@ private fun GoogleMapTab(viewModel: HillshadeViewModel, padding: PaddingValues) 
         terrainKey = terrainKey,
         surveyFeatures = surveyLayers.flatMap { it.features },
         breadcrumbTracks = breadcrumbTracks,
+        onFindLidarTiles = onFindLidarTiles,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }
