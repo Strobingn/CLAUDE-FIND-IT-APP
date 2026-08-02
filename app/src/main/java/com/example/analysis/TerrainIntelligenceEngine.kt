@@ -46,6 +46,10 @@ enum class TerrainDerivedLayer(val label: String, val description: String) {
     LINEARITY("Linear feature response", "Narrow aligned ridges, cuts, walls, roads, and trails"),
     ANCIENT_STREAM("Ancient-stream likelihood", "Low, concave, gently graded drainage traces"),
     ARTIFACT_HOTSPOT("Artifact hotspot prediction", "Combined terrain-context priority score"),
+
+    // Appended deliberately: the derived-layer disk cache stores layers by enum ordinal, so
+    // inserting anywhere above would silently reinterpret every already-cached analysis.
+    MULTI_SCALE_RELIEF("Multi-scale relief", "Relief detrended at cellar, structure, and platform scales"),
 }
 
 enum class TerrainFeatureType(val label: String) {
@@ -250,6 +254,7 @@ class TerrainIntelligenceEngine(
         val reliefRadius = (8f / cell).roundToInt().coerceIn(2, 18)
         val reliefMean = boxMean(elevation, width, height, reliefRadius)
         val localRelief = FloatArray(size) { elevation[it] - reliefMean[it] }
+        val multiScaleRelief = multiScaleLocalRelief(elevation, width, height, cell)
         val ruggedness = boxStandardDeviation(elevation, width, height, (2f / cell).roundToInt().coerceIn(1, 4))
         val depressionDepth = FloatArray(size) { max(0f, -localRelief[it]) * 0.7f + max(0f, curvature[it]) * cell * cell * 0.3f }
 
@@ -318,6 +323,7 @@ class TerrainIntelligenceEngine(
             put(TerrainDerivedLayer.ASPECT, aspect)
             put(TerrainDerivedLayer.CURVATURE, curvature)
             put(TerrainDerivedLayer.LOCAL_RELIEF, localRelief)
+            put(TerrainDerivedLayer.MULTI_SCALE_RELIEF, multiScaleRelief)
             put(TerrainDerivedLayer.HILLSHADE_COMPARISON, hillshadeRange)
             put(TerrainDerivedLayer.POSITIVE_OPENNESS, positiveOpenness)
             put(TerrainDerivedLayer.NEGATIVE_OPENNESS, negativeOpenness)
@@ -484,6 +490,12 @@ class TerrainIntelligenceEngine(
         private const val MAX_ANALYSIS_SIDE = 384
         private const val MAX_TOTAL_CANDIDATES = 120
 
+        /**
+         * Detrending windows in metres: a cellar hole, a small structure footprint, and a building
+         * platform or terrace. Chosen to bracket the feature sizes this app hunts for.
+         */
+        private val LRM_SCALE_METERS = floatArrayOf(3f, 8f, 20f)
+
         fun terrainSignature(grid: ElevationGrid): String {
             var hash = -3750763034362895579L
             fun mix(value: Int) {
@@ -537,6 +549,50 @@ class TerrainIntelligenceEngine(
                 }
             }
             return SampledGrid(width, height, grid.cellSizeMeters * scale.toFloat(), output)
+        }
+
+        /**
+         * Local relief detrended at several feature scales and combined.
+         *
+         * A single detrending radius only resolves features near its own size: the 8 m window that
+         * suits a cellar hole flattens a 25 m building platform into its own background, and a
+         * window wide enough for the platform washes the cellar out. Each scale is divided by its
+         * own RMS response before the scales are compared, because a wider window removes more
+         * terrain and would otherwise always win on raw magnitude — reducing this to the coarsest
+         * scale alone. The strongest standardized response wins and keeps its sign, so mounds stay
+         * positive and hollows negative.
+         *
+         * Output is in per-scale standard deviations rather than metres, which is why it is a
+         * layer of its own rather than a replacement for [TerrainDerivedLayer.LOCAL_RELIEF].
+         */
+        internal fun multiScaleLocalRelief(
+            elevation: FloatArray,
+            width: Int,
+            height: Int,
+            cellSizeMeters: Float,
+        ): FloatArray {
+            val size = width * height
+            val combined = FloatArray(size)
+            if (size == 0) return combined
+            val safeCell = cellSizeMeters.takeIf { it > 0f && it.isFinite() } ?: 1f
+            val radii = LRM_SCALE_METERS
+                .map { (it / safeCell).roundToInt().coerceIn(2, 32) }
+                .distinct()
+
+            radii.forEach { radius ->
+                val mean = boxMean(elevation, width, height, radius)
+                val response = FloatArray(size) { elevation[it] - mean[it] }
+                var sumSquares = 0.0
+                for (value in response) sumSquares += value.toDouble() * value.toDouble()
+                val rms = sqrt(sumSquares / size).toFloat()
+                // A perfectly flat scale carries no information and would divide by zero.
+                if (rms <= 0f || !rms.isFinite()) return@forEach
+                for (i in 0 until size) {
+                    val standardized = response[i] / rms
+                    if (abs(standardized) > abs(combined[i])) combined[i] = standardized
+                }
+            }
+            return combined
         }
 
         private fun boxMean(values: FloatArray, width: Int, height: Int, radius: Int): FloatArray {
@@ -791,7 +847,9 @@ object TerrainIntelligenceRenderer {
         val pixels = IntArray(values.size)
         // Each layer type only ever reads one of these two normalizations below; only compute
         // the one actually needed instead of always normalizing twice.
-        val needsSigned = type == TerrainDerivedLayer.CURVATURE || type == TerrainDerivedLayer.LOCAL_RELIEF
+        val needsSigned = type == TerrainDerivedLayer.CURVATURE ||
+            type == TerrainDerivedLayer.LOCAL_RELIEF ||
+            type == TerrainDerivedLayer.MULTI_SCALE_RELIEF
         val needsPositive = type != TerrainDerivedLayer.ASPECT && !needsSigned
         val normalizedPositive = if (needsPositive) normalizeForRendering(values, signed = false) else EMPTY_FLOAT_ARRAY
         val normalizedSigned = if (needsSigned) normalizeForRendering(values, signed = true) else EMPTY_FLOAT_ARRAY
@@ -808,7 +866,8 @@ object TerrainIntelligenceRenderer {
                 }
             }
             TerrainDerivedLayer.CURVATURE,
-            TerrainDerivedLayer.LOCAL_RELIEF ->
+            TerrainDerivedLayer.LOCAL_RELIEF,
+            TerrainDerivedLayer.MULTI_SCALE_RELIEF ->
                 for (i in values.indices) pixels[i] = diverging(normalizedSigned[i])
             TerrainDerivedLayer.POSITIVE_OPENNESS,
             TerrainDerivedLayer.NEGATIVE_OPENNESS,
