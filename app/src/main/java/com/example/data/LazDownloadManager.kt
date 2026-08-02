@@ -2,6 +2,7 @@ package com.example.data
 
 import java.io.EOFException
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -34,6 +35,9 @@ class LazDownloadManager {
         private const val PROGRESS_STEP_BYTES = 4L * 1024L * 1024L
         private const val RETRY_BASE_DELAY_MS = 1_000L
         private const val RETRY_MAX_DELAY_MS = 8_000L
+
+        /** Shared by LAS and LAZ; LAZ is LAS with compressed point data. */
+        private val LIDAR_SIGNATURE = "LASF".toByteArray(Charsets.US_ASCII)
     }
 
     fun download(
@@ -71,6 +75,9 @@ class LazDownloadManager {
                     if (existingBytes > 0L && serverLength == existingBytes &&
                         completedPartial != null && completedDestination != null
                     ) {
+                        // Same gate as the streaming path: a retained partial holding the wrong
+                        // payload must not be promoted just because its length matches.
+                        validatePointCloudSignature(completedPartial)
                         promote(completedPartial, completedDestination)
                         progress?.invoke(existingBytes, existingBytes)
                         return completedDestination
@@ -164,6 +171,7 @@ class LazDownloadManager {
                     workingFile.delete()
                     error("Downloaded more data than the server declared")
                 }
+                validatePointCloudSignature(workingFile)
 
                 promote(workingFile, target)
                 progress?.invoke(downloaded, if (expectedTotal > 0L) expectedTotal else downloaded)
@@ -244,6 +252,26 @@ class LazDownloadManager {
         is IOException,
         -> true
         else -> false
+    }
+
+    /**
+     * Rejects a completed transfer whose bytes are not a point cloud.
+     *
+     * Size checks alone pass a payload that is the wrong thing entirely — typically an HTML error
+     * or maintenance page served with 200 and an honest Content-Length. Without this the file is
+     * promoted, stored, and counted as a tile, and the mistake only surfaces much later when the
+     * decoder rejects it, potentially after fetching the rest of a large mosaic around it.
+     *
+     * LAZ is LAS with compressed point data, so both carry the same signature.
+     */
+    internal fun validatePointCloudSignature(file: File) {
+        val signature = ByteArray(LIDAR_SIGNATURE.size)
+        val read = FileInputStream(file).use { it.read(signature) }
+        if (read == LIDAR_SIGNATURE.size && signature.contentEquals(LIDAR_SIGNATURE)) return
+        // Resuming a wrong payload would only ever append more of the wrong file, so drop it and
+        // let a retry start the transfer cleanly.
+        file.delete()
+        error("Downloaded file is not a LAS/LAZ point cloud")
     }
 
     private fun promote(partial: File, destination: File) {
