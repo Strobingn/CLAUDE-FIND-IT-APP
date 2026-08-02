@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.analysis.DatasetComparison
@@ -48,6 +49,7 @@ import java.util.Locale
 fun DatasetComparisonDialog(
     datasets: List<AnalyzedDatasetEntity>,
     onDismiss: () -> Unit,
+    onDeleteDataset: (String) -> Unit = {},
 ) {
     var firstKey by remember { mutableStateOf(datasets.getOrNull(0)?.datasetKey) }
     var secondKey by remember { mutableStateOf(datasets.getOrNull(1)?.datasetKey) }
@@ -91,6 +93,26 @@ fun DatasetComparisonDialog(
                         color = MaterialTheme.colorScheme.error,
                     )
                     result != null -> ComparisonSummary(result)
+                }
+
+                // Saved snapshots are restored onto the map when the derived-layer cache is gone,
+                // so a stale one keeps resurfacing candidates. This is the only way to forget one
+                // short of re-analysing the same dataset.
+                first?.let { selected ->
+                    TextButton(
+                        onClick = {
+                            onDeleteDataset(selected.datasetKey)
+                            if (firstKey == selected.datasetKey) firstKey = null
+                            if (secondKey == selected.datasetKey) secondKey = null
+                        },
+                        modifier = Modifier.testTag("forget_saved_analysis"),
+                    ) {
+                        Text(
+                            "Forget saved analysis for ${selected.displayName}",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
         },

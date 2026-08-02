@@ -293,6 +293,17 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     suspend fun savedDatasetSnapshot(datasetKey: String): AnalyzedDatasetEntity? =
         analyzedDatasetDao.getByKey(datasetKey)
 
+    /**
+     * Forgets one dataset's saved targets.
+     *
+     * Snapshots are restored onto the map when the derived-layer cache is gone, so a stale one
+     * keeps resurfacing candidates the user has moved on from. Re-analysing the same dataset
+     * overwrites its snapshot, but nothing else could remove one.
+     */
+    fun deleteDatasetSnapshot(datasetKey: String) {
+        viewModelScope.launch { analyzedDatasetDao.deleteByKey(datasetKey) }
+    }
+
     /** Called by the UI after a runtime permission dialog resolves. */
     fun onLocationPermissionResult(granted: Boolean) {
         _hasLocationPermission.value = granted || locationTracker.hasLocationPermission()
