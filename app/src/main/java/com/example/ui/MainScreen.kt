@@ -81,6 +81,7 @@ import com.example.geospatial.GeoSpatialLibrary
 import com.example.geospatial.MeasurementFormat
 import com.example.ui.components.CustomFileLoader
 import com.example.ui.components.LidarCanvasMode
+import com.example.ui.components.LidarAreaPickerMapScreen
 import com.example.ui.components.LidarControlPanel
 import com.example.ui.components.LidarMapCanvas
 import com.example.ui.components.NysLazTilePicker
@@ -102,6 +103,7 @@ private data class AppTab(
 private val tabs = listOf(
     AppTab("Terrain", "Terrain workspace", Icons.Default.Landscape),
     AppTab("Map", "Google Maps + historic overlays", Icons.Default.Layers),
+    AppTab("LiDAR", "Select LiDAR area", Icons.Default.CenterFocusStrong),
     AppTab("Gemini", "Gemini field assistant", Icons.Default.AutoAwesome),
     AppTab("Compare", "Layer comparison", Icons.Default.Compare),
     AppTab("Finds", "Field finds", Icons.Default.Flag),
@@ -204,9 +206,13 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
                 LidarSearchRequest.request(bounds)
                 selectedTab.intValue = tabs.lastIndex
             }
-            2 -> GeminiTab(viewModel, padding)
-            3 -> CompareTab(viewModel, padding)
-            4 -> FindsTab(viewModel, padding)
+            2 -> LidarAreaTab(padding) { bounds ->
+                LidarSearchRequest.request(bounds)
+                selectedTab.intValue = tabs.lastIndex
+            }
+            3 -> GeminiTab(viewModel, padding)
+            4 -> CompareTab(viewModel, padding)
+            5 -> FindsTab(viewModel, padding)
             else -> ImportTab(viewModel, padding) {
                 selectedTab.intValue = 0
                 terrainFocusMode.value = false
@@ -641,6 +647,17 @@ private fun GoogleMapTab(
         surveyFeatures = surveyLayers.flatMap { it.features },
         breadcrumbTracks = breadcrumbTracks,
         onFindLidarTiles = onFindLidarTiles,
+        modifier = Modifier.fillMaxSize().padding(padding),
+    )
+}
+
+@Composable
+private fun LidarAreaTab(
+    padding: PaddingValues,
+    onAreaSelected: (GeoSpatialLibrary.GeographicBounds) -> Unit,
+) {
+    LidarAreaPickerMapScreen(
+        onAreaSelected = onAreaSelected,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }

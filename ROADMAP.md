@@ -2,7 +2,7 @@
 
 **Status:** Active  
 **Repository:** <https://github.com/Strobingn/Find-It-App>  
-**Last reviewed:** 2026-07-26
+**Last reviewed:** 2026-08-03
 
 ## Product objective
 
@@ -104,6 +104,7 @@ The current application includes:
 - Google Maps terrain overlay with per-file position, width, height, rotation, and opacity alignment
 - Historic map image import with manual position, scale, rotation, opacity, and visibility alignment
 - NYS/USGS coordinate-to-tile lookup and LAZ download
+- Rectangle-based USGS 3DEP area selection, source-preserving multi-tile mosaics, and resumable partial-project recovery
 - Side-by-side layer comparison
 - Multi-dataset candidate comparison
 - Saved finds and photo attachments
@@ -597,11 +598,10 @@ Field use:
 
 ### Sprint 2 — Build tile-to-area pipeline
 
-1. Define the tile-index and project-source schema.
-2. Implement bounds intersection and exact filename resolution.
-3. Add source detection and storage estimates.
-4. Add the download queue, cancellation, retry, and validation.
-5. Group tiles and open one logical mosaic.
+1. Complete polygon and radius selection alongside geographic rectangles. **Implemented; unit verified.**
+2. Make the same area selector directly available from every terrain-import path.
+3. Add instrumentation for cancellation, per-tile retry, partial-project resumption, and mosaic reopening.
+4. Validate a multi-tile project through the release build on device.
 
 ### Sprint 3 — Establish ranking baseline
 

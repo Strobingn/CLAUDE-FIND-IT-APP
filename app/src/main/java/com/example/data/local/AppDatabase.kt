@@ -16,7 +16,7 @@ import androidx.room.migration.Migration
         BreadcrumbTrackEntity::class,
         MosaicProjectEntity::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -169,6 +169,17 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE target_signals ADD COLUMN detectedFeatureType TEXT")
             }
         }
+        private val migration12To13 = object : Migration(12, 13) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // Existing rows were written only after a successful mosaic build, so they are
+                // ready projects. New work records its progress before the first transfer.
+                db.execSQL(
+                    "ALTER TABLE mosaic_projects ADD COLUMN status TEXT NOT NULL DEFAULT 'READY'",
+                )
+                db.execSQL("ALTER TABLE mosaic_projects ADD COLUMN recoveryMessage TEXT")
+                db.execSQL("ALTER TABLE mosaic_projects ADD COLUMN areaSelectionDescription TEXT")
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -188,6 +199,7 @@ abstract class AppDatabase : RoomDatabase() {
                     migration9To10,
                     migration10To11,
                     migration11To12,
+                    migration12To13,
                 )
                 .build()
                 .also { instance = it }
