@@ -2,7 +2,9 @@ package com.example.data
 
 import com.github.mreutegg.laszip4j.LASPoint
 import com.github.mreutegg.laszip4j.LASReader
+import com.github.mreutegg.laszip4j.laslib.CopcSelection
 import com.github.mreutegg.laszip4j.laslib.LASreaderLAS
+import com.github.mreutegg.laszip4j.laslib.NormalizedCopcBounds
 import com.github.mreutegg.laszip4j.laslib.SeekableLaszipReader
 import com.github.mreutegg.laszip4j.laszip.LASzip.LASZIP_DECOMPRESS_SELECTIVE_CLASSIFICATION
 import com.github.mreutegg.laszip4j.laszip.LASzip.LASZIP_DECOMPRESS_SELECTIVE_FLAGS
@@ -44,6 +46,105 @@ internal object LazTerrainReader {
         if (optimized != null) return optimized
 
         return readHighLevelFile(file, options, shouldContinue, onProgress)
+    }
+
+    /** Range-backed COPC/LAZ decode; only blocks touched by the seekable decoder reach disk. */
+    fun readRemote(
+        url: String,
+        rangeCacheFile: File,
+        options: LidarImportOptions,
+        shouldContinue: () -> Boolean = { !Thread.currentThread().isInterrupted },
+        onProgress: ((decodedPoints: Long, totalPoints: Long) -> Unit)? = null,
+    ): DemGenerator.LasLoadResult? {
+        val focus = options.sanitized().focusBounds
+            ?: throw java.io.IOException("COPC streaming requires a selected area")
+        return try {
+            SeekableLaszipReader.openHttpCopc(
+                url = url,
+                cacheFile = rangeCacheFile,
+                selectiveFields = TERRAIN_DECOMPRESS_FIELDS,
+                focus = NormalizedCopcBounds(focus.left, focus.top, focus.right, focus.bottom),
+            )?.use { selection ->
+                readOpenedCopc(selection, options, shouldContinue, onProgress)
+            }
+        } catch (exception: Throwable) {
+            System.err.println("HTTP range COPC decode failed: ${exception.message}")
+            throw java.io.IOException(
+                "COPC range request/decode failed: ${exception.message}",
+                exception,
+            )
+        }
+    }
+
+    private fun readOpenedCopc(
+        selection: CopcSelection,
+        options: LidarImportOptions,
+        shouldContinue: () -> Boolean,
+        onProgress: ((decodedPoints: Long, totalPoints: Long) -> Unit)?,
+    ): DemGenerator.LasLoadResult? {
+        val reader = selection.reader
+        val sourceHeader = reader.header
+        val pointCount = sourceHeader.extended_number_of_point_records.takeIf { it > 0L }
+            ?: (sourceHeader.number_of_point_records.toLong() and 0xFFFFFFFFL)
+        val header = Header(
+            versionMajor = sourceHeader.version_major.toInt() and 0xFF,
+            versionMinor = sourceHeader.version_minor.toInt() and 0xFF,
+            pointFormat = sourceHeader.point_data_format.toInt() and 0x3F,
+            pointCount = pointCount,
+            scaleX = sourceHeader.x_scale_factor,
+            scaleY = sourceHeader.y_scale_factor,
+            scaleZ = sourceHeader.z_scale_factor,
+            offsetX = sourceHeader.x_offset,
+            offsetY = sourceHeader.y_offset,
+            offsetZ = sourceHeader.z_offset,
+            maxX = sourceHeader.max_x,
+            minX = sourceHeader.min_x,
+            maxY = sourceHeader.max_y,
+            minY = sourceHeader.min_y,
+        )
+        val selectedPointCount = selection.selectedPointCount.coerceAtLeast(1L)
+        val rasterizer = LidarRasterizer(
+            minX = header.minX,
+            maxX = header.maxX,
+            minY = header.minY,
+            maxY = header.maxY,
+            options = options,
+            declaredPointCount = estimatedPoints(header.pointCount, options.sanitized().focusBounds),
+        )
+        var decoded = 0L
+        var pointsInBatch = 0
+        onProgress?.invoke(0L, selectedPointCount)
+        for (range in selection.pointRanges) {
+            if (!shouldContinue()) return null
+            if (!reader.seek(range.firstPoint)) {
+                throw java.io.IOException("Could not seek to COPC point ${range.firstPoint}")
+            }
+            repeat(range.pointCount) {
+                if (!reader.read_point()) {
+                    throw java.io.IOException("COPC chunk ended before its declared point count")
+                }
+                when (rasterizer.nextPointWork()) {
+                    LidarPointWork.SKIP -> rasterizer.skipPoint()
+                    LidarPointWork.COVERAGE -> rasterizer.addCoveragePoint(reader.get_x(), reader.get_y())
+                    LidarPointWork.ELEVATION -> rasterizer.addPoint(
+                        x = reader.get_x(),
+                        y = reader.get_y(),
+                        z = reader.get_z().toFloat(),
+                        classification = reader.point.get_classification().toInt(),
+                        isKeyPoint = reader.point.get_keypoint_flag().toInt() != 0,
+                    )
+                }
+                decoded++
+                pointsInBatch++
+                if (pointsInBatch >= DECODE_BATCH_POINTS) {
+                    pointsInBatch = 0
+                    onProgress?.invoke(decoded, selectedPointCount)
+                    if (!shouldContinue()) return null
+                }
+            }
+        }
+        onProgress?.invoke(decoded, selectedPointCount)
+        return finish(rasterizer, header, "COPC hierarchy range decode")
     }
 
     /** Stream compatibility path used only where a local seekable file is unavailable. */

@@ -38,6 +38,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.example.data.CopcAsset
+import com.example.data.CopcStacCatalog
 import com.example.data.DemGenerator
 import com.example.data.GroundSurfaceMode
 import com.example.data.LazTerrainCache
@@ -48,6 +50,7 @@ import com.example.data.LidarImportOptions
 import com.example.data.MosaicTerrainBuilder
 import com.example.data.MosaicTerrainTile
 import com.example.data.LidarSearchRequest
+import com.example.data.NormalizedRasterBounds
 import com.example.data.NortheastLidarRegion
 import com.example.data.NysHistoricLazTileCatalog
 import com.example.data.TerrainDecodeCoordinator
@@ -65,6 +68,8 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
@@ -102,6 +107,7 @@ fun NysLazTilePicker(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val catalog = remember { NysHistoricLazTileCatalog() }
+    val copcCatalog = remember { CopcStacCatalog() }
     val store = remember(context) { LazDownloadQueue.store(context) }
     val diskCache = remember(context) { LazTerrainDiskCache(File(context.cacheDir, "decoded-terrain")) }
     val terrainCache = remember(diskCache) { LazTerrainCache(LazTerrainMemoryCache(), diskCache) }
@@ -122,6 +128,10 @@ fun NysLazTilePicker(
     var selectedRegion by remember { mutableStateOf<NortheastLidarRegion?>(null) }
     var mosaicProjectName by remember { mutableStateOf("") }
     var tiles by remember { mutableStateOf<List<NysHistoricLazTileCatalog.Tile>>(emptyList()) }
+    var copcAssets by remember { mutableStateOf<List<CopcAsset>>(emptyList()) }
+    var lastSearchBounds by remember {
+        mutableStateOf<com.example.geospatial.GeoSpatialLibrary.GeographicBounds?>(null)
+    }
     var savedMosaicProjects by remember { mutableStateOf<List<MosaicProject>>(emptyList()) }
     var selectedUrls by remember { mutableStateOf<Set<String>>(emptySet()) }
     var selectedAreaDescription by remember { mutableStateOf<String?>(null) }
@@ -129,6 +139,7 @@ fun NysLazTilePicker(
     var isLookingUp by remember { mutableStateOf(false) }
     var isEstimatingDownload by remember { mutableStateOf(false) }
     var downloadJob by remember { mutableStateOf<Job?>(null) }
+    var activeCopcAssetId by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     // Downloads live in LazDownloadService, so they survive leaving this screen. The picker only
@@ -171,6 +182,8 @@ fun NysLazTilePicker(
         error = null
         downloadEstimate = null
         selectedAreaDescription = null
+        copcAssets = emptyList()
+        lastSearchBounds = null
         status = "Finding the exact LiDAR tile…"
         scope.launch {
             try {
@@ -183,6 +196,7 @@ fun NysLazTilePicker(
                 }
             } catch (t: Throwable) {
                 tiles = emptyList()
+                copcAssets = emptyList()
                 error = t.localizedMessage ?: "Tile lookup failed."
                 status = null
             } finally {
@@ -213,30 +227,110 @@ fun NysLazTilePicker(
         scope.launch {
             try {
                 val bounds = selection.bounds
-                val resolved = catalog.tilesInBounds(
-                    west = bounds.minLon,
-                    south = bounds.minLat,
-                    east = bounds.maxLon,
-                    north = bounds.maxLat,
-                )
+                lastSearchBounds = bounds
+                val (lazResult, copcResult) = coroutineScope {
+                    val laz = async {
+                        runCatching {
+                            catalog.tilesInBounds(
+                                west = bounds.minLon,
+                                south = bounds.minLat,
+                                east = bounds.maxLon,
+                                north = bounds.maxLat,
+                            )
+                        }
+                    }
+                    val copc = async { runCatching { copcCatalog.search(bounds) } }
+                    laz.await() to copc.await()
+                }
+                val resolved = lazResult.getOrDefault(emptyList())
                 // Providers only accept envelopes. Preserve a tile with no returned footprint so
                 // the server's spatial intersection remains authoritative, but precisely filter
                 // every tile whose metadata gives us a usable geographic rectangle.
                 tiles = resolved.filter { tile -> tileBounds(tile)?.let(selection::intersects) ?: true }
+                copcAssets = copcResult.getOrDefault(emptyList()).filter { asset ->
+                    asset.bounds?.let(selection::intersects) ?: true
+                }
+                if (tiles.isEmpty() && copcAssets.isEmpty()) {
+                    lazResult.exceptionOrNull()?.let { throw it }
+                    copcResult.exceptionOrNull()?.let { throw it }
+                }
                 selectedUrls = tiles.map { it.downloadUrl }.toSet()
                 status = when {
-                    tiles.isEmpty() -> "No published LiDAR tiles intersect that area."
+                    tiles.isEmpty() && copcAssets.isEmpty() ->
+                        "No published LiDAR tiles intersect that area."
                     resolved.size >= NysHistoricLazTileCatalog.MAX_NATIONAL_MAP_RESULTS ->
-                        "Found ${tiles.size} tiles — the per-search cap. Narrow the box to see the rest."
-                    else -> "Found ${tiles.size} intersecting tiles. Select files, then build one mosaic."
+                        "Found ${copcAssets.size} streamable COPC and ${tiles.size} downloadable LAZ files — " +
+                            "the LAZ search hit its cap. Narrow the box to see the rest."
+                    else ->
+                        "Found ${copcAssets.size} streamable COPC and ${tiles.size} downloadable LAZ files."
                 }
             } catch (t: Throwable) {
                 tiles = emptyList()
+                copcAssets = emptyList()
+                lastSearchBounds = null
                 selectedUrls = emptySet()
                 error = t.localizedMessage ?: "Area tile lookup failed."
                 status = null
             } finally {
                 isLookingUp = false
+            }
+        }
+    }
+
+    fun streamCopc(asset: CopcAsset) {
+        if (downloadJob?.isActive == true) return
+        val query = lastSearchBounds ?: run {
+            error = "Select an area before starting a COPC stream."
+            return
+        }
+        val assetBounds = asset.bounds ?: query
+        val clippedMinLon = maxOf(query.minLon, assetBounds.minLon)
+        val clippedMaxLon = minOf(query.maxLon, assetBounds.maxLon)
+        val clippedMinLat = maxOf(query.minLat, assetBounds.minLat)
+        val clippedMaxLat = minOf(query.maxLat, assetBounds.maxLat)
+        val width = assetBounds.maxLon - assetBounds.minLon
+        val height = assetBounds.maxLat - assetBounds.minLat
+        if (width <= 0.0 || height <= 0.0 ||
+            clippedMinLon >= clippedMaxLon || clippedMinLat >= clippedMaxLat
+        ) {
+            error = "The selected area does not overlap this COPC source."
+            return
+        }
+        val focus = NormalizedRasterBounds(
+            left = (clippedMinLon - assetBounds.minLon) / width,
+            top = (assetBounds.maxLat - clippedMaxLat) / height,
+            right = (clippedMaxLon - assetBounds.minLon) / width,
+            bottom = (assetBounds.maxLat - clippedMinLat) / height,
+        ).sanitized()
+        val options = LidarImportOptions(
+            groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
+            rasterResolution = 1_024,
+            smoothingRadius = 0,
+            focusBounds = focus,
+        )
+        error = null
+        activeCopcAssetId = asset.id
+        downloadJob = scope.launch {
+            try {
+                status = "Authorizing the USGS COPC stream…"
+                val signedAsset = copcCatalog.signedAsset(asset)
+                val outcome = decodeCoordinator.decodeRemoteCopc(
+                    url = signedAsset.href,
+                    cacheDirectory = File(context.cacheDir, "copc-range-cache"),
+                    options = options,
+                    onStage = { status = it },
+                )
+                TerrainPerformanceSession.publish(outcome.gpuScene)
+                onCustomTerrainLoaded(outcome.terrain, null)
+                status = "Streamed ${asset.title} for the selected area."
+            } catch (_: CancellationException) {
+                status = "COPC stream cancelled. Cached byte ranges remain available."
+            } catch (t: Throwable) {
+                error = t.localizedMessage ?: "COPC streaming failed."
+                status = null
+            } finally {
+                activeCopcAssetId = null
+                downloadJob = null
             }
         }
     }
@@ -879,13 +973,56 @@ fun NysLazTilePicker(
                 }
             }
 
-            if (tiles.isNotEmpty() && !selectedAreaDescription.isNullOrBlank()) {
+            if ((tiles.isNotEmpty() || copcAssets.isNotEmpty()) &&
+                !selectedAreaDescription.isNullOrBlank()
+            ) {
                 Text(
                     "Current tile result: $selectedAreaDescription",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
                 )
+            }
+            if (copcAssets.isNotEmpty()) {
+                Text("Fast COPC streaming", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Streams the byte ranges needed for the selected area. Downloadable LAZ files remain available below for offline use.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                copcAssets.forEachIndexed { index, asset ->
+                    Button(
+                        onClick = { streamCopc(asset) },
+                        enabled = downloadJob?.isActive != true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                            .testTag("stream_copc_asset_$index"),
+                    ) {
+                        Icon(Icons.Default.CloudDownload, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
+                            Text("Stream ${asset.title}", maxLines = 1)
+                            Text(
+                                "COPC range access · no full-file download",
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                            )
+                        }
+                        if (activeCopcAssetId == asset.id) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.width(22.dp).height(22.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        }
+                    }
+                }
+                if (activeCopcAssetId != null) {
+                    OutlinedButton(
+                        onClick = { downloadJob?.cancel() },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    ) { Text("Cancel COPC stream") }
+                }
             }
             tiles.forEach { tile ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {

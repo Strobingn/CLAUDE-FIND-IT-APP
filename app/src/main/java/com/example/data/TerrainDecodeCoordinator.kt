@@ -2,6 +2,7 @@ package com.example.data
 
 import java.io.File
 import java.io.FileInputStream
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -81,6 +82,45 @@ class TerrainDecodeCoordinator(
         } finally {
             if (!lock.isLocked) locks.remove(key, lock)
         }
+    }
+
+    suspend fun decodeRemoteCopc(
+        url: String,
+        cacheDirectory: File,
+        options: LidarImportOptions,
+        onStage: suspend (String) -> Unit = {},
+    ): TerrainDecodeOutcome {
+        val stableAssetUrl = url.substringBefore('?')
+        val safeName = MessageDigest.getInstance("SHA-256")
+            .digest(stableAssetUrl.toByteArray(Charsets.UTF_8))
+            .take(16)
+            .joinToString("") { "%02x".format(it) } + ".copc.range-cache"
+        val rangeCache = File(cacheDirectory.apply { mkdirs() }, safeName)
+        onStage("Streaming selected COPC byte ranges…")
+        val terrain = withContext(Dispatchers.IO) {
+            val context = currentCoroutineContext()
+            val laz = LazTerrainReader.readRemote(
+                url = url,
+                rangeCacheFile = rangeCache,
+                options = options,
+                shouldContinue = { context.isActive },
+            ) ?: error("Could not stream COPC point cloud")
+            DemGenerator.TerrainLoadResult(
+                grid = laz.grid,
+                summary = "COPC range stream · ${laz.note}",
+                isBareEarth = laz.appliedGroundMode != GroundSurfaceMode.SURFACE_MODEL,
+            )
+        }
+        onStage("Preparing lightweight GPU terrain preview…")
+        val scene = withContext(Dispatchers.Default) {
+            currentCoroutineContext().ensureActive()
+            TerrainGpuSceneBuilder.build(
+                source = terrain.grid,
+                maxFinestDimension = GPU_PREVIEW_MAX_DIMENSION,
+                tileSize = GPU_PREVIEW_TILE_SIZE,
+            )
+        }
+        return TerrainDecodeOutcome(terrain, LazTerrainCache.Hit.MISS, scene)
     }
 
     private suspend fun decodeFile(
