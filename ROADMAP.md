@@ -388,8 +388,8 @@ Exit criteria:
 
 ### Phase 8 — Advanced terrain tools
 
-- Viewshed analysis
-- Horizon-line calculation
+- Viewshed analysis. **Implemented; unit verified.** `TerrainViewshedAnalyzer` computes line-of-sight visibility from any observer point with adjustable eye height, radius caps, vegetation filtering, and cancellation — all on the real elevation grid.
+- Horizon-line calculation. **Implemented; unit verified.** Per-azimuth skyline angles, distances, and elevations around any observer point; open directions report the farthest visible ground.
 - Elevation profile along a selected path
 - Adaptive terrain sampling
 - Multi-threaded ray processing
