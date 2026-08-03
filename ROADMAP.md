@@ -348,8 +348,8 @@ Exit criteria:
 
 ### Phase 5 — Field verification
 
-- Add breadcrumbs, compass navigation, AR guidance, voice notes, and directional photos.
-- Add target states, excavation logs, boundaries, route optimization, and offline sync queue.
+- Add breadcrumbs, compass navigation, AR guidance, voice notes, and directional photos. **Mostly implemented.** Breadcrumb tracks, compass/bearing navigation, voice notes, and photos exist; AR guidance remains device-bound future work.
+- Add target states, excavation logs, boundaries, route optimization, and offline sync queue. **Implemented; unit verified.** `TargetVisitStates` validates outcome transitions (checked targets can be corrected, never erased) and maps outcomes to reviewed-example verdicts; `ExcavationLogEntry`, `SurveyBoundary` (with polygon containment), `TargetRouteOptimizer` (nearest-neighbor + 2-opt), and `FieldSyncQueue` (coalescing upserts, delete-wins, ordered replay, no silent drops) ship with Room persistence (`excavation_logs`, `survey_boundaries`, `pending_sync`, database v14).
 
 Exit criteria:
 

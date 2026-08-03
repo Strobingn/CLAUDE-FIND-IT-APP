@@ -15,8 +15,11 @@ import androidx.room.migration.Migration
         OfflineBasemapRegionEntity::class,
         BreadcrumbTrackEntity::class,
         MosaicProjectEntity::class,
+        ExcavationLogEntity::class,
+        SurveyBoundaryEntity::class,
+        PendingSyncEntity::class,
     ],
-    version = 13,
+    version = 14,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -27,6 +30,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun offlineBasemapRegionDao(): OfflineBasemapRegionDao
     abstract fun breadcrumbTrackDao(): BreadcrumbTrackDao
     abstract fun mosaicProjectDao(): MosaicProjectDao
+    abstract fun excavationLogDao(): ExcavationLogDao
+    abstract fun surveyBoundaryDao(): SurveyBoundaryDao
+    abstract fun pendingSyncDao(): PendingSyncDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -180,6 +186,64 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE mosaic_projects ADD COLUMN areaSelectionDescription TEXT")
             }
         }
+        private val migration13To14 = object : Migration(13, 14) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS excavation_logs (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        targetId INTEGER NOT NULL,
+                        terrainKey TEXT,
+                        startedAtMillis INTEGER NOT NULL,
+                        completedAtMillis INTEGER,
+                        depthCentimeters INTEGER,
+                        soilNotes TEXT NOT NULL,
+                        findsDescription TEXT NOT NULL,
+                        findsCount INTEGER NOT NULL,
+                        photoUris TEXT NOT NULL DEFAULT '',
+                        voiceNoteUris TEXT NOT NULL DEFAULT '',
+                        createdAtMillis INTEGER NOT NULL,
+                        updatedAtMillis INTEGER NOT NULL
+                    )
+                """)
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_excavation_logs_targetId " +
+                        "ON excavation_logs (targetId)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_excavation_logs_terrainKey " +
+                        "ON excavation_logs (terrainKey)",
+                )
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS survey_boundaries (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        terrainKey TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        verticesText TEXT NOT NULL,
+                        createdAtMillis INTEGER NOT NULL
+                    )
+                """)
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_survey_boundaries_terrainKey " +
+                        "ON survey_boundaries (terrainKey)",
+                )
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS pending_sync (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        entityType TEXT NOT NULL,
+                        entityId TEXT NOT NULL,
+                        operation TEXT NOT NULL,
+                        payload TEXT NOT NULL,
+                        queuedAtMillis INTEGER NOT NULL,
+                        attemptCount INTEGER NOT NULL,
+                        lastError TEXT
+                    )
+                """)
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_pending_sync_entityType_entityId " +
+                        "ON pending_sync (entityType, entityId)",
+                )
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -200,6 +264,7 @@ abstract class AppDatabase : RoomDatabase() {
                     migration10To11,
                     migration11To12,
                     migration12To13,
+                    migration13To14,
                 )
                 .build()
                 .also { instance = it }
