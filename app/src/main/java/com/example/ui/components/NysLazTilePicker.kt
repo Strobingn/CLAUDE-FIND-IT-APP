@@ -45,6 +45,8 @@ import com.example.data.GroundSurfaceMode
 import com.example.data.LazTerrainCache
 import com.example.data.LazTerrainDiskCache
 import com.example.data.LazTerrainMemoryCache
+import com.example.data.LazPickerSession
+import com.example.data.LazPickerSessionStore
 import com.example.data.LidarAreaSelection
 import com.example.data.LidarImportOptions
 import com.example.data.MosaicTerrainBuilder
@@ -142,6 +144,7 @@ fun NysLazTilePicker(
     var activeCopcAssetId by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var sessionRestored by remember { mutableStateOf(false) }
     // Downloads live in LazDownloadService, so they survive leaving this screen. The picker only
     // observes them and opens a tile once its bytes have landed.
     val downloadTasks by LazDownloadQueue.tasks.collectAsStateWithLifecycle()
@@ -149,6 +152,80 @@ fun NysLazTilePicker(
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { /* Declined only costs the progress notification; the transfer itself still runs. */ }
+
+    LaunchedEffect(context) {
+        val saved = LazPickerSessionStore.load(context)
+        latitude = saved.latitude
+        longitude = saved.longitude
+        west = saved.west
+        south = saved.south
+        east = saved.east
+        north = saved.north
+        areaSelectionMode = AreaSelectionMode.entries.firstOrNull {
+            it.name == saved.areaSelectionMode
+        } ?: AreaSelectionMode.RECTANGLE
+        radiusLatitude = saved.radiusLatitude
+        radiusLongitude = saved.radiusLongitude
+        radiusMiles = saved.radiusMiles
+        polygonVertices = saved.polygonVertices
+        selectedRegion = saved.selectedRegion?.let { name ->
+            NortheastLidarRegion.entries.firstOrNull { it.name == name }
+        }
+        mosaicProjectName = saved.mosaicProjectName
+        tiles = saved.tiles
+        copcAssets = saved.copcAssets
+        selectedUrls = saved.selectedUrls
+        selectedAreaDescription = saved.selectedAreaDescription
+        lastSearchBounds = saved.lastSearchBounds
+        sessionRestored = true
+    }
+
+    LaunchedEffect(
+        sessionRestored,
+        latitude,
+        longitude,
+        west,
+        south,
+        east,
+        north,
+        areaSelectionMode,
+        radiusLatitude,
+        radiusLongitude,
+        radiusMiles,
+        polygonVertices,
+        selectedRegion,
+        mosaicProjectName,
+        tiles,
+        copcAssets,
+        selectedUrls,
+        selectedAreaDescription,
+        lastSearchBounds,
+    ) {
+        if (!sessionRestored) return@LaunchedEffect
+        LazPickerSessionStore.save(
+            context,
+            LazPickerSession(
+                latitude = latitude,
+                longitude = longitude,
+                west = west,
+                south = south,
+                east = east,
+                north = north,
+                areaSelectionMode = areaSelectionMode.name,
+                radiusLatitude = radiusLatitude,
+                radiusLongitude = radiusLongitude,
+                radiusMiles = radiusMiles,
+                polygonVertices = polygonVertices,
+                selectedRegion = selectedRegion?.name,
+                mosaicProjectName = mosaicProjectName,
+                tiles = tiles,
+                copcAssets = copcAssets,
+                selectedUrls = selectedUrls,
+                selectedAreaDescription = selectedAreaDescription,
+                lastSearchBounds = lastSearchBounds,
+            ),
+        )
+    }
 
     LaunchedEffect(mosaicProjectDao) {
         mosaicProjectDao.observeAll().collect { stored ->
@@ -316,7 +393,10 @@ fun NysLazTilePicker(
                 val signedAsset = copcCatalog.signedAsset(asset)
                 val outcome = decodeCoordinator.decodeRemoteCopc(
                     url = signedAsset.href,
-                    cacheDirectory = File(context.cacheDir, "copc-range-cache"),
+                    // COPC is range-streamed rather than fully downloaded. Keep the sparse range
+                    // file beside the normal LAZ datasets so it survives cache cleanup and can be
+                    // reused when the same source is opened after leaving the map.
+                    cacheDirectory = File(store.directory, "copc-range-cache"),
                     options = options,
                     onStage = { status = it },
                 )
@@ -338,7 +418,8 @@ fun NysLazTilePicker(
     // A box handed over from the map arrives here after the tab switch. Consuming it means
     // returning to this tab later does not silently repeat the search.
     val mapSearchBounds by LidarSearchRequest.pending.collectAsStateWithLifecycle()
-    LaunchedEffect(mapSearchBounds) {
+    LaunchedEffect(mapSearchBounds, sessionRestored) {
+        if (!sessionRestored) return@LaunchedEffect
         val bounds = LidarSearchRequest.consume() ?: return@LaunchedEffect
         selectedRegion = null
         west = formatDegrees(bounds.minLon)
