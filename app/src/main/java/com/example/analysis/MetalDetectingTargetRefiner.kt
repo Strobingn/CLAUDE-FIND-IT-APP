@@ -81,6 +81,12 @@ private class RefinerContext(
 object MetalDetectingTargetRefiner {
     private const val MAX_PER_TYPE = 12
     private const val MAX_TOTAL = 48
+    /** Small, capped demotion for detector cautions; field rejection remains stronger. */
+    internal const val CAUTION_PENALTY_EACH = 0.06f
+    internal const val CAUTION_PENALTY_CAP = 0.18f
+
+    internal fun cautionPenalty(count: Int): Float =
+        (count.coerceAtLeast(0) * CAUTION_PENALTY_EACH).coerceAtMost(CAUTION_PENALTY_CAP)
 
     fun refine(
         result: TerrainIntelligenceResult,
@@ -310,11 +316,13 @@ object MetalDetectingTargetRefiner {
             val nearestFeedback = feedback.minByOrNull { distanceSquared(it.xPercent, it.yPercent, xPercent, yPercent) }
             val feedbackMatched = nearestFeedback != null &&
                 distanceSquared(nearestFeedback.xPercent, nearestFeedback.yPercent, xPercent, yPercent) <= VerifiedFeedback.MATCH_DISTANCE_SQUARED
-            val adjusted = if (feedbackMatched) {
+            val afterFeedback = if (feedbackMatched) {
                 (rawValue + if (nearestFeedback!!.confirmed) 0.14f else -0.28f).coerceIn(0f, 1f)
             } else {
                 rawValue
             }
+            val cautions = classifyCaution(type, x, y, index, ctx, feedback, xPercent, yPercent)
+            val adjusted = (afterFeedback - cautionPenalty(cautions.size)).coerceIn(0f, 1f)
             // Mirrors TerrainIntelligenceEngine's feedback rule: a rejected match can drop an
             // already-qualified candidate, but feedback never resurrects one that never cleared
             // the raw per-pixel threshold in the first place.
@@ -326,7 +334,7 @@ object MetalDetectingTargetRefiner {
                 score = adjusted,
                 radiusMeters = radiusMeters,
                 evidence = explainCandidate(type, x, y, index, ctx),
-                cautionReasons = classifyCaution(type, x, y, index, ctx, feedback, xPercent, yPercent),
+                cautionReasons = cautions,
                 verifiedNearby = feedbackMatched,
             )
         }

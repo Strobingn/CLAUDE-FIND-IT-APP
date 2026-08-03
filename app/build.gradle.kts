@@ -38,7 +38,6 @@ val openAiApiKey = projectSecret("OPENAI_API_KEY")
 val openAiModel = projectSecret("OPENAI_MODEL").ifBlank { "gpt-5.5" }
 val openAiBaseUrl = projectSecret("OPENAI_BASE_URL").ifBlank { "https://api.openai.com/v1/responses" }
 val openAiProxyToken = projectSecret("OPENAI_PROXY_TOKEN").ifBlank { projectSecret("PROXY_AUTH_TOKEN") }
-val geminiApiKey = projectSecret("GEMINI_API_KEY").ifBlank { projectSecret("GOOGLE_API_KEY") }
 val geminiModel = projectSecret("GEMINI_MODEL").ifBlank { "gemini-3.5-flash" }
 val mapsApiKey = projectSecret("MAPS_API_KEY")
 
@@ -75,7 +74,6 @@ android {
     buildConfigField("String", "OPENAI_MODEL", quotedBuildConfig(openAiModel))
     buildConfigField("String", "OPENAI_BASE_URL", quotedBuildConfig(openAiBaseUrl))
     buildConfigField("String", "OPENAI_PROXY_TOKEN", quotedBuildConfig(openAiProxyToken))
-    buildConfigField("String", "GEMINI_API_KEY", quotedBuildConfig(geminiApiKey))
     buildConfigField("String", "GEMINI_MODEL", quotedBuildConfig(geminiModel))
     buildConfigField("String", "MAPS_API_KEY", quotedBuildConfig(mapsApiKey))
     manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey

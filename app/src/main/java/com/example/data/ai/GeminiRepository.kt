@@ -25,8 +25,8 @@ object GeminiRepository {
     private const val TAG = "GeminiRepository"
     private const val MODEL_NAME = "gemini-2.0-flash"
 
-    /** BuildConfig field populated by Gradle from local.properties GEMINI_API_KEY / AI_API_KEY or defaults to empty. */
-    private val API_KEY: String = com.example.BuildConfig.GEMINI_API_KEY.ifBlank { com.example.BuildConfig.OPENAI_API_KEY }
+    /** Legacy path is intentionally disabled; the active REST client provisions keys per device. */
+    private const val API_KEY: String = ""
 
     private var initialized = false
     private var isAvailable = false

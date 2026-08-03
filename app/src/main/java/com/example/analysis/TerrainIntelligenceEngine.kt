@@ -50,6 +50,7 @@ enum class TerrainDerivedLayer(val label: String, val description: String) {
     // Appended deliberately: the derived-layer disk cache stores layers by enum ordinal, so
     // inserting anywhere above would silently reinterpret every already-cached analysis.
     MULTI_SCALE_RELIEF("Multi-scale relief", "Relief detrended at cellar, structure, and platform scales"),
+    NATURAL_FEATURE_PENALTY("Natural-feature penalty", "Evidence that an anomaly is better explained by drainage, slope, or rough ground"),
 }
 
 enum class TerrainFeatureType(val label: String) {
@@ -317,6 +318,10 @@ class TerrainIntelligenceEngine(
             val enclosed = 1f - positiveOpenness[i]
             (concavity * 0.34f + lowRelief * 0.30f + gentle * 0.23f + enclosed * 0.13f).coerceIn(0f, 1f)
         }
+        val naturalFeaturePenalty = FloatArray(size) { i ->
+            (ancientStream[i] * 0.55f + ruggedNorm[i] * 0.20f + slopeNorm[i] * 0.15f +
+                (1f - skyView[i]) * 0.10f).coerceIn(0f, 1f)
+        }
 
         val layers = EnumMap<TerrainDerivedLayer, FloatArray>(TerrainDerivedLayer::class.java).apply {
             put(TerrainDerivedLayer.SLOPE, slope)
@@ -332,6 +337,7 @@ class TerrainIntelligenceEngine(
             put(TerrainDerivedLayer.RUGGEDNESS, ruggedness)
             put(TerrainDerivedLayer.LINEARITY, linearityRaw)
             put(TerrainDerivedLayer.ANCIENT_STREAM, ancientStream)
+            put(TerrainDerivedLayer.NATURAL_FEATURE_PENALTY, naturalFeaturePenalty)
         }
         return TerrainDerivedLayers(width, height, cell, layers)
     }
@@ -355,6 +361,14 @@ class TerrainIntelligenceEngine(
         val skyView = requireLayer(layers, TerrainDerivedLayer.SKY_VIEW_FACTOR)
         val hillCompare = normalizePositive(requireLayer(layers, TerrainDerivedLayer.HILLSHADE_COMPARISON))
         val stream = requireLayer(layers, TerrainDerivedLayer.ANCIENT_STREAM)
+        val multiScaleRelief = layers.values[TerrainDerivedLayer.MULTI_SCALE_RELIEF]
+            ?.let(::normalizeSigned) ?: FloatArray(size)
+        val naturalPenalty = layers.values[TerrainDerivedLayer.NATURAL_FEATURE_PENALTY]
+            ?.let(::normalizePositive)
+            ?: FloatArray(size) { i ->
+                (stream[i] * 0.55f + rugged[i] * 0.20f + slope[i] * 0.15f +
+                    (1f - skyView[i]) * 0.10f).coerceIn(0f, 1f)
+            }
 
         val flat = FloatArray(size) { 1f - slope[it] }
         val smooth = FloatArray(size) { 1f - rugged[it] }
@@ -363,15 +377,20 @@ class TerrainIntelligenceEngine(
         val concave = FloatArray(size) { max(0f, curvature[it]) }
         val raised = FloatArray(size) { max(0f, relief[it]) }
         val lowered = FloatArray(size) { max(0f, -relief[it]) }
+        val scaleRaised = FloatArray(size) { max(0f, multiScaleRelief[it]) }
+        val scaleLowered = FloatArray(size) { max(0f, -multiScaleRelief[it]) }
 
         val road = FloatArray(size) { i ->
-            (flat[i] * 0.28f + smooth[i] * 0.22f + linearity[i] * 0.30f + nearNeutralRelief[i] * 0.20f).coerceIn(0f, 1f)
+            (flat[i] * 0.25f + smooth[i] * 0.20f + linearity[i] * 0.27f + nearNeutralRelief[i] * 0.18f +
+                (1f - abs(multiScaleRelief[i])).coerceIn(0f, 1f) * 0.10f).coerceIn(0f, 1f)
         }
         val foundation = FloatArray(size) { i ->
-            (flat[i] * 0.25f + smooth[i] * 0.18f + linearity[i] * 0.31f + hillCompare[i] * 0.16f + raised[i] * 0.10f).coerceIn(0f, 1f)
+            (flat[i] * 0.22f + smooth[i] * 0.16f + linearity[i] * 0.27f + hillCompare[i] * 0.13f +
+                raised[i] * 0.07f + scaleRaised[i] * 0.15f).coerceIn(0f, 1f)
         }
         val cellar = FloatArray(size) { i ->
-            (depression[i] * 0.48f + concave[i] * 0.22f + lowered[i] * 0.17f + smooth[i] * 0.08f + (1f - positiveOpen[i]) * 0.05f).coerceIn(0f, 1f)
+            (depression[i] * 0.40f + concave[i] * 0.19f + lowered[i] * 0.14f + scaleLowered[i] * 0.16f +
+                smooth[i] * 0.06f + (1f - positiveOpen[i]) * 0.05f).coerceIn(0f, 1f)
         }
         val wall = FloatArray(size) { i ->
             (linearity[i] * 0.48f + raised[i] * 0.20f + abs(curvature[i]) * 0.17f + smooth[i] * 0.15f).coerceIn(0f, 1f)
@@ -396,23 +415,26 @@ class TerrainIntelligenceEngine(
         }
 
         val definitions = listOf(
-            Detector(TerrainFeatureType.DEPRESSION, depression, 0.62f, 5f, listOf("local bowl depth", "concave curvature", "negative local relief")),
-            Detector(TerrainFeatureType.STONE_WALL, wall, 0.64f, 4f, listOf("linear raised response", "narrow curvature edge", "low cross-line roughness")),
-            Detector(TerrainFeatureType.FOUNDATION, foundation, 0.66f, 7f, listOf("rectilinear edge response", "flat interior tendency", "multi-hillshade persistence")),
-            Detector(TerrainFeatureType.CELLAR_HOLE, cellar, 0.67f, 6f, listOf("compact depression", "concave center", "enclosed local horizon")),
-            Detector(TerrainFeatureType.ROAD_TRAIL, road, 0.65f, 5f, listOf("elongated low-gradient corridor", "smooth local surface", "linear response")),
-            Detector(TerrainFeatureType.OLD_HOMESITE, homesite, 0.68f, 12f, listOf("foundation/cellar combination", "road access context", "locally usable ground")),
-            Detector(TerrainFeatureType.ARTIFACT_HOTSPOT, hotspot, 0.69f, 10f, listOf("homesite context", "access corridor proximity", "disturbance evidence")),
-            Detector(TerrainFeatureType.DIG_RECOMMENDATION, dig, 0.72f, 8f, listOf("ensemble terrain score", "field-access context", "user feedback weighting")),
-            Detector(TerrainFeatureType.CHARCOAL_PIT, charcoal, 0.70f, 9f, listOf("level circular-platform tendency", "subtle relief rim", "balanced openness")),
-            Detector(TerrainFeatureType.MINE_QUARRY, quarry, 0.70f, 16f, listOf("large concavity", "steep irregular margins", "high ruggedness")),
-            Detector(TerrainFeatureType.MILITARY_CAMP, camp, 0.72f, 18f, listOf("clustered level ground", "road/trail context", "repeated disturbance pattern")),
+            Detector(TerrainFeatureType.DEPRESSION, depression, 0.62f, 5f, listOf("local bowl depth", "concave curvature", "negative local relief"), 0.20f),
+            Detector(TerrainFeatureType.STONE_WALL, wall, 0.64f, 4f, listOf("linear raised response", "narrow curvature edge", "low cross-line roughness"), 0.28f),
+            Detector(TerrainFeatureType.FOUNDATION, foundation, 0.66f, 7f, listOf("rectilinear edge response", "flat interior tendency", "multi-hillshade persistence"), 0.36f),
+            Detector(TerrainFeatureType.CELLAR_HOLE, cellar, 0.67f, 6f, listOf("compact depression", "concave center", "enclosed local horizon"), 0.30f),
+            Detector(TerrainFeatureType.ROAD_TRAIL, road, 0.65f, 5f, listOf("elongated low-gradient corridor", "smooth local surface", "linear response"), 0.22f),
+            Detector(TerrainFeatureType.OLD_HOMESITE, homesite, 0.68f, 12f, listOf("foundation/cellar combination", "road access context", "locally usable ground"), 0.30f),
+            Detector(TerrainFeatureType.ARTIFACT_HOTSPOT, hotspot, 0.69f, 10f, listOf("homesite context", "access corridor proximity", "disturbance evidence"), 0.40f),
+            Detector(TerrainFeatureType.DIG_RECOMMENDATION, dig, 0.72f, 8f, listOf("ensemble terrain score", "field-access context", "user feedback weighting"), 0.42f),
+            Detector(TerrainFeatureType.CHARCOAL_PIT, charcoal, 0.70f, 9f, listOf("level circular-platform tendency", "subtle relief rim", "balanced openness"), 0.30f),
+            Detector(TerrainFeatureType.MINE_QUARRY, quarry, 0.70f, 16f, listOf("large concavity", "steep irregular margins", "high ruggedness"), 0.05f),
+            Detector(TerrainFeatureType.MILITARY_CAMP, camp, 0.72f, 18f, listOf("clustered level ground", "road/trail context", "repeated disturbance pattern"), 0.30f),
             Detector(TerrainFeatureType.ANCIENT_STREAM, stream, 0.66f, 10f, listOf("concave low-relief corridor", "gentle continuous grade", "restricted sky view")),
         )
 
         val output = ArrayList<TerrainFeatureCandidate>()
         for (definition in definitions) {
-            val maxima = localMaxima(definition.score, width, height, definition.threshold, perTypeLimit = 14)
+            val rankedScore = FloatArray(size) { i ->
+                applyNaturalFeaturePenalty(definition.score[i], naturalPenalty[i], definition.naturalPenaltyWeight)
+            }
+            val maxima = localMaxima(rankedScore, width, height, definition.threshold, perTypeLimit = 14)
             for ((index, rawScore) in maxima) {
                 val x = index % width
                 val y = index / width
@@ -436,9 +458,20 @@ class TerrainIntelligenceEngine(
                     yPercent = yPercent,
                     score = adjusted,
                     radiusMeters = definition.radiusMeters,
-                    evidence = definition.evidence,
+                    evidence = definition.evidence +
+                        if (naturalPenalty[index] >= 0.08f && definition.naturalPenaltyWeight > 0f) {
+                            listOf("natural-feature penalty ${(naturalPenalty[index] * definition.naturalPenaltyWeight * 100f).roundToInt()}%")
+                        } else {
+                            emptyList()
+                        },
                     feedback = matchingFeedback?.rating,
-                    note = matchingFeedback?.note.orEmpty(),
+                    note = buildString {
+                        append(matchingFeedback?.note.orEmpty())
+                        if (naturalPenalty[index] >= 0.08f && definition.naturalPenaltyWeight > 0f) {
+                            if (isNotBlank()) append(" · ")
+                            append("screened against natural-feature risk")
+                        }
+                    },
                 )
             }
         }
@@ -686,6 +719,14 @@ class TerrainIntelligenceEngine(
             return FloatArray(values.size) { (values[it] / scale).coerceIn(-1f, 1f) }
         }
 
+        /** Applies a bounded natural-feature penalty while preserving explainable score math. */
+        internal fun applyNaturalFeaturePenalty(
+            rawScore: Float,
+            naturalPenalty: Float,
+            penaltyWeight: Float,
+        ): Float = (rawScore - naturalPenalty.coerceIn(0f, 1f) * penaltyWeight.coerceAtLeast(0f))
+            .coerceIn(0f, 1f)
+
         private fun localMaxima(
             score: FloatArray,
             width: Int,
@@ -740,6 +781,7 @@ class TerrainIntelligenceEngine(
         val threshold: Float,
         val radiusMeters: Float,
         val evidence: List<String>,
+        val naturalPenaltyWeight: Float = 0f,
     )
 }
 
@@ -882,7 +924,8 @@ object TerrainIntelligenceRenderer {
             TerrainDerivedLayer.ARTIFACT_HOTSPOT,
             TerrainDerivedLayer.RUGGEDNESS,
             TerrainDerivedLayer.LINEARITY,
-            TerrainDerivedLayer.HILLSHADE_COMPARISON ->
+            TerrainDerivedLayer.HILLSHADE_COMPARISON,
+            TerrainDerivedLayer.NATURAL_FEATURE_PENALTY ->
                 for (i in values.indices) pixels[i] = heat(normalizedPositive[i])
         }
         bitmap.setPixels(pixels, 0, layers.width, 0, 0, layers.width, layers.height)

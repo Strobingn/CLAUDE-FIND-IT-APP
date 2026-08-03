@@ -59,6 +59,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ai.GeminiApiClient
 import com.example.ai.GeminiConversationTurn
 import com.example.ai.GeminiTerrainImageEncoder
+import com.example.ai.AiTargetClassifier
 import com.example.ai.OpenAiApiClient
 import com.example.ai.TerrainAiGateway
 import com.example.ai.TerrainAiProvider
@@ -74,6 +75,9 @@ import com.example.analysis.VerifiedFeedback
 import com.example.analysis.VerifiedFeedbackPoint
 import com.example.data.AppMemoryBudget
 import com.example.data.ElevationGrid
+import com.example.data.ai.AnomalyClusterer
+import com.example.data.ai.AnomalyClassification
+import com.example.data.ai.TerrainSessionContext
 import com.example.data.NormalizedRasterBounds
 import com.example.data.TargetSignal
 import com.example.geospatial.GeoSpatialLibrary.GeoSpatialMetadata
@@ -156,6 +160,9 @@ data class AiTerrainState(
     val localLayerBitmap: Bitmap? = null,
     val cloudMapTargets: List<CloudMapTarget> = emptyList(),
     val cloudTerrainKey: String? = null,
+    val isClassifyingTargets: Boolean = false,
+    val classifiedTargets: List<AnomalyClassification> = emptyList(),
+    val classificationError: String? = null,
     /** Field-verified points for the current dataset, derived from logged finds - see [VerifiedFeedback]. */
     val verifiedFeedback: List<VerifiedFeedbackPoint> = emptyList(),
 )
@@ -203,6 +210,71 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
     fun clearGeminiKey() {
         GeminiApiClient.clearDeviceApiKey(appContext)
         _state.value = _state.value.withProviderStatus().copy(cloudError = null)
+    }
+
+    /** Clusters disturbance cells and asks the selected cloud provider for typed target labels. */
+    fun classifyTargets(grid: ElevationGrid, terrainSummary: String, hillshadeBitmap: Bitmap?) {
+        if (_state.value.isClassifyingTargets || grid.width <= 2 || grid.height <= 2) return
+        val provider = _state.value.providerPreference ?: TerrainAiGateway.preferredProvider(appContext)
+        if (provider == null) {
+            _state.value = _state.value.copy(classificationError = "Configure OpenAI or Gemini under AI settings first.")
+            return
+        }
+        _state.value = _state.value.copy(
+            isClassifyingTargets = true,
+            classifiedTargets = emptyList(),
+            classificationError = null,
+            cloudStage = "Clustering disturbance candidates…",
+        )
+        viewModelScope.launch {
+            try {
+                val regions = withContext(Dispatchers.Default) {
+                    AnomalyClusterer.findAnomalyRegions(grid, hillshadeBitmap)
+                }
+                if (regions.isEmpty()) {
+                    _state.value = _state.value.copy(
+                        isClassifyingTargets = false,
+                        cloudStage = "No disturbance clusters cleared the screening threshold",
+                    )
+                    return@launch
+                }
+                val context = TerrainSessionContext(
+                    gridWidth = grid.width,
+                    gridHeight = grid.height,
+                    cellSizeMeters = grid.cellSizeMeters,
+                    visualizationMode = 5,
+                    sunAzimuth = 315f,
+                    sunAltitude = 35f,
+                    vegetationFilter = 1f,
+                    contrast = 1f,
+                    zScale = 1f,
+                    terrainSummary = terrainSummary,
+                    hasCoordinates = false,
+                    signalCount = 0,
+                    signalSummary = "",
+                )
+                val classifications = AiTargetClassifier.classify(
+                    gateway = gateway,
+                    regions = regions,
+                    context = context,
+                    requestedProvider = provider,
+                    onStage = { stage -> _state.value = _state.value.copy(cloudStage = stage) },
+                )
+                _state.value = _state.value.copy(
+                    isClassifyingTargets = false,
+                    classifiedTargets = classifications,
+                    cloudStage = "Classified ${classifications.size} disturbance candidates",
+                ).withProviderStatus()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _state.value = _state.value.copy(
+                    isClassifyingTargets = false,
+                    classificationError = error.localizedMessage ?: "Target classification failed",
+                    cloudStage = "Target classification stopped",
+                ).withProviderStatus()
+            }
+        }
     }
 
     fun selectCloudProvider(provider: TerrainAiProvider?) {

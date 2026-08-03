@@ -200,6 +200,15 @@ fun AiAnalysisWorkspace(
             )
         }
     }
+    val classifiedTargetOverlays = remember(aiState.classifiedTargets, grid) {
+        aiState.classifiedTargets.mapIndexed { index, target ->
+            LidarOverlayTarget(
+                xPercent = if (grid.width <= 1) 50f else target.region.centerCol * 100f / (grid.width - 1),
+                yPercent = if (grid.height <= 1) 50f else target.region.centerRow * 100f / (grid.height - 1),
+                label = "AI class ${index + 1}. ${target.label} · ${(target.confidence * 100f).toInt()}%",
+            )
+        }
+    }
 
     LaunchedEffect(currentCloudTargets, terrainKey, metadata) {
         currentCloudTargets.forEach { target ->
@@ -451,6 +460,18 @@ fun AiAnalysisWorkspace(
                             )
                         }
                     }
+                    OutlinedButton(
+                        onClick = { assistantViewModel.classifyTargets(grid, summary, sourceBitmap) },
+                        enabled = !aiState.isClassifyingTargets && grid.width > 2 && aiState.activeProvider != null,
+                        modifier = Modifier.height(CompactButtonHeight).testTag("ai_classify_targets_button"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        if (aiState.isClassifyingTargets) {
+                            CircularProgressIndicator(modifier = Modifier.height(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("Classify disturbance targets", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
                     if (analyzedDatasets.size >= 2) {
                         OutlinedButton(
                             onClick = { showDatasetComparison.value = true },
@@ -459,6 +480,28 @@ fun AiAnalysisWorkspace(
                         ) { Text("Compare datasets", style = MaterialTheme.typography.labelSmall) }
                     }
                     Text("${signals.size} saved", style = MaterialTheme.typography.labelMedium)
+                }
+
+                aiState.classificationError?.let { error ->
+                    Text(
+                        text = error,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                }
+                if (aiState.classifiedTargets.isNotEmpty()) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp).testTag("ai_classified_targets_list"),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        items(aiState.classifiedTargets) { target ->
+                            Text(
+                                text = "${target.label} · ${(target.confidence * 100f).toInt()}% — ${target.description}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
                 }
 
                 if (showTargetDetails.value && historicTargets.isNotEmpty()) {
@@ -506,7 +549,8 @@ fun AiAnalysisWorkspace(
             viewportResetKey = 0,
             showSurveyCursor = false,
             showCoordinateHud = false,
-            overlayTargets = cloudTargetOverlays + if (showHistoricTargets.value) targetOverlays else emptyList(),
+            overlayTargets = classifiedTargetOverlays + cloudTargetOverlays +
+                if (showHistoricTargets.value) targetOverlays else emptyList(),
             onViewportChanged = { bounds, zoom, _, _ ->
                 visibleBounds.value = bounds
                 zoomLevel.value = zoom
