@@ -39,9 +39,10 @@ data class SurveyBoundary(
 }
 
 /** Compact, locale-independent vertex storage, matching the breadcrumb codec conventions. */
-internal fun SurveyBoundary.verticesToStorage(): String = vertices.joinToString(";") { vertex ->
-    "${vertex.latitude},${vertex.longitude}"
-}
+internal fun boundaryVerticesToStorage(vertices: List<BoundaryVertex>): String =
+    vertices.joinToString(";") { vertex -> "${vertex.latitude},${vertex.longitude}" }
+
+internal fun SurveyBoundary.verticesToStorage(): String = boundaryVerticesToStorage(vertices)
 
 internal fun boundaryVerticesFromStorage(value: String): List<BoundaryVertex> = buildList {
     value.split(';').forEach { serializedVertex ->

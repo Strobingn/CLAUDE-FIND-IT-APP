@@ -18,8 +18,10 @@ import androidx.room.migration.Migration
         ExcavationLogEntity::class,
         SurveyBoundaryEntity::class,
         PendingSyncEntity::class,
+        HistoricMapEntity::class,
+        HistoricMapFeatureEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -33,6 +35,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun excavationLogDao(): ExcavationLogDao
     abstract fun surveyBoundaryDao(): SurveyBoundaryDao
     abstract fun pendingSyncDao(): PendingSyncDao
+    abstract fun historicMapDao(): HistoricMapDao
+    abstract fun historicMapFeatureDao(): HistoricMapFeatureDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
@@ -244,6 +248,45 @@ abstract class AppDatabase : RoomDatabase() {
                 )
             }
         }
+        private val migration14To15 = object : Migration(14, 15) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS historic_maps (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        terrainKey TEXT NOT NULL,
+                        displayName TEXT NOT NULL,
+                        imageUri TEXT NOT NULL,
+                        sourceAttribution TEXT NOT NULL,
+                        controlPointsText TEXT NOT NULL,
+                        transformText TEXT,
+                        rmseMeters REAL,
+                        maxResidualMeters REAL,
+                        confidence TEXT NOT NULL,
+                        createdAtMillis INTEGER NOT NULL,
+                        updatedAtMillis INTEGER NOT NULL
+                    )
+                """)
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_historic_maps_terrainKey " +
+                        "ON historic_maps (terrainKey)",
+                )
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS historic_map_features (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        mapId TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        pointsText TEXT NOT NULL,
+                        confidence REAL NOT NULL,
+                        note TEXT NOT NULL,
+                        createdAtMillis INTEGER NOT NULL
+                    )
+                """)
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_historic_map_features_mapId " +
+                        "ON historic_map_features (mapId)",
+                )
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -265,6 +308,7 @@ abstract class AppDatabase : RoomDatabase() {
                     migration11To12,
                     migration12To13,
                     migration13To14,
+                    migration14To15,
                 )
                 .build()
                 .also { instance = it }
