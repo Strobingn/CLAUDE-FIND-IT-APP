@@ -462,7 +462,7 @@ fun NysLazTilePicker(
         // Already on disk from an earlier background download - skip straight to decoding.
         val existing = reusableFile(tile.downloadUrl, tile.name)
         if (existing != null) {
-            openDownloadedFile(existing, tile.name)
+            openDownloadedFile(existing, existing.name)
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&

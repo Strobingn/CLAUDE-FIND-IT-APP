@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -100,6 +101,9 @@ fun CustomFileLoader(
     var rasterResolution by remember { mutableStateOf(512) }
     var smoothingRadius by remember { mutableStateOf(0) }
     var savedDatasets by remember { mutableStateOf(datasetStore.list()) }
+    var renameDataset by remember { mutableStateOf<LazDataset?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var renameError by remember { mutableStateOf<String?>(null) }
     var cacheSizeBytes by remember { mutableStateOf(terrainCache.diskSizeBytes()) }
     var workJob by remember { mutableStateOf<Job?>(null) }
 
@@ -521,6 +525,47 @@ fun CustomFileLoader(
                     isError = false
                 }
             },
+            onRename = { dataset ->
+                renameDataset = dataset
+                renameText = dataset.file.nameWithoutExtension
+                renameError = null
+            },
+        )
+    }
+
+    renameDataset?.let { dataset ->
+        AlertDialog(
+            onDismissRequest = { renameDataset = null },
+            title = { Text("Rename saved LAZ file") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = { renameText = it; renameError = null },
+                        singleLine = true,
+                        label = { Text("File name") },
+                        supportingText = { Text(".laz is added automatically if omitted") },
+                        modifier = Modifier.fillMaxWidth().testTag("rename_saved_dataset_field"),
+                    )
+                    renameError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        runCatching { datasetStore.rename(dataset, renameText) }
+                            .onSuccess { renamed ->
+                                savedDatasets = datasetStore.list()
+                                renameDataset = null
+                                message = "Renamed to ${renamed.displayName}. It will be reused for future downloads."
+                                isError = false
+                            }
+                            .onFailure { renameError = it.localizedMessage ?: "Could not rename the dataset" }
+                    },
+                    modifier = Modifier.testTag("confirm_rename_saved_dataset"),
+                ) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { renameDataset = null }) { Text("Cancel") } },
         )
     }
 }
@@ -531,6 +576,7 @@ private fun SavedDatasetLibrary(
     enabled: Boolean,
     onOpen: (LazDataset) -> Unit,
     onDelete: (LazDataset) -> Unit,
+    onRename: (LazDataset) -> Unit,
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
@@ -567,6 +613,11 @@ private fun SavedDatasetLibrary(
                                 )
                             }
                         }
+                        TextButton(
+                            onClick = { onRename(dataset) },
+                            enabled = enabled,
+                            modifier = Modifier.testTag("rename_saved_dataset"),
+                        ) { Text("Rename") }
                         TextButton(
                             onClick = { onDelete(dataset) },
                             enabled = enabled,
