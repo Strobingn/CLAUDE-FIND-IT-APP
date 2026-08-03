@@ -587,14 +587,21 @@ Field use:
 
 ### Sprint 1 — Complete existing workflows
 
-1. Audit every partial feature and create one acceptance test per workflow.
-2. Finish NYS/USGS area selection across import paths.
-3. Finish GPX/KML rendering and persistence.
-4. Enable manual refinement at every zoom level.
-5. Finish AI marker creation and per-project persistence.
-6. Finish exact-cell inspection.
-7. Finish synchronized comparison.
-8. Finish image and report export.
+Sprint 1 acceptance pass completed 2026-08-03. The production UI, persistence paths,
+unit coverage, release build, and connected-phone reachability were verified for each
+workflow below:
+
+1. Audit every partial feature and create one acceptance test per workflow. **Complete.**
+2. Finish NYS/USGS area selection across import paths. **Complete.**
+3. Finish GPX/KML rendering and persistence. **Complete.**
+4. Enable manual refinement at every zoom level. **Complete.**
+5. Finish AI marker creation and per-project persistence. **Complete.**
+6. Finish exact-cell inspection. **Complete.**
+7. Finish synchronized comparison. **Complete.**
+8. Finish image and report export. **Complete.**
+
+Release-checklist validation remains tracked separately: interrupted-network recovery,
+large multi-tile reopening on a release APK, and external-GIS export-file validation.
 
 ### Sprint 2 — Build tile-to-area pipeline
 
