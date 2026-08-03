@@ -159,10 +159,29 @@ fun CustomFileLoader(
 
         workJob = scope.launch {
             try {
+                val sourceUri = Uri.fromFile(file).toString()
+                var previewShown = false
                 val outcome = decodeCoordinator.decode(
                     file = file,
                     displayName = displayName,
                     options = options,
+                    onPreview = { preview ->
+                        withContext(Dispatchers.Main.immediate) {
+                            TerrainPerformanceSession.publish(preview.gpuScene)
+                            onCustomTerrainLoaded(
+                                preview.terrain,
+                                TerrainImportSource(
+                                    uri = sourceUri,
+                                    displayName = displayName,
+                                    options = options.progressivePreviewOptions(),
+                                ),
+                            )
+                            previewShown = true
+                            progress = 0.55f
+                            progressText =
+                                "Preview ready · upgrading to ${options.sanitized().rasterResolution} px…"
+                        }
+                    },
                     onStage = { stage ->
                         withContext(Dispatchers.Main.immediate) { progressText = stage }
                     },
@@ -170,7 +189,7 @@ fun CustomFileLoader(
                 TerrainPerformanceSession.publish(outcome.gpuScene)
                 cacheSizeBytes = terrainCache.diskSizeBytes()
                 val source = TerrainImportSource(
-                    uri = Uri.fromFile(file).toString(),
+                    uri = sourceUri,
                     displayName = displayName,
                     options = options,
                 )
@@ -179,14 +198,15 @@ fun CustomFileLoader(
                     LazTerrainCache.Hit.DISK -> "disk cache"
                     LazTerrainCache.Hit.MISS -> "streamed point-cloud decode"
                 }
+                val progressiveNote = if (previewShown) " Progressive preview upgraded in place." else ""
                 showResult(
                     result = outcome.terrain,
                     name = displayName,
                     source = source,
                     successMessage = if (downloadedNow) {
-                        "Saved $displayName, built LOD/GPU batches, and opened it using $cacheLabel."
+                        "Saved $displayName, built LOD/GPU batches, and opened it using $cacheLabel.$progressiveNote"
                     } else {
-                        "Opened $displayName using $cacheLabel; GPU 3D and zoom LOD are ready."
+                        "Opened $displayName using $cacheLabel; GPU 3D and zoom LOD are ready.$progressiveNote"
                     },
                 )
             } catch (_: CancellationException) {

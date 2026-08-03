@@ -28,6 +28,9 @@ import com.example.data.TerrainGpuSceneBuilder
 import com.example.data.TerrainImportSource
 import com.example.data.TerrainPerformanceSession
 import com.example.data.TargetSignal
+import com.example.data.gridForHillshadePreview
+import com.example.data.hillshadeDebounceMs
+import com.example.data.previewMaxSideForZoom
 import com.example.data.export.ProjectExportFiles
 import com.example.data.export.ProjectExportRenderer
 import com.example.data.export.ProjectExportSnapshot
@@ -167,6 +170,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private var renderJob: Job? = null
     private var siteGenerationJob: Job? = null
     private var renderGeneration = 0L
+    /** Identity of the last hillshade params that produced [_hillshadeBitmap]. */
+    private var lastHillshadeCacheKey: HillshadeCacheKey? = null
+    private var lastPreviewMaxSide: Int = Int.MAX_VALUE
 
     // Viewport persistence
     private val _viewportZoom = MutableStateFlow(1f)
@@ -523,25 +529,66 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         saveSettings()
         renderJob?.cancel()
         renderJob = viewModelScope.launch {
-            if (!immediate) delay(80)
+            val mode = _visualizationMode.value
+            val debounceMs = hillshadeDebounceMs(mode, immediate)
+            if (debounceMs > 0L) delay(debounceMs)
+
+            val grid = _elevationGrid.value
+            val zoom = _viewportZoom.value
+            val previewMaxSide = previewMaxSideForZoom(zoom, maxOf(grid.width, grid.height))
+            val cacheKey = HillshadeCacheKey(
+                gridIdentity = System.identityHashCode(grid),
+                width = grid.width,
+                height = grid.height,
+                sunAzimuth = _sunAzimuth.value,
+                sunAltitude = _sunAltitude.value,
+                vegetationFilter = _vegetationFilter.value,
+                palette = _paletteType.value,
+                contrast = _contrast.value,
+                visualizationMode = mode,
+                overlayType = _overlayType.value,
+                overlayOpacity = _overlayOpacity.value,
+                zScale = _zScale.value,
+                featureScaleMeters = _featureScaleMeters.value,
+                analysisSensitivity = _analysisSensitivity.value,
+                contourIntervalMeters = _contourIntervalMeters.value,
+                previewMaxSide = previewMaxSide,
+            )
+            // Skip work when sliders settle on the same values and the bitmap is still valid.
+            // Keep the previous bitmap on screen (do not clear it) so upgrades/refines feel instant.
+            if (cacheKey == lastHillshadeCacheKey && _hillshadeBitmap.value != null) {
+                if (generation == renderGeneration) _isRendering.value = false
+                return@launch
+            }
+
             _isRendering.value = true
             try {
                 renderMutex.withLock {
-                    val grid = _elevationGrid.value
+                    val liveGrid = _elevationGrid.value
+                    val liveKey = cacheKey.copy(
+                        gridIdentity = System.identityHashCode(liveGrid),
+                        width = liveGrid.width,
+                        height = liveGrid.height,
+                        previewMaxSide = previewMaxSideForZoom(
+                            _viewportZoom.value,
+                            maxOf(liveGrid.width, liveGrid.height),
+                        ),
+                    )
                     val bitmap = withContext(Dispatchers.Default) {
-                        grid.renderHillshade(
-                            sunAzimuth = _sunAzimuth.value,
-                            sunAltitude = _sunAltitude.value,
-                            vegetationFilter = _vegetationFilter.value,
-                            palette = _paletteType.value,
-                            contrast = _contrast.value,
-                            visualizationMode = _visualizationMode.value,
-                            overlayType = _overlayType.value,
-                            overlayOpacity = _overlayOpacity.value,
-                            zScale = _zScale.value,
-                            featureScaleMeters = _featureScaleMeters.value,
-                            analysisSensitivity = _analysisSensitivity.value,
-                            contourIntervalMeters = _contourIntervalMeters.value,
+                        val renderGrid = gridForHillshadePreview(liveGrid, liveKey.previewMaxSide)
+                        renderGrid.renderHillshade(
+                            sunAzimuth = liveKey.sunAzimuth,
+                            sunAltitude = liveKey.sunAltitude,
+                            vegetationFilter = liveKey.vegetationFilter,
+                            palette = liveKey.palette,
+                            contrast = liveKey.contrast,
+                            visualizationMode = liveKey.visualizationMode,
+                            overlayType = liveKey.overlayType,
+                            overlayOpacity = liveKey.overlayOpacity,
+                            zScale = liveKey.zScale,
+                            featureScaleMeters = liveKey.featureScaleMeters,
+                            analysisSensitivity = liveKey.analysisSensitivity,
+                            contourIntervalMeters = liveKey.contourIntervalMeters,
                             // The render loop never suspends, so cancelling this coroutine cannot
                             // stop it. Dragging a slider would otherwise run every superseded
                             // frame to completion while holding renderMutex, making the frame the
@@ -549,7 +596,12 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                             shouldContinue = { generation == renderGeneration },
                         )
                     }
-                    if (generation == renderGeneration) _hillshadeBitmap.value = bitmap
+                    if (generation == renderGeneration) {
+                        // Swap only when the new frame is ready — prior hillshade stays visible.
+                        _hillshadeBitmap.value = bitmap
+                        lastHillshadeCacheKey = liveKey
+                        lastPreviewMaxSide = liveKey.previewMaxSide
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -599,12 +651,32 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             source?.let { "lidar:${it.uri}" }
                 ?: "custom:${com.example.analysis.TerrainIntelligenceEngine.terrainSignature(result.grid)}",
         )
-        overviewTerrain = result.takeIf { source != null }
+        // Progressive 256→512 (and refine upgrades) keep overviewTerrain as the best full-footprint
+        // raster so Show Whole does not regress to a coarser preview after an upgrade lands.
+        val previousOverview = overviewTerrain
+        overviewTerrain = when {
+            source == null -> null
+            previousOverview == null -> result
+            maxOf(result.grid.width, result.grid.height) >=
+                maxOf(previousOverview.grid.width, previousOverview.grid.height) -> result
+            else -> previousOverview
+        }
         currentSourceBounds = NormalizedRasterBounds.Full
         _canRefineTerrain.value = source != null
         _isDetailedTerrain.value = false
         _terrainDetailMessage.value = null
-        applyCustomTerrain(result, resetViewport = true)
+        source?.uri?.let { uriString ->
+            val uri = Uri.parse(uriString)
+            if (uri.scheme.equals("file", ignoreCase = true)) {
+                uri.path?.let { path -> LazSpatialIndex.ensureBuiltAsync(File(path)) }
+            }
+        }
+        // Progressive upgrades keep the prior hillshade until scheduleRender swaps the new frame.
+        val isUpgrade = previousOverview != null &&
+            source != null &&
+            maxOf(result.grid.width, result.grid.height) >
+            maxOf(previousOverview.grid.width, previousOverview.grid.height)
+        applyCustomTerrain(result, resetViewport = !isUpgrade)
     }
 
     private fun applyCustomTerrain(result: DemGenerator.TerrainLoadResult, resetViewport: Boolean = false) {
@@ -613,6 +685,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         customGrid = result.grid
         _elevationGrid.value = result.grid
         _currentSiteIndex.value = 3
+        // Invalidate hillshade memo so the new grid always repaints; the previous bitmap stays
+        // visible until the new frame is ready (no blanking).
+        lastHillshadeCacheKey = null
         _activeGeoMetadata.value = result.geoMetadata ?: GeoSpatialLibrary.localGrid(
             name = "Custom imported layer",
             columns = grid.width,
@@ -865,13 +940,19 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         updateCoordinates()
     }
 
-    // Update viewport zoom and pan. Persists (debounced) but intentionally does not trigger a
-    // hillshade re-render - re-rendering on every pinch/pan tick is what caused zoom jank before.
+    // Update viewport zoom and pan. Persists (debounced). Hillshade only re-runs when the
+    // zoom-aware preview LOD side changes — pan never invalidates the bitmap.
     fun updateViewport(zoom: Float, panX: Float, panY: Float) {
+        val grid = _elevationGrid.value
+        val previousSide = previewMaxSideForZoom(_viewportZoom.value, maxOf(grid.width, grid.height))
+        val nextSide = previewMaxSideForZoom(zoom, maxOf(grid.width, grid.height))
         _viewportZoom.value = zoom
         _viewportPanX.value = panX
         _viewportPanY.value = panY
         saveSettings()
+        if (nextSide != previousSide) {
+            scheduleRender(immediate = false)
+        }
     }
 
     private fun updateCoordinates() {
@@ -1292,7 +1373,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             LazDatasetStore(File(storageRoot, "lidar")).list().firstOrNull()
         } ?: return
         val diskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
-        val optionCandidates = listOf(512, 1_024, 320).map { resolution ->
+        val optionCandidates = listOf(512, 256, 1_024, 320).map { resolution ->
             LidarImportOptions(
                 groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
                 rasterResolution = resolution,
@@ -1367,3 +1448,23 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         super.onCleared()
     }
 }
+
+/** Memo key for skipping redundant hillshade work when sliders settle on the same values. */
+private data class HillshadeCacheKey(
+    val gridIdentity: Int,
+    val width: Int,
+    val height: Int,
+    val sunAzimuth: Float,
+    val sunAltitude: Float,
+    val vegetationFilter: Float,
+    val palette: Int,
+    val contrast: Float,
+    val visualizationMode: Int,
+    val overlayType: Int,
+    val overlayOpacity: Float,
+    val zScale: Float,
+    val featureScaleMeters: Float,
+    val analysisSensitivity: Float,
+    val contourIntervalMeters: Float,
+    val previewMaxSide: Int,
+)

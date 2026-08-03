@@ -1,7 +1,9 @@
 package com.example.data
 
+import java.util.concurrent.Executors
 import kotlin.math.ceil
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -23,6 +25,7 @@ internal class LidarRasterizer(
     maxBinnedPoints: Double = MAX_BINNED_POINTS,
 ) {
     private val options = options.sanitized()
+    private val isOverview = this.options.focusBounds == null
     private val sourceRangeX = (maxX - minX).takeIf { it.isFinite() && it > 0.0 } ?: 1.0
     private val sourceRangeY = (maxY - minY).takeIf { it.isFinite() && it > 0.0 } ?: 1.0
     private val focus = this.options.focusBounds
@@ -46,14 +49,19 @@ internal class LidarRasterizer(
     private val estimatedPointsInFocus = declaredPointCount.coerceAtLeast(1L).toDouble() *
         ((focus?.right ?: 1.0) - (focus?.left ?: 0.0)) *
         ((focus?.bottom ?: 1.0) - (focus?.top ?: 0.0))
+    private val usefulSampleBudget: Double
     private val sampleStride: Int
     private val coverageStride: Int
+    /** Hard cap on decoded returns for full-footprint overview opens of huge tiles. */
+    private val maxDecodedPoints: Long
+    private val targetElevationCells: Int
 
     var pointsDecoded: Long = 0
         private set
     var pointsBinned: Int = 0
         private set
     private var groundPointsBinned: Int = 0
+    private var elevationCellsPopulated: Int = 0
 
     init {
         if (rangeX >= rangeY) {
@@ -70,16 +78,34 @@ internal class LidarRasterizer(
         allCount = IntArray(width * height)
         coverageCount = IntArray(width * height)
 
-        // A 512 px overview does not benefit from eight million elevation samples. Target enough
-        // returns to populate each output cell several times, with a hard ceiling for large files.
-        val usefulSampleBudget = minOf(
-            maxBinnedPoints.coerceAtLeast(1.0),
-            (width.toDouble() * height.toDouble() * TARGET_SAMPLES_PER_CELL).coerceAtLeast(1.0),
+        // Full-footprint overviews only need enough samples to paint a stable DEM. Cropped refine
+        // keeps the denser budget so local analysis does not lose ground detail.
+        val samplesPerCell = if (isOverview) OVERVIEW_TARGET_SAMPLES_PER_CELL else TARGET_SAMPLES_PER_CELL
+        val binnedCeiling = if (isOverview) {
+            minOf(maxBinnedPoints, OVERVIEW_MAX_BINNED_POINTS)
+        } else {
+            maxBinnedPoints
+        }
+        usefulSampleBudget = minOf(
+            binnedCeiling.coerceAtLeast(1.0),
+            (width.toDouble() * height.toDouble() * samplesPerCell).coerceAtLeast(1.0),
         )
         sampleStride = ceil(estimatedPointsInFocus / usefulSampleBudget).toInt().coerceAtLeast(1)
         // Footprint coverage needs denser sampling than elevation statistics, but processing every
         // return caused multi-minute waits on ordinary 100–200 MiB LAZ files.
         coverageStride = sampleStride.coerceAtMost(MAX_COVERAGE_STRIDE)
+        maxDecodedPoints = if (isOverview) {
+            minOf(
+                estimatedPointsInFocus.toLong().coerceAtLeast(1L),
+                maxOf(
+                    (usefulSampleBudget * OVERVIEW_SCAN_MULTIPLIER).toLong(),
+                    width.toLong() * height * OVERVIEW_MIN_RETURNS_PER_CELL,
+                ),
+            )
+        } else {
+            Long.MAX_VALUE
+        }
+        targetElevationCells = max(1, (width * height * OVERVIEW_CELL_FILL_TARGET).roundToInt())
     }
 
     // Rolling counters replace three per-return Long modulo operations. A 200-million-point tile
@@ -127,6 +153,7 @@ internal class LidarRasterizer(
 
         if (z < allMin[index]) allMin[index] = z
         if (z > allMax[index]) allMax[index] = z
+        if (allCount[index] == 0) elevationCellsPopulated++
         allCount[index]++
         pointsBinned++
 
@@ -141,6 +168,19 @@ internal class LidarRasterizer(
             groundPointsBinned++
         }
         return true
+    }
+
+    /**
+     * Overview-only early exit. Cropped refine always reads every selected return; full-footprint
+     * opens stop once the raster has enough elevation samples or the scan budget is exhausted so
+     * multi-hundred-million-point tiles do not decompress end-to-end for a 256–512 preview.
+     */
+    fun shouldStopDecoding(): Boolean {
+        if (!isOverview) return false
+        if (pointsDecoded >= maxDecodedPoints) return true
+        if (pointsDecoded < MIN_OVERVIEW_DECODE) return false
+        return elevationCellsPopulated >= targetElevationCells &&
+            pointsBinned >= (usefulSampleBudget * 0.75).toInt()
     }
 
     private fun cellIndex(x: Double, y: Double): Int? {
@@ -206,10 +246,15 @@ internal class LidarRasterizer(
         val cellSize = max(rangeX / (width - 1), rangeY / (height - 1))
             .takeIf { it.isFinite() && it in 0.001..100_000.0 }
             ?.toFloat() ?: 1f
+        val earlyOutNote = if (isOverview && pointsDecoded < estimatedPointsInFocus.toLong()) {
+            " · overview early-out"
+        } else {
+            ""
+        }
         val samplingNote = when {
             sampleStride > 1 ->
-                "sampled every ${sampleStride}th elevation return and every ${coverageStride}th footprint return across $pointsDecoded decoded points"
-            else -> "$pointsDecoded points decoded"
+                "sampled every ${sampleStride}th elevation return and every ${coverageStride}th footprint return across $pointsDecoded decoded points$earlyOutNote"
+            else -> "$pointsDecoded points decoded$earlyOutNote"
         }
         val modeNote = when (appliedMode) {
             GroundSurfaceMode.SOURCE_CLASSIFIED ->
@@ -252,8 +297,15 @@ internal class LidarRasterizer(
         private const val MIN_CLASSIFIED_POINTS = 100
         private const val MIN_CLASSIFIED_CELLS = 12
         private const val TARGET_SAMPLES_PER_CELL = 8.0
+        private const val OVERVIEW_TARGET_SAMPLES_PER_CELL = 4.0
         private const val MAX_COVERAGE_STRIDE = 8
         private const val MAX_BINNED_POINTS = 4_000_000.0
+        private const val OVERVIEW_MAX_BINNED_POINTS = 2_000_000.0
+        /** Decoded returns per elevation sample budget for full-footprint opens. */
+        private const val OVERVIEW_SCAN_MULTIPLIER = 6.0
+        private const val OVERVIEW_MIN_RETURNS_PER_CELL = 8L
+        private const val MIN_OVERVIEW_DECODE = 50_000L
+        private const val OVERVIEW_CELL_FILL_TARGET = 0.55
     }
 }
 
@@ -333,24 +385,55 @@ internal fun buildCoverageMask(counts: IntArray, width: Int, height: Int): Boole
 
 private fun suppressIsolatedLowNoise(source: FloatArray, width: Int, height: Int): FloatArray {
     val output = source.copyOf()
-    val neighbors = FloatArray(8)
-    for (y in 1 until height - 1) {
-        for (x in 1 until width - 1) {
-            var count = 0
-            for (dy in -1..1) {
-                for (dx in -1..1) {
-                    if (dx == 0 && dy == 0) continue
-                    neighbors[count++] = source[(y + dy) * width + x + dx]
-                }
+    val interiorHeight = (height - 2).coerceAtLeast(0)
+    if (interiorHeight == 0 || width < 3) return output
+
+    val threadCount = min(POST_PROCESS_PARALLELISM, interiorHeight)
+    if (threadCount <= 1 || width * height < MIN_CELLS_FOR_PARALLEL_POST) {
+        for (y in 1 until height - 1) {
+            suppressIsolatedLowNoiseRow(source, output, width, y)
+        }
+        return output
+    }
+
+    val rowsPerThread = (interiorHeight + threadCount - 1) / threadCount
+    val pending = (1 until threadCount).map { chunk ->
+        val startY = 1 + chunk * rowsPerThread
+        val endY = min(1 + (chunk + 1) * rowsPerThread, height - 1)
+        postProcessPool.submit {
+            for (y in startY until endY) {
+                suppressIsolatedLowNoiseRow(source, output, width, y)
             }
-            neighbors.sort(0, count)
-            val median = neighbors[count / 2]
-            val index = y * width + x
-            // Remove only extreme low outliers; shallow cellars, ditches and tracks remain untouched.
-            if (source[index] < median - LOW_NOISE_THRESHOLD_METERS) output[index] = median
         }
     }
+    for (y in 1 until min(1 + rowsPerThread, height - 1)) {
+        suppressIsolatedLowNoiseRow(source, output, width, y)
+    }
+    pending.forEach { it.get() }
     return output
+}
+
+private fun suppressIsolatedLowNoiseRow(
+    source: FloatArray,
+    output: FloatArray,
+    width: Int,
+    y: Int,
+) {
+    val neighbors = FloatArray(8)
+    for (x in 1 until width - 1) {
+        var count = 0
+        for (dy in -1..1) {
+            for (dx in -1..1) {
+                if (dx == 0 && dy == 0) continue
+                neighbors[count++] = source[(y + dy) * width + x + dx]
+            }
+        }
+        neighbors.sort(0, count)
+        val median = neighbors[count / 2]
+        val index = y * width + x
+        // Remove only extreme low outliers; shallow cellars, ditches and tracks remain untouched.
+        if (source[index] < median - LOW_NOISE_THRESHOLD_METERS) output[index] = median
+    }
 }
 
 internal fun boxSmooth(source: FloatArray, width: Int, height: Int, radius: Int): FloatArray {
@@ -389,3 +472,8 @@ private fun rectangleSum(
     integral[(y1 + 1) * stride + x0] + integral[y0 * stride + x0]
 
 private const val LOW_NOISE_THRESHOLD_METERS = 3f
+private const val MIN_CELLS_FOR_PARALLEL_POST = 40_000
+private val POST_PROCESS_PARALLELISM = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+private val postProcessPool = Executors.newFixedThreadPool(POST_PROCESS_PARALLELISM) { task ->
+    Thread(task, "terrain-post").apply { isDaemon = true }
+}

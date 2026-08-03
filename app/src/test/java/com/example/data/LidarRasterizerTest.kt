@@ -20,6 +20,7 @@ class LidarRasterizerTest {
             ).sanitized().rasterResolution,
         )
         assertEquals(4, LidarImportOptions(smoothingRadius = 99).sanitized().smoothingRadius)
+        assertEquals(256, LidarImportOptions.PROGRESSIVE_PREVIEW_RESOLUTION)
     }
 
     @Test

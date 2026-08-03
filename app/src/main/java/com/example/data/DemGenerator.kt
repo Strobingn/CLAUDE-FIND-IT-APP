@@ -368,16 +368,14 @@ object DemGenerator {
                 val rawZ = readIntLE(record, 8)
                 val classification = record[classOffset].toInt() and classMask
                 val isKeyPoint = record[keyPointOffset].toInt() and keyPointMask != 0
-                if (!rasterizer.addPoint(
-                        x = rawX * scaleX + offsetX,
-                        y = rawY * scaleY + offsetY,
-                        z = (rawZ * scaleZ + offsetZ).toFloat(),
-                        classification = classification,
-                        isKeyPoint = isKeyPoint,
-                    )
-                ) {
-                    break
-                }
+                rasterizer.addPoint(
+                    x = rawX * scaleX + offsetX,
+                    y = rawY * scaleY + offsetY,
+                    z = (rawZ * scaleZ + offsetZ).toFloat(),
+                    classification = classification,
+                    isKeyPoint = isKeyPoint,
+                )
+                if (rasterizer.shouldStopDecoding()) break
             }
             rasterizer.finish(
                 pointFormat = pointFormat,

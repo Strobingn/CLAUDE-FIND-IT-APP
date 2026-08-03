@@ -82,8 +82,22 @@ data class LidarImportOptions(
         )
     }
 
+    /** True when a full-footprint open can show a cheap preview before the requested resolution. */
+    fun wantsProgressiveOverview(): Boolean {
+        val sanitized = sanitized()
+        return sanitized.focusBounds == null &&
+            sanitized.rasterResolution > PROGRESSIVE_PREVIEW_RESOLUTION
+    }
+
+    fun progressivePreviewOptions(): LidarImportOptions = sanitized().copy(
+        rasterResolution = PROGRESSIVE_PREVIEW_RESOLUTION,
+        focusBounds = null,
+    )
+
     companion object {
         internal const val MIN_RASTER_RESOLUTION = 128
+        /** First-paint overview size used before upgrading to the balanced 512 px product. */
+        internal const val PROGRESSIVE_PREVIEW_RESOLUTION = 256
         internal const val MAX_OVERVIEW_RESOLUTION = 512
         internal const val MAX_REFINED_RESOLUTION = 1_024
     }

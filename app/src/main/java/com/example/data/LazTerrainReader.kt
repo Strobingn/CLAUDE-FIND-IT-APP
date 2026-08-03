@@ -140,8 +140,10 @@ internal object LazTerrainReader {
                     pointsInBatch = 0
                     onProgress?.invoke(decoded, selectedPointCount)
                     if (!shouldContinue()) return null
+                    if (rasterizer.shouldStopDecoding()) break
                 }
             }
+            if (rasterizer.shouldStopDecoding()) break
         }
         onProgress?.invoke(decoded, selectedPointCount)
         return finish(rasterizer, header, "COPC hierarchy range decode")
@@ -291,6 +293,7 @@ internal object LazTerrainReader {
                 pointsInBatch = 0
                 onProgress?.invoke(rasterizer.pointsDecoded, progressTotal)
                 if (!shouldContinue()) return null
+                if (rasterizer.shouldStopDecoding()) break
             }
         }
         onProgress?.invoke(rasterizer.pointsDecoded, progressTotal)
@@ -328,6 +331,7 @@ internal object LazTerrainReader {
                 pointsInBatch = 0
                 onProgress?.invoke(rasterizer.pointsDecoded, progressTotal)
                 if (!shouldContinue()) return null
+                if (rasterizer.shouldStopDecoding()) break
             }
         }
         onProgress?.invoke(rasterizer.pointsDecoded, progressTotal)

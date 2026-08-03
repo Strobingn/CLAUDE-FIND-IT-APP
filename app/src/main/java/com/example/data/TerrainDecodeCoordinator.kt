@@ -26,6 +26,10 @@ data class TerrainDecodeOutcome(
  * Serializes duplicate work per source/options key while allowing unrelated datasets to decode in
  * parallel. File/cache I/O runs on Dispatchers.IO; bounded GPU preview construction runs on
  * Dispatchers.Default. Coroutine cancellation is checked between LAZ point batches.
+ *
+ * Full-footprint opens above [LidarImportOptions.PROGRESSIVE_PREVIEW_RESOLUTION] can emit a fast
+ * 256 px preview via [onPreview] before the requested overview finishes, so the map is not blank
+ * during the slower balanced decode.
  */
 class TerrainDecodeCoordinator(
     private val cache: LazTerrainCache,
@@ -36,51 +40,77 @@ class TerrainDecodeCoordinator(
         file: File,
         displayName: String = file.name,
         options: LidarImportOptions,
+        onPreview: (suspend (TerrainDecodeOutcome) -> Unit)? = null,
         onStage: suspend (String) -> Unit = {},
     ): TerrainDecodeOutcome {
-        val key = decodeKey(file, options)
-        val lock = locks.getOrPut(key) { Mutex() }
+        val sanitized = options.sanitized()
+        val progressive = onPreview != null && sanitized.wantsProgressiveOverview()
+        val fullKey = decodeKey(file, sanitized)
+        val lock = locks.getOrPut(fullKey) { Mutex() }
         try {
             return lock.withLock {
                 currentCoroutineContext().ensureActive()
-                val firstLookup = withContext(Dispatchers.IO) { cache.get(file, options) }
-                val terrain = if (firstLookup.result != null) {
+                val fullLookup = withContext(Dispatchers.IO) { cache.get(file, sanitized) }
+                if (fullLookup.result != null) {
                     onStage(
-                        when (firstLookup.hit) {
+                        when (fullLookup.hit) {
                             LazTerrainCache.Hit.MEMORY -> "Opening decoded terrain from memory cache…"
                             LazTerrainCache.Hit.DISK -> "Opening decoded terrain from disk cache…"
                             LazTerrainCache.Hit.MISS -> "Reading point cloud…"
                         },
                     )
-                    firstLookup.result
-                } else {
-                    onStage("Decoding LAZ/LAS point batches…")
-                    val decoded = decodeFile(file, displayName, options)
+                    val scene = buildGpuScene(fullLookup.result.grid)
+                    LazSpatialIndex.ensureBuiltAsync(file)
+                    return@withLock TerrainDecodeOutcome(fullLookup.result, fullLookup.hit, scene)
+                }
+
+                if (progressive) {
+                    val previewOptions = sanitized.progressivePreviewOptions()
+                    onStage("Decoding fast ${previewOptions.rasterResolution} px overview…")
+                    val previewTerrain = decodeFile(file, displayName, previewOptions)
                         ?: error("Could not decode ${file.name}")
                     currentCoroutineContext().ensureActive()
-                    // Memory caching is immediate. Persistent cache writing is queued on Dispatchers.IO
-                    // by LazTerrainCache so it no longer extends the user-visible first-open delay.
-                    cache.put(file, options, decoded)
-                    decoded
+                    cache.put(file, previewOptions, previewTerrain)
+                    val previewScene = buildGpuScene(previewTerrain.grid)
+                    val previewOutcome = TerrainDecodeOutcome(
+                        terrain = previewTerrain,
+                        cacheHit = LazTerrainCache.Hit.MISS,
+                        gpuScene = previewScene,
+                    )
+                    onPreview.invoke(previewOutcome)
+                    // Spatial index can start as soon as the preview is on screen; refine later
+                    // reuses the sidecar without blocking the upgrade decode.
+                    LazSpatialIndex.ensureBuiltAsync(file)
+
+                    onStage("Upgrading overview to ${sanitized.rasterResolution} px…")
+                    val fullTerrain = decodeFile(file, displayName, sanitized)
+                        ?: error("Could not decode ${file.name}")
+                    currentCoroutineContext().ensureActive()
+                    cache.put(file, sanitized, fullTerrain)
+                    val fullScene = buildGpuScene(fullTerrain.grid)
+                    return@withLock TerrainDecodeOutcome(
+                        terrain = fullTerrain,
+                        cacheHit = LazTerrainCache.Hit.MISS,
+                        gpuScene = fullScene,
+                    )
                 }
+
+                onStage("Decoding LAZ/LAS point batches…")
+                val decoded = decodeFile(file, displayName, sanitized)
+                    ?: error("Could not decode ${file.name}")
+                currentCoroutineContext().ensureActive()
+                // Memory caching is immediate. Persistent cache writing is queued on Dispatchers.IO
+                // by LazTerrainCache so it no longer extends the user-visible first-open delay.
+                cache.put(file, sanitized, decoded)
+                LazSpatialIndex.ensureBuiltAsync(file)
 
                 currentCoroutineContext().ensureActive()
                 onStage("Preparing lightweight GPU terrain preview…")
-                val scene = withContext(Dispatchers.Default) {
-                    currentCoroutineContext().ensureActive()
-                    // The 2D analysis grid keeps the requested resolution. GPU 3D is intentionally
-                    // bounded to a 256-cell preview so opening a dataset is not blocked by generating
-                    // four large mesh levels before the first hillshade can appear.
-                    TerrainGpuSceneBuilder.build(
-                        source = terrain.grid,
-                        maxFinestDimension = GPU_PREVIEW_MAX_DIMENSION,
-                        tileSize = GPU_PREVIEW_TILE_SIZE,
-                    )
-                }
-                TerrainDecodeOutcome(terrain, firstLookup.hit, scene)
+                val scene = buildGpuScene(decoded.grid)
+                TerrainDecodeOutcome(decoded, LazTerrainCache.Hit.MISS, scene)
             }
         } finally {
-            if (!lock.isLocked) locks.remove(key, lock)
+            if (!lock.isLocked) locks.remove(fullKey, lock)
         }
     }
 
@@ -112,16 +142,22 @@ class TerrainDecodeCoordinator(
             )
         }
         onStage("Preparing lightweight GPU terrain preview…")
-        val scene = withContext(Dispatchers.Default) {
+        val scene = buildGpuScene(terrain.grid)
+        return TerrainDecodeOutcome(terrain, LazTerrainCache.Hit.MISS, scene)
+    }
+
+    private suspend fun buildGpuScene(grid: ElevationGrid): TerrainGpuScene =
+        withContext(Dispatchers.Default) {
             currentCoroutineContext().ensureActive()
+            // The 2D analysis grid keeps the requested resolution. GPU 3D is intentionally
+            // bounded to a 256-cell preview so opening a dataset is not blocked by generating
+            // four large mesh levels before the first hillshade can appear.
             TerrainGpuSceneBuilder.build(
-                source = terrain.grid,
+                source = grid,
                 maxFinestDimension = GPU_PREVIEW_MAX_DIMENSION,
                 tileSize = GPU_PREVIEW_TILE_SIZE,
             )
         }
-        return TerrainDecodeOutcome(terrain, LazTerrainCache.Hit.MISS, scene)
-    }
 
     private suspend fun decodeFile(
         file: File,
@@ -130,7 +166,9 @@ class TerrainDecodeCoordinator(
     ): DemGenerator.TerrainLoadResult? = withContext(Dispatchers.IO) {
         val decodeContext = currentCoroutineContext()
         decodeContext.ensureActive()
-        if (displayName.substringAfterLast('.', "").equals("laz", ignoreCase = true)) {
+        if (displayName.substringAfterLast('.', "").equals("laz", ignoreCase = true) ||
+            file.extension.equals("laz", ignoreCase = true)
+        ) {
             // Use LASReader(File), not the generic InputStream path. This avoids another buffering
             // layer and lets laszip4j apply insideRectangle() for cropped refinement requests.
             val laz = LazTerrainReader.read(
