@@ -24,7 +24,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ImageSearch
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -838,7 +838,7 @@ fun GeminiAssistantScreen(
                     enabled = draft.isNotBlank() && !state.isSending && state.activeProvider != null,
                     modifier = Modifier.height(56.dp),
                 ) {
-                    Icon(Icons.Default.Send, contentDescription = null)
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
                     Text("Send")
                 }

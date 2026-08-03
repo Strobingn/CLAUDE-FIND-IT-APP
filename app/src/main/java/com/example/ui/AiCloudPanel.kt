@@ -19,7 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ImageSearch
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -348,7 +348,7 @@ fun AiCloudPanel(
                     modifier = Modifier.height(CompactButtonHeight),
                     contentPadding = CompactButtonPadding,
                 ) {
-                    Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.height(16.dp))
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.height(16.dp))
                     Spacer(Modifier.width(5.dp))
                     Text("Send", style = MaterialTheme.typography.labelSmall)
                 }
