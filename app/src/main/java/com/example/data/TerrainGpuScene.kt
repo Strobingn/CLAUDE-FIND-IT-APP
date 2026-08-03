@@ -56,13 +56,14 @@ data class TerrainGpuScene(
  * Converts a decoded DEM into spatially culled, bounded GPU batches.
  *
  * Each tile stays far below the 65,535-vertex unsigned-short index limit. Empty/no-data tiles are
- * omitted entirely. The finest GPU level is capped at 512 cells on its longest side while the CPU
- * analysis grid can remain at 1024².
+ * omitted entirely. The finest GPU level follows the caller's cap: decode previews pass 1,024
+ * cells on the longest side so the 3D terrain matches the detailed 2D raster, while the LOD
+ * pyramid still provides cheap coarse levels for zoomed-out rendering.
  */
 object TerrainGpuSceneBuilder {
     fun build(
         source: ElevationGrid,
-        maxFinestDimension: Int = 512,
+        maxFinestDimension: Int = 1_024,
         tileSize: Int = 64,
     ): TerrainGpuScene {
         val pyramid = TerrainLodPyramid.build(

@@ -1,7 +1,6 @@
 package com.example.data
 
 import kotlin.math.max
-import kotlin.math.min
 
 /** Debounce before hillshade work. Heavy analysis modes recompute local stats/curvature. */
 internal fun hillshadeDebounceMs(visualizationMode: Int, immediate: Boolean): Long = when {
@@ -10,16 +9,14 @@ internal fun hillshadeDebounceMs(visualizationMode: Int, immediate: Boolean): Lo
     else -> 80L
 }
 
-/** Zoom-aware max hillshade side so zoomed-out views do not shade every refined cell. */
+/**
+ * Display hillshade always uses the full analysis grid. Earlier zoom-LOD caps (320/512) made
+ * first paint look soft even when the DEM was already 1,024+.
+ */
 internal fun previewMaxSideForZoom(zoom: Float, sourceMaxSide: Int): Int {
-    val source = sourceMaxSide.coerceAtLeast(1)
-    if (source <= 320) return source
-    val safeZoom = zoom.coerceAtLeast(1f)
-    return when {
-        safeZoom < 1.5f -> min(source, 320)
-        safeZoom < 2.5f -> min(source, 512)
-        else -> source
-    }
+    @Suppress("UNUSED_PARAMETER")
+    val ignoredZoom = zoom
+    return sourceMaxSide.coerceAtLeast(1)
 }
 
 /** Downsamples [source] for display-only hillshade when the preview side is smaller. */

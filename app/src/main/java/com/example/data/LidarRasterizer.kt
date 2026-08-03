@@ -78,22 +78,17 @@ internal class LidarRasterizer(
         allCount = IntArray(width * height)
         coverageCount = IntArray(width * height)
 
-        // Full-footprint overviews only need enough samples to paint a stable DEM. Cropped refine
-        // keeps the denser budget so local analysis does not lose ground detail.
-        val samplesPerCell = if (isOverview) OVERVIEW_TARGET_SAMPLES_PER_CELL else TARGET_SAMPLES_PER_CELL
-        val binnedCeiling = if (isOverview) {
-            minOf(maxBinnedPoints, OVERVIEW_MAX_BINNED_POINTS)
-        } else {
-            maxBinnedPoints
-        }
+        // First-paint overview is a detailed product (1,024+). Use the same per-cell sample budget
+        // as cropped refine so full-footprint opens are not soft/sparse compared with zoom-in.
         usefulSampleBudget = minOf(
-            binnedCeiling.coerceAtLeast(1.0),
-            (width.toDouble() * height.toDouble() * samplesPerCell).coerceAtLeast(1.0),
+            maxBinnedPoints.coerceAtLeast(1.0),
+            (width.toDouble() * height.toDouble() * TARGET_SAMPLES_PER_CELL).coerceAtLeast(1.0),
         )
         sampleStride = ceil(estimatedPointsInFocus / usefulSampleBudget).toInt().coerceAtLeast(1)
         // Footprint coverage needs denser sampling than elevation statistics, but processing every
         // return caused multi-minute waits on ordinary 100–200 MiB LAZ files.
         coverageStride = sampleStride.coerceAtMost(MAX_COVERAGE_STRIDE)
+        // Only bail early on absurd multi-hundred-million-point tiles after a dense scan budget.
         maxDecodedPoints = if (isOverview) {
             minOf(
                 estimatedPointsInFocus.toLong().coerceAtLeast(1L),
@@ -171,16 +166,12 @@ internal class LidarRasterizer(
     }
 
     /**
-     * Overview-only early exit. Cropped refine always reads every selected return; full-footprint
-     * opens stop once the raster has enough elevation samples or the scan budget is exhausted so
-     * multi-hundred-million-point tiles do not decompress end-to-end for a 256–512 preview.
+     * Safety valve for enormous full-footprint files only. Does not stop at a coarse “preview”
+     * density — the scan budget already targets full overview quality (see [usefulSampleBudget]).
      */
     fun shouldStopDecoding(): Boolean {
         if (!isOverview) return false
-        if (pointsDecoded >= maxDecodedPoints) return true
-        if (pointsDecoded < MIN_OVERVIEW_DECODE) return false
-        return elevationCellsPopulated >= targetElevationCells &&
-            pointsBinned >= (usefulSampleBudget * 0.75).toInt()
+        return pointsDecoded >= maxDecodedPoints && pointsDecoded >= MIN_OVERVIEW_DECODE
     }
 
     private fun cellIndex(x: Double, y: Double): Int? {
@@ -297,15 +288,13 @@ internal class LidarRasterizer(
         private const val MIN_CLASSIFIED_POINTS = 100
         private const val MIN_CLASSIFIED_CELLS = 12
         private const val TARGET_SAMPLES_PER_CELL = 8.0
-        private const val OVERVIEW_TARGET_SAMPLES_PER_CELL = 4.0
         private const val MAX_COVERAGE_STRIDE = 8
-        private const val MAX_BINNED_POINTS = 4_000_000.0
-        private const val OVERVIEW_MAX_BINNED_POINTS = 2_000_000.0
+        private const val MAX_BINNED_POINTS = 8_000_000.0
         /** Decoded returns per elevation sample budget for full-footprint opens. */
-        private const val OVERVIEW_SCAN_MULTIPLIER = 6.0
-        private const val OVERVIEW_MIN_RETURNS_PER_CELL = 8L
-        private const val MIN_OVERVIEW_DECODE = 50_000L
-        private const val OVERVIEW_CELL_FILL_TARGET = 0.55
+        private const val OVERVIEW_SCAN_MULTIPLIER = 12.0
+        private const val OVERVIEW_MIN_RETURNS_PER_CELL = 16L
+        private const val MIN_OVERVIEW_DECODE = 200_000L
+        private const val OVERVIEW_CELL_FILL_TARGET = 0.85
     }
 }
 

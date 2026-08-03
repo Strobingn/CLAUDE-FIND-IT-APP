@@ -27,9 +27,8 @@ data class TerrainDecodeOutcome(
  * parallel. File/cache I/O runs on Dispatchers.IO; bounded GPU preview construction runs on
  * Dispatchers.Default. Coroutine cancellation is checked between LAZ point batches.
  *
- * Full-footprint opens above [LidarImportOptions.PROGRESSIVE_PREVIEW_RESOLUTION] can emit a fast
- * 256 px preview via [onPreview] before the requested overview finishes, so the map is not blank
- * during the slower balanced decode.
+ * Full-footprint opens decode at the requested overview resolution on the first pass (default
+ * 1,024 px). There is no progressive 256 px stub — first paint is the detailed product.
  */
 class TerrainDecodeCoordinator(
     private val cache: LazTerrainCache,
@@ -43,8 +42,11 @@ class TerrainDecodeCoordinator(
         onPreview: (suspend (TerrainDecodeOutcome) -> Unit)? = null,
         onStage: suspend (String) -> Unit = {},
     ): TerrainDecodeOutcome {
+        // onPreview is retained for call-site compatibility but is intentionally unused: first
+        // paint is always the full requested resolution, not a coarse progressive stub.
+        @Suppress("UNUSED_PARAMETER")
+        val unusedPreview = onPreview
         val sanitized = options.sanitized()
-        val progressive = onPreview != null && sanitized.wantsProgressiveOverview()
         val fullKey = decodeKey(file, sanitized)
         val lock = locks.getOrPut(fullKey) { Mutex() }
         try {
@@ -64,38 +66,7 @@ class TerrainDecodeCoordinator(
                     return@withLock TerrainDecodeOutcome(fullLookup.result, fullLookup.hit, scene)
                 }
 
-                if (progressive) {
-                    val previewOptions = sanitized.progressivePreviewOptions()
-                    onStage("Decoding fast ${previewOptions.rasterResolution} px overview…")
-                    val previewTerrain = decodeFile(file, displayName, previewOptions)
-                        ?: error("Could not decode ${file.name}")
-                    currentCoroutineContext().ensureActive()
-                    cache.put(file, previewOptions, previewTerrain)
-                    val previewScene = buildGpuScene(previewTerrain.grid)
-                    val previewOutcome = TerrainDecodeOutcome(
-                        terrain = previewTerrain,
-                        cacheHit = LazTerrainCache.Hit.MISS,
-                        gpuScene = previewScene,
-                    )
-                    onPreview.invoke(previewOutcome)
-                    // Spatial index can start as soon as the preview is on screen; refine later
-                    // reuses the sidecar without blocking the upgrade decode.
-                    LazSpatialIndex.ensureBuiltAsync(file)
-
-                    onStage("Upgrading overview to ${sanitized.rasterResolution} px…")
-                    val fullTerrain = decodeFile(file, displayName, sanitized)
-                        ?: error("Could not decode ${file.name}")
-                    currentCoroutineContext().ensureActive()
-                    cache.put(file, sanitized, fullTerrain)
-                    val fullScene = buildGpuScene(fullTerrain.grid)
-                    return@withLock TerrainDecodeOutcome(
-                        terrain = fullTerrain,
-                        cacheHit = LazTerrainCache.Hit.MISS,
-                        gpuScene = fullScene,
-                    )
-                }
-
-                onStage("Decoding LAZ/LAS point batches…")
+                onStage("Decoding LAZ/LAS at ${sanitized.rasterResolution} px…")
                 val decoded = decodeFile(file, displayName, sanitized)
                     ?: error("Could not decode ${file.name}")
                 currentCoroutineContext().ensureActive()
@@ -105,7 +76,7 @@ class TerrainDecodeCoordinator(
                 LazSpatialIndex.ensureBuiltAsync(file)
 
                 currentCoroutineContext().ensureActive()
-                onStage("Preparing lightweight GPU terrain preview…")
+                onStage("Preparing detailed GPU terrain…")
                 val scene = buildGpuScene(decoded.grid)
                 TerrainDecodeOutcome(decoded, LazTerrainCache.Hit.MISS, scene)
             }
@@ -141,7 +112,7 @@ class TerrainDecodeCoordinator(
                 isBareEarth = laz.appliedGroundMode != GroundSurfaceMode.SURFACE_MODEL,
             )
         }
-        onStage("Preparing lightweight GPU terrain preview…")
+        onStage("Preparing detailed GPU terrain…")
         val scene = buildGpuScene(terrain.grid)
         return TerrainDecodeOutcome(terrain, LazTerrainCache.Hit.MISS, scene)
     }
@@ -149,9 +120,9 @@ class TerrainDecodeCoordinator(
     private suspend fun buildGpuScene(grid: ElevationGrid): TerrainGpuScene =
         withContext(Dispatchers.Default) {
             currentCoroutineContext().ensureActive()
-            // The 2D analysis grid keeps the requested resolution. GPU 3D is intentionally
-            // bounded to a 256-cell preview so opening a dataset is not blocked by generating
-            // four large mesh levels before the first hillshade can appear.
+            // The 2D analysis grid keeps the requested resolution, and the GPU 3D scene now
+            // keeps a matching detailed finest level (1,024 cells) so zoomed-in terrain never
+            // turns blocky. Coarser LOD levels still handle zoomed-out rendering cheaply.
             TerrainGpuSceneBuilder.build(
                 source = grid,
                 maxFinestDimension = GPU_PREVIEW_MAX_DIMENSION,
@@ -202,7 +173,7 @@ class TerrainDecodeCoordinator(
     }
 
     companion object {
-        internal const val GPU_PREVIEW_MAX_DIMENSION = 256
+        internal const val GPU_PREVIEW_MAX_DIMENSION = 1_024
         internal const val GPU_PREVIEW_TILE_SIZE = 128
     }
 }

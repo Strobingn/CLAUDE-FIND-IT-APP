@@ -651,16 +651,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             source?.let { "lidar:${it.uri}" }
                 ?: "custom:${com.example.analysis.TerrainIntelligenceEngine.terrainSignature(result.grid)}",
         )
-        // Progressive 256→512 (and refine upgrades) keep overviewTerrain as the best full-footprint
-        // raster so Show Whole does not regress to a coarser preview after an upgrade lands.
-        val previousOverview = overviewTerrain
-        overviewTerrain = when {
-            source == null -> null
-            previousOverview == null -> result
-            maxOf(result.grid.width, result.grid.height) >=
-                maxOf(previousOverview.grid.width, previousOverview.grid.height) -> result
-            else -> previousOverview
-        }
+        overviewTerrain = result.takeIf { source != null }
         currentSourceBounds = NormalizedRasterBounds.Full
         _canRefineTerrain.value = source != null
         _isDetailedTerrain.value = false
@@ -671,12 +662,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 uri.path?.let { path -> LazSpatialIndex.ensureBuiltAsync(File(path)) }
             }
         }
-        // Progressive upgrades keep the prior hillshade until scheduleRender swaps the new frame.
-        val isUpgrade = previousOverview != null &&
-            source != null &&
-            maxOf(result.grid.width, result.grid.height) >
-            maxOf(previousOverview.grid.width, previousOverview.grid.height)
-        applyCustomTerrain(result, resetViewport = !isUpgrade)
+        applyCustomTerrain(result, resetViewport = true)
     }
 
     private fun applyCustomTerrain(result: DemGenerator.TerrainLoadResult, resetViewport: Boolean = false) {
@@ -1373,7 +1359,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             LazDatasetStore(File(storageRoot, "lidar")).list().firstOrNull()
         } ?: return
         val diskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
-        val optionCandidates = listOf(512, 256, 1_024, 320).map { resolution ->
+        val optionCandidates = listOf(1_024, 1_536).map { resolution ->
             LidarImportOptions(
                 groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
                 rasterResolution = resolution,
