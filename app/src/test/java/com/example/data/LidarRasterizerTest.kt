@@ -212,4 +212,135 @@ class LidarRasterizerTest {
         assertTrue(result.grid.width > 0)
         assertTrue(result.grid.height > 0)
     }
+
+    @Test
+    fun automaticFallbackRejectsIsolatedBelowGroundSpikes() {
+        val rasterizer = LidarRasterizer(
+            minX = 0.0,
+            maxX = 10.0,
+            minY = 0.0,
+            maxY = 10.0,
+            options = LidarImportOptions(
+                groundMode = GroundSurfaceMode.AUTO_LOWEST,
+                rasterResolution = 64,
+            ),
+            declaredPointCount = 16,
+        )
+        // One cell: seven returns clustered near 10 m plus a lone 4.5 m strike (bird/wire noise).
+        val zs = floatArrayOf(10.0f, 10.2f, 9.9f, 10.1f, 9.95f, 10.05f, 10.0f, 4.5f)
+        for (z in zs) {
+            rasterizer.addPoint(5.0, 5.0, z, classification = 1)
+        }
+        // A second honest cell so gap filling cannot dominate the assertion.
+        repeat(6) { rasterizer.addPoint(1.0, 1.0, 20f, classification = 1) }
+
+        val result = requireNotNull(rasterizer.finish(3, "spike test"))
+        val gx = (0.5 * (result.grid.width - 1)).toInt()
+        val gy = ((1.0 - 0.5) * (result.grid.height - 1)).toInt()
+        val value = result.grid.bareEarth[gy * result.grid.width + gx]
+
+        assertEquals(GroundSurfaceMode.AUTO_LOWEST, result.appliedGroundMode)
+        assertTrue("expected ~9.9 m ground after spike rejection, got $value", value in 9.5f..10.5f)
+        val report = requireNotNull(result.groundReport)
+        assertEquals(1, report.lowSpikesRejected)
+        assertEquals(GroundSurfaceQuality.ESTIMATED_ROBUST, report.quality)
+        assertTrue(result.note.contains("low spikes rejected"))
+    }
+
+    @Test
+    fun automaticFallbackKeepsCorroboratedGroundBelowCanopy() {
+        val rasterizer = LidarRasterizer(
+            minX = 0.0,
+            maxX = 10.0,
+            minY = 0.0,
+            maxY = 10.0,
+            options = LidarImportOptions(
+                groundMode = GroundSurfaceMode.AUTO_LOWEST,
+                rasterResolution = 64,
+            ),
+            declaredPointCount = 16,
+        )
+        // Dense-canopy cell: three ground returns corroborate ~10 m; canopy sits 4–8 m above.
+        val zs = floatArrayOf(10.0f, 10.3f, 9.8f, 14f, 16f, 18f, 15f, 17f)
+        for (z in zs) {
+            rasterizer.addPoint(5.0, 5.0, z, classification = 1)
+        }
+        repeat(6) { rasterizer.addPoint(1.0, 1.0, 20f, classification = 1) }
+
+        val result = requireNotNull(rasterizer.finish(3, "canopy test"))
+        val gx = (0.5 * (result.grid.width - 1)).toInt()
+        val gy = ((1.0 - 0.5) * (result.grid.height - 1)).toInt()
+        val value = result.grid.bareEarth[gy * result.grid.width + gx]
+
+        assertTrue("corroborated ground must survive, got $value", value in 9.5f..10.5f)
+        assertEquals(0, requireNotNull(result.groundReport).lowSpikesRejected)
+    }
+
+    @Test
+    fun classifiedGroundReportReflectsDenseCoverage() {
+        val rasterizer = LidarRasterizer(
+            minX = 0.0,
+            maxX = 10.0,
+            minY = 0.0,
+            maxY = 10.0,
+            options = LidarImportOptions(
+                groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
+                rasterResolution = 64,
+            ),
+            declaredPointCount = 128,
+        )
+        for (cy in 0..3) {
+            for (cx in 0..3) {
+                repeat(8) {
+                    rasterizer.addPoint(1.25 + cx * 2.5, 1.25 + cy * 2.5, 10f, classification = 2)
+                }
+            }
+        }
+
+        val result = requireNotNull(rasterizer.finish(6, "report"))
+        val report = requireNotNull(result.groundReport)
+
+        assertEquals(GroundSurfaceMode.SOURCE_CLASSIFIED, result.appliedGroundMode)
+        assertEquals(GroundSurfaceQuality.CLASSIFIED_DENSE, report.quality)
+        assertEquals(8.0, report.groundSamplesPerCell.toDouble(), 0.001)
+        assertTrue(report.groundCellFraction > 0f)
+        assertTrue(result.note.contains("ground quality classified dense"))
+    }
+
+    @Test
+    fun multiScaleSmoothingPreservesSharpPitsWhileFlatteningNoise() {
+        val width = 40
+        val height = 40
+        val surface = FloatArray(width * height) { 100f }
+        // High-frequency noise across the whole patch.
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                surface[y * width + x] += if ((x + y) % 2 == 0) 0.35f else -0.35f
+            }
+        }
+        // A sharp 4×4-cell archaeological pit in the middle.
+        for (y in 18..21) {
+            for (x in 18..21) {
+                surface[y * width + x] = 97f
+            }
+        }
+
+        val multiScale = multiScaleSmooth(surface, width, height, radius = 2)
+        val coarseOnly = boxSmooth(surface, width, height, radius = 4)
+
+        val pitDepthMulti = 100f - multiScale[20 * width + 20]
+        val pitDepthCoarse = 100f - coarseOnly[20 * width + 20]
+        assertTrue(
+            "multi-scale should keep more pit depth ($pitDepthMulti) than coarse blur ($pitDepthCoarse)",
+            pitDepthMulti > pitDepthCoarse + 0.3f,
+        )
+        // Flat corner: residual noise should be nearly gone.
+        var noise = 0f
+        for (y in 2..6) {
+            for (x in 2..6) {
+                noise += kotlin.math.abs(multiScale[y * width + x] - 100f)
+            }
+        }
+        assertTrue("flat-area residual noise too high: $noise", noise < 2.0f)
+    }
 }

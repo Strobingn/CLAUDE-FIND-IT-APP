@@ -613,7 +613,7 @@ large multi-tile reopening on a release APK, and external-GIS export-file valida
 ### Sprint 3 — Establish ranking baseline
 
 1. Define the reviewed candidate-example format. **Complete; unit verified.** `ReviewedCandidateExample` plus the append-only `ReviewedExampleStore` in the analysis package; productive, rejected, and ambiguous verdicts are all retained with model/processing versions.
-2. Improve ground filtering.
+2. Improve ground filtering. **Complete; unit verified.** The automatic lowest-return fallback now rejects isolated below-ground spikes only when they lack corroborating returns (real ground under dense canopy survives), smoothing is multi-scale and edge-preserving so sharp earthworks are not blurred away, and every import carries a structured `GroundSurfaceReport` (quality bucket, measured cell coverage, samples per cell, spikes rejected) plus a human-readable ground-quality note.
 3. Implement multi-scale LRM. **Complete; unit verified.** `MULTI_SCALE_RELIEF` layer with per-scale standardization so cellar- and platform-sized features both survive.
 4. Add cellar, platform, road, and wall geometry. **Implemented; unit verified.** `cellarRimGeometry`, `platformEdgeGeometry`, and `linearContinuity` shape checks now adjust candidate scores and surface as supporting/negative evidence.
 5. Add natural and modern-disturbance penalties. **Implemented; unit verified.** A `MODERN_DISTURBANCE_PENALTY` layer joins the existing natural-feature penalty; both apply as bounded, explainable score adjustments per detector type.

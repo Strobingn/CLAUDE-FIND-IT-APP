@@ -295,6 +295,8 @@ object DemGenerator {
         },
         val sampledPoints: Int = totalPointsRead,
         val wasTruncated: Boolean = false,
+        /** Structured ground-filter outcome; null for legacy non-rasterizer loads. */
+        val groundReport: GroundSurfaceReport? = null,
     )
 
     /**

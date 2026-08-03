@@ -14,6 +14,35 @@ internal enum class LidarPointWork {
     ELEVATION,
 }
 
+/** Confidence bucket for the produced ground surface, reported with every import. */
+enum class GroundSurfaceQuality {
+    /** Vendor/classified ground with dense per-cell coverage. */
+    CLASSIFIED_DENSE,
+
+    /** Classified ground was usable but thin; gap-filled areas are less trustworthy. */
+    CLASSIFIED_SPARSE,
+
+    /** Automatic lowest-return estimate with healthy sampling and spike rejection. */
+    ESTIMATED_ROBUST,
+
+    /** Automatic estimate from sparse returns; treat subtle relief with caution. */
+    ESTIMATED_FRAGILE,
+
+    /** Highest-return surface model; no ground separation was attempted. */
+    SURFACE_MODEL,
+}
+
+/** Structured ground-filtering outcome attached to every raster build. */
+data class GroundSurfaceReport(
+    val quality: GroundSurfaceQuality,
+    /** Fraction of raster cells with measured ground before gap filling. */
+    val groundCellFraction: Float,
+    /** Average sampled ground returns per populated cell. */
+    val groundSamplesPerCell: Float,
+    /** Isolated below-ground returns removed from the automatic estimate. */
+    val lowSpikesRejected: Int,
+)
+
 /** Memory-bounded point-cloud binning shared by the LAS and LAZ readers. */
 internal class LidarRasterizer(
     minX: Double,
@@ -42,6 +71,8 @@ internal class LidarRasterizer(
     private val groundMin: FloatArray
     private val groundCount: IntArray
     private val allMin: FloatArray
+    private val allSecondMin: FloatArray
+    private val allLowBandCount: IntArray
     private val allMax: FloatArray
     private val allCount: IntArray
     private val coverageCount: IntArray
@@ -74,6 +105,8 @@ internal class LidarRasterizer(
         groundMin = FloatArray(width * height) { Float.MAX_VALUE }
         groundCount = IntArray(width * height)
         allMin = FloatArray(width * height) { Float.MAX_VALUE }
+        allSecondMin = FloatArray(width * height) { Float.MAX_VALUE }
+        allLowBandCount = IntArray(width * height)
         allMax = FloatArray(width * height) { -Float.MAX_VALUE }
         allCount = IntArray(width * height)
         coverageCount = IntArray(width * height)
@@ -146,7 +179,20 @@ internal class LidarRasterizer(
         coverageCount[index]++
         if (!wasSampleReturn) return true
 
-        if (z < allMin[index]) allMin[index] = z
+        if (z < allMin[index]) {
+            // A newly observed low demotes the previous minimum to second place. Returns that
+            // corroborate each other within a narrow band keep the band count high; a lone return
+            // far below everything else stays isolated and can later be rejected as a low spike.
+            allSecondMin[index] = allMin[index]
+            allMin[index] = z
+            allLowBandCount[index] =
+                if (allSecondMin[index] - z <= LOW_BAND_METERS) 2 else 1
+        } else if (z < allSecondMin[index]) {
+            allSecondMin[index] = z
+            if (z - allMin[index] <= LOW_BAND_METERS) allLowBandCount[index]++
+        } else if (z - allMin[index] <= LOW_BAND_METERS) {
+            allLowBandCount[index]++
+        }
         if (z > allMax[index]) allMax[index] = z
         if (allCount[index] == 0) elevationCellsPopulated++
         allCount[index]++
@@ -198,9 +244,31 @@ internal class LidarRasterizer(
             requestedMode == GroundSurfaceMode.SOURCE_CLASSIFIED -> GroundSurfaceMode.AUTO_LOWEST
             else -> requestedMode
         }
+        var lowSpikesRejected = 0
+        val automaticGround: FloatArray? = if (appliedMode == GroundSurfaceMode.AUTO_LOWEST) {
+            // Robust automatic ground: reject a cell's lowest return when it is isolated (no
+            // corroborating returns within a narrow band) and sits far below the next-lowest
+            // return. Bird/wire strikes and misclassified below-ground noise disappear, while
+            // real ground under canopy — corroborated by several low returns — is preserved.
+            FloatArray(width * height) { index ->
+                val second = allSecondMin[index]
+                val isolatedLow = allCount[index] >= MIN_SAMPLES_FOR_SPIKE_REJECT &&
+                    allLowBandCount[index] == 1 &&
+                    second != Float.MAX_VALUE &&
+                    second - allMin[index] > LOW_SPIKE_DROP_METERS
+                if (isolatedLow) {
+                    lowSpikesRejected++
+                    second
+                } else {
+                    allMin[index]
+                }
+            }
+        } else {
+            null
+        }
         val source = when (appliedMode) {
             GroundSurfaceMode.SOURCE_CLASSIFIED -> groundMin
-            GroundSurfaceMode.AUTO_LOWEST -> allMin
+            GroundSurfaceMode.AUTO_LOWEST -> automaticGround ?: allMin
             GroundSurfaceMode.SURFACE_MODEL -> allMax
         }
         val sourceCounts = when (appliedMode) {
@@ -221,7 +289,7 @@ internal class LidarRasterizer(
             suppressIsolatedLowNoise(surface, width, height)
         }
         val bareEarth = if (options.smoothingRadius > 0) {
-            boxSmooth(cleaned, width, height, options.smoothingRadius)
+            multiScaleSmooth(cleaned, width, height, options.smoothingRadius)
         } else {
             cleaned
         }
@@ -233,6 +301,44 @@ internal class LidarRasterizer(
                 }
             }
         }
+
+        val totalCells = width * height
+        val groundSamplesPerCell = if (populatedCells > 0) {
+            val groundSamples = if (appliedMode == GroundSurfaceMode.SOURCE_CLASSIFIED) {
+                groundPointsBinned
+            } else {
+                pointsBinned
+            }
+            groundSamples.toFloat() / populatedCells
+        } else {
+            0f
+        }
+        val groundCellFraction = when (appliedMode) {
+            GroundSurfaceMode.SOURCE_CLASSIFIED -> classifiedCells.toFloat() / totalCells
+            GroundSurfaceMode.AUTO_LOWEST -> populatedCells.toFloat() / totalCells
+            GroundSurfaceMode.SURFACE_MODEL -> 0f
+        }
+        val groundQuality = when (appliedMode) {
+            GroundSurfaceMode.SURFACE_MODEL -> GroundSurfaceQuality.SURFACE_MODEL
+            GroundSurfaceMode.SOURCE_CLASSIFIED ->
+                if (groundSamplesPerCell >= 4f && classifiedCells * 2 >= populatedCells) {
+                    GroundSurfaceQuality.CLASSIFIED_DENSE
+                } else {
+                    GroundSurfaceQuality.CLASSIFIED_SPARSE
+                }
+            GroundSurfaceMode.AUTO_LOWEST ->
+                if (groundSamplesPerCell >= 6f) {
+                    GroundSurfaceQuality.ESTIMATED_ROBUST
+                } else {
+                    GroundSurfaceQuality.ESTIMATED_FRAGILE
+                }
+        }
+        val groundReport = GroundSurfaceReport(
+            quality = groundQuality,
+            groundCellFraction = groundCellFraction,
+            groundSamplesPerCell = groundSamplesPerCell,
+            lowSpikesRejected = lowSpikesRejected,
+        )
 
         val cellSize = max(rangeX / (width - 1), rangeY / (height - 1))
             .takeIf { it.isFinite() && it in 0.001..100_000.0 }
@@ -258,7 +364,20 @@ internal class LidarRasterizer(
             GroundSurfaceMode.SURFACE_MODEL -> "highest-return surface model (vegetation and structures included)"
         }
         val focusNote = if (focus == null) "complete footprint" else "detailed viewport"
-        val smoothingNote = if (options.smoothingRadius == 0) "unsmoothed" else "smoothing radius ${options.smoothingRadius}"
+        val smoothingNote = if (options.smoothingRadius == 0) {
+            "unsmoothed"
+        } else {
+            "multi-scale smoothing radius ${options.smoothingRadius}"
+        }
+        val qualityNote = buildString {
+            append(" · ground quality ")
+            append(groundQuality.name.lowercase().replace('_', ' '))
+            if (lowSpikesRejected > 0) {
+                append(" · ")
+                append(lowSpikesRejected)
+                append(" isolated low spikes rejected")
+            }
+        }
         val classNote = classHistogram.withIndex()
             .filter { it.value > 0 }
             .sortedByDescending { it.value }
@@ -275,11 +394,12 @@ internal class LidarRasterizer(
             },
             usedClassificationFilter = appliedMode == GroundSurfaceMode.SOURCE_CLASSIFIED,
             pointFormat = pointFormat,
-            note = "$sourceLabel · $focusNote · $modeNote · $classNote · $samplingNote · ${width}×$height $smoothingNote",
+            note = "$sourceLabel · $focusNote · $modeNote · $classNote · $samplingNote · ${width}×$height $smoothingNote$qualityNote",
             requestedGroundMode = requestedMode,
             appliedGroundMode = appliedMode,
             sampledPoints = pointsBinned,
             wasTruncated = false,
+            groundReport = groundReport,
         )
     }
 
@@ -460,7 +580,33 @@ private fun rectangleSum(
 ): Double = integral[(y1 + 1) * stride + x1 + 1] - integral[y0 * stride + x1 + 1] -
     integral[(y1 + 1) * stride + x0] + integral[y0 * stride + x0]
 
+/**
+ * Two-scale edge-preserving smoothing. A fine pass keeps small earthworks; a coarser pass removes
+ * residual noise in flat areas. Cells where the two scales disagree (sharp banks, cellar walls)
+ * keep the fine result, so smoothing strength adapts per cell instead of blurring everything.
+ */
+internal fun multiScaleSmooth(source: FloatArray, width: Int, height: Int, radius: Int): FloatArray {
+    if (radius <= 0) return source.copyOf()
+    val fine = boxSmooth(source, width, height, radius)
+    val coarse = boxSmooth(source, width, height, radius * 2)
+    val output = FloatArray(source.size)
+    for (index in output.indices) {
+        val disagreement = kotlin.math.abs(fine[index] - coarse[index])
+        val fineWeight = (disagreement / MULTI_SCALE_EDGE_METERS).coerceIn(0f, 1f)
+        output[index] = fineWeight * fine[index] + (1f - fineWeight) * coarse[index]
+    }
+    return output
+}
+
 private const val LOW_NOISE_THRESHOLD_METERS = 3f
+/** Returns within this height of the cell minimum corroborate it as real ground. */
+private const val LOW_BAND_METERS = 0.6f
+/** An isolated lowest return must sit this far below the next-lowest to be rejected. */
+private const val LOW_SPIKE_DROP_METERS = 1.2f
+/** Spike rejection needs enough samples for the corroboration band to be meaningful. */
+private const val MIN_SAMPLES_FOR_SPIKE_REJECT = 4
+/** Fine/coarse disagreement (meters) at which multi-scale smoothing fully keeps the fine pass. */
+private const val MULTI_SCALE_EDGE_METERS = 0.5f
 private const val MIN_CELLS_FOR_PARALLEL_POST = 40_000
 private val POST_PROCESS_PARALLELISM = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
 private val postProcessPool = Executors.newFixedThreadPool(POST_PROCESS_PARALLELISM) { task ->
