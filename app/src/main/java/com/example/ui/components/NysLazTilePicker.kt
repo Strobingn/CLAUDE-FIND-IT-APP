@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
@@ -24,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,6 +40,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.unit.dp
 import com.example.data.CopcAsset
 import com.example.data.CopcStacCatalog
@@ -62,6 +67,7 @@ import com.example.data.local.AppDatabase
 import com.example.data.local.toDomain
 import com.example.data.local.toEntity
 import com.example.data.mosaic.MosaicProject
+import com.example.data.mosaic.MosaicProjectResume
 import com.example.data.mosaic.MosaicProjectState
 import com.example.data.mosaic.MosaicProjectTile
 import java.io.File
@@ -123,6 +129,7 @@ fun NysLazTilePicker(
     var east by remember { mutableStateOf("") }
     var north by remember { mutableStateOf("") }
     var areaSelectionMode by rememberSaveable { mutableStateOf(AreaSelectionMode.RECTANGLE) }
+    var showAreaMapPicker by remember { mutableStateOf(false) }
     var radiusLatitude by remember { mutableStateOf("") }
     var radiusLongitude by remember { mutableStateOf("") }
     var radiusMiles by remember { mutableStateOf("") }
@@ -645,11 +652,7 @@ fun NysLazTilePicker(
                 )
                 val missingBeforeStart = project.tiles.count { storedProjectFile(it) == null }
                 project = project.copy(
-                    state = if (missingBeforeStart == 0 && project.state == MosaicProjectState.READY) {
-                        MosaicProjectState.READY
-                    } else {
-                        MosaicProjectState.DOWNLOADING
-                    },
+                    state = MosaicProjectResume.stateWhenStarted(project, missingBeforeStart),
                     recoveryMessage = null,
                     updatedAtMillis = System.currentTimeMillis(),
                 )
@@ -695,7 +698,7 @@ fun NysLazTilePicker(
                 val readyCount = project.tiles.count { storedProjectFile(it) != null }
                 project = project.copy(
                     state = MosaicProjectState.NEEDS_ATTENTION,
-                    recoveryMessage = "Download paused. $readyCount of ${project.tiles.size} source files are ready.",
+                    recoveryMessage = MosaicProjectResume.pausedMessage(readyCount, project.tiles.size),
                     updatedAtMillis = System.currentTimeMillis(),
                 )
                 withContext(NonCancellable) { mosaicProjectDao.upsert(project.toEntity()) }
@@ -922,6 +925,15 @@ fun NysLazTilePicker(
             }
 
             Text("Area search", style = MaterialTheme.typography.titleMedium)
+            OutlinedButton(
+                onClick = { showAreaMapPicker = true },
+                enabled = !isLookingUp && downloadJob?.isActive != true,
+                modifier = Modifier.fillMaxWidth().height(52.dp).testTag("pick_lidar_area_on_map"),
+            ) {
+                Icon(Icons.Default.Map, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Pick area on map")
+            }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -1054,6 +1066,29 @@ fun NysLazTilePicker(
                 }
             }
 
+            if (showAreaMapPicker) {
+                Dialog(
+                    onDismissRequest = { showAreaMapPicker = false },
+                    properties = DialogProperties(usePlatformDefaultWidth = false),
+                ) {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        LidarAreaPickerMapScreen(
+                            onAreaSelected = { bounds ->
+                                showAreaMapPicker = false
+                                selectedRegion = null
+                                west = formatDegrees(bounds.minLon)
+                                south = formatDegrees(bounds.minLat)
+                                east = formatDegrees(bounds.maxLon)
+                                north = formatDegrees(bounds.maxLat)
+                                areaSelectionMode = AreaSelectionMode.RECTANGLE
+                                lookupArea(LidarAreaSelection.Rectangle(bounds), description = "map box")
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+            }
+
             if ((tiles.isNotEmpty() || copcAssets.isNotEmpty()) &&
                 !selectedAreaDescription.isNullOrBlank()
             ) {
@@ -1181,8 +1216,7 @@ fun NysLazTilePicker(
                 Text("Saved multi-tile projects", style = MaterialTheme.typography.titleMedium)
                 savedMosaicProjects.forEach { project ->
                     val availableSourceCount = project.tiles.count { storedProjectFile(it) != null }
-                    val canResume = project.state != MosaicProjectState.READY ||
-                        availableSourceCount != project.tiles.size
+                    val canResume = MosaicProjectResume.canResume(project, availableSourceCount)
                     OutlinedButton(
                         onClick = { startOrResumeMosaicProject(project) },
                         enabled = downloadJob?.isActive != true,

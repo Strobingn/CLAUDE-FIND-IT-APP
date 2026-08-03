@@ -51,6 +51,7 @@ enum class TerrainDerivedLayer(val label: String, val description: String) {
     // inserting anywhere above would silently reinterpret every already-cached analysis.
     MULTI_SCALE_RELIEF("Multi-scale relief", "Relief detrended at cellar, structure, and platform scales"),
     NATURAL_FEATURE_PENALTY("Natural-feature penalty", "Evidence that an anomaly is better explained by drainage, slope, or rough ground"),
+    MODERN_DISTURBANCE_PENALTY("Modern-disturbance penalty", "Terrain pattern consistent with recent grading or cut-and-fill; an estimate, not a confirmed classification"),
 }
 
 enum class TerrainFeatureType(val label: String) {
@@ -322,6 +323,10 @@ class TerrainIntelligenceEngine(
             (ancientStream[i] * 0.55f + ruggedNorm[i] * 0.20f + slopeNorm[i] * 0.15f +
                 (1f - skyView[i]) * 0.10f).coerceIn(0f, 1f)
         }
+        val hillCompareNorm = normalizePositive(hillshadeRange)
+        val modernDisturbancePenalty = FloatArray(size) { i ->
+            combineModernDisturbance(slopeNorm[i], linearity[i], ruggedNorm[i], hillCompareNorm[i])
+        }
 
         val layers = EnumMap<TerrainDerivedLayer, FloatArray>(TerrainDerivedLayer::class.java).apply {
             put(TerrainDerivedLayer.SLOPE, slope)
@@ -338,6 +343,7 @@ class TerrainIntelligenceEngine(
             put(TerrainDerivedLayer.LINEARITY, linearityRaw)
             put(TerrainDerivedLayer.ANCIENT_STREAM, ancientStream)
             put(TerrainDerivedLayer.NATURAL_FEATURE_PENALTY, naturalFeaturePenalty)
+            put(TerrainDerivedLayer.MODERN_DISTURBANCE_PENALTY, modernDisturbancePenalty)
         }
         return TerrainDerivedLayers(width, height, cell, layers)
     }
@@ -368,6 +374,11 @@ class TerrainIntelligenceEngine(
             ?: FloatArray(size) { i ->
                 (stream[i] * 0.55f + rugged[i] * 0.20f + slope[i] * 0.15f +
                     (1f - skyView[i]) * 0.10f).coerceIn(0f, 1f)
+            }
+        val modernPenalty = layers.values[TerrainDerivedLayer.MODERN_DISTURBANCE_PENALTY]
+            ?.let(::normalizePositive)
+            ?: FloatArray(size) { i ->
+                combineModernDisturbance(slope[i], linearity[i], rugged[i], hillCompare[i])
             }
 
         val flat = FloatArray(size) { 1f - slope[it] }
@@ -415,24 +426,25 @@ class TerrainIntelligenceEngine(
         }
 
         val definitions = listOf(
-            Detector(TerrainFeatureType.DEPRESSION, depression, 0.62f, 5f, listOf("local bowl depth", "concave curvature", "negative local relief"), 0.20f),
-            Detector(TerrainFeatureType.STONE_WALL, wall, 0.64f, 4f, listOf("linear raised response", "narrow curvature edge", "low cross-line roughness"), 0.28f),
-            Detector(TerrainFeatureType.FOUNDATION, foundation, 0.66f, 7f, listOf("rectilinear edge response", "flat interior tendency", "multi-hillshade persistence"), 0.36f),
-            Detector(TerrainFeatureType.CELLAR_HOLE, cellar, 0.67f, 6f, listOf("compact depression", "concave center", "enclosed local horizon"), 0.30f),
-            Detector(TerrainFeatureType.ROAD_TRAIL, road, 0.65f, 5f, listOf("elongated low-gradient corridor", "smooth local surface", "linear response"), 0.22f),
-            Detector(TerrainFeatureType.OLD_HOMESITE, homesite, 0.68f, 12f, listOf("foundation/cellar combination", "road access context", "locally usable ground"), 0.30f),
-            Detector(TerrainFeatureType.ARTIFACT_HOTSPOT, hotspot, 0.69f, 10f, listOf("homesite context", "access corridor proximity", "disturbance evidence"), 0.40f),
-            Detector(TerrainFeatureType.DIG_RECOMMENDATION, dig, 0.72f, 8f, listOf("ensemble terrain score", "field-access context", "user feedback weighting"), 0.42f),
-            Detector(TerrainFeatureType.CHARCOAL_PIT, charcoal, 0.70f, 9f, listOf("level circular-platform tendency", "subtle relief rim", "balanced openness"), 0.30f),
+            Detector(TerrainFeatureType.DEPRESSION, depression, 0.62f, 5f, listOf("local bowl depth", "concave curvature", "negative local relief"), 0.20f, 0.10f),
+            Detector(TerrainFeatureType.STONE_WALL, wall, 0.64f, 4f, listOf("linear raised response", "narrow curvature edge", "low cross-line roughness"), 0.28f, 0.15f),
+            Detector(TerrainFeatureType.FOUNDATION, foundation, 0.66f, 7f, listOf("rectilinear edge response", "flat interior tendency", "multi-hillshade persistence"), 0.36f, 0.30f),
+            Detector(TerrainFeatureType.CELLAR_HOLE, cellar, 0.67f, 6f, listOf("compact depression", "concave center", "enclosed local horizon"), 0.30f, 0.20f),
+            Detector(TerrainFeatureType.ROAD_TRAIL, road, 0.65f, 5f, listOf("elongated low-gradient corridor", "smooth local surface", "linear response"), 0.22f, 0.15f),
+            Detector(TerrainFeatureType.OLD_HOMESITE, homesite, 0.68f, 12f, listOf("foundation/cellar combination", "road access context", "locally usable ground"), 0.30f, 0.25f),
+            Detector(TerrainFeatureType.ARTIFACT_HOTSPOT, hotspot, 0.69f, 10f, listOf("homesite context", "access corridor proximity", "disturbance evidence"), 0.40f, 0.30f),
+            Detector(TerrainFeatureType.DIG_RECOMMENDATION, dig, 0.72f, 8f, listOf("ensemble terrain score", "field-access context", "user feedback weighting"), 0.42f, 0.32f),
+            Detector(TerrainFeatureType.CHARCOAL_PIT, charcoal, 0.70f, 9f, listOf("level circular-platform tendency", "subtle relief rim", "balanced openness"), 0.30f, 0.10f),
             Detector(TerrainFeatureType.MINE_QUARRY, quarry, 0.70f, 16f, listOf("large concavity", "steep irregular margins", "high ruggedness"), 0.05f),
-            Detector(TerrainFeatureType.MILITARY_CAMP, camp, 0.72f, 18f, listOf("clustered level ground", "road/trail context", "repeated disturbance pattern"), 0.30f),
+            Detector(TerrainFeatureType.MILITARY_CAMP, camp, 0.72f, 18f, listOf("clustered level ground", "road/trail context", "repeated disturbance pattern"), 0.30f, 0.20f),
             Detector(TerrainFeatureType.ANCIENT_STREAM, stream, 0.66f, 10f, listOf("concave low-relief corridor", "gentle continuous grade", "restricted sky view")),
         )
 
         val output = ArrayList<TerrainFeatureCandidate>()
         for (definition in definitions) {
             val rankedScore = FloatArray(size) { i ->
-                applyNaturalFeaturePenalty(definition.score[i], naturalPenalty[i], definition.naturalPenaltyWeight)
+                val afterNatural = applyNaturalFeaturePenalty(definition.score[i], naturalPenalty[i], definition.naturalPenaltyWeight)
+                applyNaturalFeaturePenalty(afterNatural, modernPenalty[i], definition.modernPenaltyWeight)
             }
             val maxima = localMaxima(rankedScore, width, height, definition.threshold, perTypeLimit = 14)
             for ((index, rawScore) in maxima) {
@@ -450,26 +462,53 @@ class TerrainIntelligenceEngine(
                     TerrainFeedbackRating.UNSURE -> rawScore - 0.03f
                     null -> rawScore
                 }.coerceIn(0f, 1f)
-                if (adjusted < definition.threshold * 0.88f) continue
+                // Shape verification on top of the per-cell response: a high-scoring cell still
+                // has to look like the feature it claims to be in the neighborhood around it.
+                val geometry = when (definition.type) {
+                    TerrainFeatureType.CELLAR_HOLE ->
+                        cellarRimGeometry(multiScaleRelief, width, height, x, y, layers.cellSizeMeters)
+                    TerrainFeatureType.FOUNDATION ->
+                        platformEdgeGeometry(rugged, linearity, width, height, x, y, layers.cellSizeMeters)
+                    TerrainFeatureType.ROAD_TRAIL,
+                    TerrainFeatureType.STONE_WALL ->
+                        linearContinuity(definition.score, width, height, x, y, definition.radiusMeters * 2f, layers.cellSizeMeters, definition.threshold)
+                    else -> null
+                }
+                val geometryAdjusted = (adjusted + (geometry?.scoreDelta ?: 0f)).coerceIn(0f, 1f)
+                if (geometryAdjusted < definition.threshold * 0.88f) continue
                 output += TerrainFeatureCandidate(
                     id = stableCandidateId(datasetKey, definition.type, xPercent, yPercent),
                     type = definition.type,
                     xPercent = xPercent,
                     yPercent = yPercent,
-                    score = adjusted,
+                    score = geometryAdjusted,
                     radiusMeters = definition.radiusMeters,
                     evidence = definition.evidence +
                         if (naturalPenalty[index] >= 0.08f && definition.naturalPenaltyWeight > 0f) {
                             listOf("natural-feature penalty ${(naturalPenalty[index] * definition.naturalPenaltyWeight * 100f).roundToInt()}%")
                         } else {
                             emptyList()
-                        },
+                        } +
+                        if (modernPenalty[index] >= 0.08f && definition.modernPenaltyWeight > 0f) {
+                            listOf("modern-disturbance penalty ${(modernPenalty[index] * definition.modernPenaltyWeight * 100f).roundToInt()}%")
+                        } else {
+                            emptyList()
+                        } +
+                        geometry?.supportingEvidence.orEmpty(),
                     feedback = matchingFeedback?.rating,
                     note = buildString {
                         append(matchingFeedback?.note.orEmpty())
                         if (naturalPenalty[index] >= 0.08f && definition.naturalPenaltyWeight > 0f) {
                             if (isNotBlank()) append(" · ")
                             append("screened against natural-feature risk")
+                        }
+                        if (modernPenalty[index] >= 0.08f && definition.modernPenaltyWeight > 0f) {
+                            if (isNotBlank()) append(" · ")
+                            append("screened against modern-disturbance risk")
+                        }
+                        geometry?.negativeEvidence?.forEach { finding ->
+                            if (isNotBlank()) append(" · ")
+                            append(finding)
                         }
                     },
                 )
@@ -727,6 +766,218 @@ class TerrainIntelligenceEngine(
         ): Float = (rawScore - naturalPenalty.coerceIn(0f, 1f) * penaltyWeight.coerceAtLeast(0f))
             .coerceIn(0f, 1f)
 
+        /**
+         * Terrain pattern consistent with recent mechanized disturbance: grading, cut-and-fill,
+         * vehicle scarring, and push piles.
+         *
+         * Two signatures are combined. A sharp straight edge (steep AND strongly linear) is how
+         * machine cut/fill margins and push-pile crests present; a machine-smoothed bench is flat,
+         * low-roughness ground whose edges still disagree strongly across hillshade azimuths.
+         * Historic features mimic one signature at a time - a wagon road is linear but rarely
+         * steep, a cellar is rough-rimmed but not flat - so requiring the combination keeps the
+         * penalty aimed at modern ground. Inputs are the normalized (0..1) layer responses; the
+         * result is bounded to 0..1 and is an estimate, never a confirmed classification.
+         */
+        internal fun combineModernDisturbance(
+            slopeNorm: Float,
+            linearityNorm: Float,
+            ruggedNorm: Float,
+            hillCompareNorm: Float,
+        ): Float {
+            val sharpStraightEdge = slopeNorm.coerceIn(0f, 1f) * linearityNorm.coerceIn(0f, 1f)
+            val machineSmoothBench = (1f - slopeNorm.coerceIn(0f, 1f)) *
+                (1f - ruggedNorm.coerceIn(0f, 1f)) * hillCompareNorm.coerceIn(0f, 1f)
+            return (sharpStraightEdge * 0.62f + machineSmoothBench * 0.38f).coerceIn(0f, 1f)
+        }
+
+        /** Shape verification for one candidate, kept separate from the per-cell response score. */
+        internal data class GeometryCheck(
+            val scoreDelta: Float,
+            val supportingEvidence: List<String>,
+            val negativeEvidence: List<String>,
+        )
+
+        /**
+         * Cellar-hole shape test: a dug cellar is a compact bowl ringed by the spoil that came out
+         * of it. A bowl with no raised rim reads more like a natural hollow (root throw, sink), so
+         * the rim is positive evidence and its absence is recorded honestly as negative evidence.
+         * [relief] is the sign-preserving multi-scale relief layer (scale-normalized, about -1..1).
+         */
+        internal fun cellarRimGeometry(
+            relief: FloatArray,
+            width: Int,
+            height: Int,
+            centerX: Int,
+            centerY: Int,
+            cellSizeMeters: Float,
+        ): GeometryCheck {
+            if (width < 3 || height < 3 || relief.size != width * height) {
+                return GeometryCheck(0f, emptyList(), emptyList())
+            }
+            val safeCell = cellSizeMeters.coerceAtLeast(0.01f)
+            val innerRadius = (3f / safeCell).roundToInt().coerceIn(1, 8)
+            val rimRadius = (7f / safeCell).roundToInt().coerceIn(innerRadius + 2, 16)
+            var innerSum = 0.0
+            var innerCount = 0
+            var rimSum = 0.0
+            var rimCount = 0
+            for (dy in -rimRadius..rimRadius) {
+                for (dx in -rimRadius..rimRadius) {
+                    val distance = sqrt((dx * dx + dy * dy).toFloat())
+                    if (distance > rimRadius) continue
+                    val px = (centerX + dx).coerceIn(0, width - 1)
+                    val py = (centerY + dy).coerceIn(0, height - 1)
+                    val value = relief[py * width + px]
+                    if (!value.isFinite()) continue
+                    if (distance <= innerRadius) {
+                        innerSum += value
+                        innerCount++
+                    } else {
+                        rimSum += value
+                        rimCount++
+                    }
+                }
+            }
+            if (innerCount == 0 || rimCount == 0) return GeometryCheck(0f, emptyList(), emptyList())
+            val bowl = (-(innerSum / innerCount)).toFloat().coerceIn(-1f, 1f)
+            val rim = (rimSum / rimCount).toFloat().coerceIn(-1f, 1f)
+            val supporting = ArrayList<String>(2)
+            val negative = ArrayList<String>(1)
+            if (bowl >= 0.15f) supporting += "compact bowl ${(bowl * 100f).roundToInt()}% below surroundings"
+            if (rim >= 0.10f) supporting += "raised spoil rim around the depression"
+            val delta = when {
+                bowl >= 0.15f && rim >= 0.10f -> 0.08f
+                bowl >= 0.15f && rim >= 0.03f -> 0.04f
+                bowl >= 0.15f -> {
+                    negative += "no spoil rim - natural hollow possible"
+                    -0.02f
+                }
+                else -> {
+                    negative += "weak bowl geometry at candidate center"
+                    -0.05f
+                }
+            }
+            return GeometryCheck(delta, supporting, negative)
+        }
+
+        /**
+         * Road/wall shape test: real corridors continue in one direction; isolated bumps do not.
+         * Walks the four principal axes from the candidate and measures the longest uninterrupted
+         * run that stays above the detector's own response floor. [radiusMeters] is the reach of
+         * one side, so the full measured span is roughly twice that.
+         */
+        internal fun linearContinuity(
+            response: FloatArray,
+            width: Int,
+            height: Int,
+            centerX: Int,
+            centerY: Int,
+            radiusMeters: Float,
+            cellSizeMeters: Float,
+            threshold: Float,
+        ): GeometryCheck {
+            if (width < 3 || height < 3 || response.size != width * height) {
+                return GeometryCheck(0f, emptyList(), emptyList())
+            }
+            val safeCell = cellSizeMeters.coerceAtLeast(0.01f)
+            val radius = (radiusMeters / safeCell).roundToInt().coerceIn(2, 24)
+            val floor = (threshold * 0.85f).coerceIn(0f, 1f)
+            val axes = arrayOf(1 to 0, 0 to 1, 1 to 1, 1 to -1)
+            var bestFraction = 0f
+            for ((stepX, stepY) in axes) {
+                var run = 1f // the center cell itself
+                for (sign in intArrayOf(1, -1)) {
+                    for (step in 1..radius) {
+                        val px = centerX + stepX * step * sign
+                        val py = centerY + stepY * step * sign
+                        if (px !in 0 until width || py !in 0 until height) break
+                        if (response[py * width + px] >= floor) run += 1f else break
+                    }
+                }
+                bestFraction = max(bestFraction, run / (2f * radius + 1f))
+            }
+            val spanMeters = (bestFraction * 2f * radiusMeters).roundToInt()
+            return when {
+                bestFraction >= 0.65f -> GeometryCheck(
+                    0.06f,
+                    listOf("continuous alignment over ~${spanMeters} m"),
+                    emptyList(),
+                )
+                bestFraction >= 0.40f -> GeometryCheck(
+                    0.02f,
+                    listOf("partial alignment over ~${spanMeters} m"),
+                    emptyList(),
+                )
+                else -> GeometryCheck(
+                    -0.04f,
+                    emptyList(),
+                    listOf("isolated fragment - weak linear continuity"),
+                )
+            }
+        }
+
+        /**
+         * Foundation/platform shape test: a worked platform is smooth inside with a defined edge;
+         * natural benches are either rough inside or fade out with no margin. [rugged] and [edge]
+         * are the normalized (0..1) ruggedness and linear-response layers.
+         */
+        internal fun platformEdgeGeometry(
+            rugged: FloatArray,
+            edge: FloatArray,
+            width: Int,
+            height: Int,
+            centerX: Int,
+            centerY: Int,
+            cellSizeMeters: Float,
+        ): GeometryCheck {
+            val size = width * height
+            if (width < 3 || height < 3 || rugged.size != size || edge.size != size) {
+                return GeometryCheck(0f, emptyList(), emptyList())
+            }
+            val safeCell = cellSizeMeters.coerceAtLeast(0.01f)
+            val innerRadius = (6f / safeCell).roundToInt().coerceIn(1, 10)
+            val edgeRadius = (10f / safeCell).roundToInt().coerceIn(innerRadius + 2, 18)
+            var ruggedSum = 0.0
+            var innerCount = 0
+            var edgeSum = 0.0
+            var edgeCount = 0
+            for (dy in -edgeRadius..edgeRadius) {
+                for (dx in -edgeRadius..edgeRadius) {
+                    val distance = sqrt((dx * dx + dy * dy).toFloat())
+                    if (distance > edgeRadius) continue
+                    val px = (centerX + dx).coerceIn(0, width - 1)
+                    val py = (centerY + dy).coerceIn(0, height - 1)
+                    val i = py * width + px
+                    if (distance <= innerRadius) {
+                        ruggedSum += rugged[i].coerceIn(0f, 1f)
+                        innerCount++
+                    } else {
+                        edgeSum += edge[i].coerceIn(0f, 1f)
+                        edgeCount++
+                    }
+                }
+            }
+            if (innerCount == 0 || edgeCount == 0) return GeometryCheck(0f, emptyList(), emptyList())
+            val smoothness = 1f - (ruggedSum / innerCount).toFloat()
+            val edgeStrength = (edgeSum / edgeCount).toFloat()
+            val supporting = ArrayList<String>(2)
+            val negative = ArrayList<String>(1)
+            if (smoothness >= 0.70f) supporting += "smooth worked interior"
+            if (edgeStrength >= 0.40f) supporting += "defined platform edge"
+            val delta = when {
+                smoothness >= 0.70f && edgeStrength >= 0.40f -> 0.05f
+                smoothness >= 0.70f -> {
+                    negative += "flat but margins fade - edge not defined"
+                    0.0f
+                }
+                else -> {
+                    negative += "interior too rough for a worked platform"
+                    -0.04f
+                }
+            }
+            return GeometryCheck(delta, supporting, negative)
+        }
+
         private fun localMaxima(
             score: FloatArray,
             width: Int,
@@ -782,6 +1033,7 @@ class TerrainIntelligenceEngine(
         val radiusMeters: Float,
         val evidence: List<String>,
         val naturalPenaltyWeight: Float = 0f,
+        val modernPenaltyWeight: Float = 0f,
     )
 }
 
@@ -925,7 +1177,8 @@ object TerrainIntelligenceRenderer {
             TerrainDerivedLayer.RUGGEDNESS,
             TerrainDerivedLayer.LINEARITY,
             TerrainDerivedLayer.HILLSHADE_COMPARISON,
-            TerrainDerivedLayer.NATURAL_FEATURE_PENALTY ->
+            TerrainDerivedLayer.NATURAL_FEATURE_PENALTY,
+            TerrainDerivedLayer.MODERN_DISTURBANCE_PENALTY ->
                 for (i in values.indices) pixels[i] = heat(normalizedPositive[i])
         }
         bitmap.setPixels(pixels, 0, layers.width, 0, 0, layers.width, layers.height)

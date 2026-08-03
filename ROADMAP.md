@@ -606,18 +606,18 @@ large multi-tile reopening on a release APK, and external-GIS export-file valida
 ### Sprint 2 — Build tile-to-area pipeline
 
 1. Complete polygon and radius selection alongside geographic rectangles. **Implemented; unit verified.**
-2. Make the same area selector directly available from every terrain-import path.
-3. Add instrumentation for cancellation, per-tile retry, partial-project resumption, and mosaic reopening.
+2. Make the same area selector directly available from every terrain-import path. **Complete.** The map area picker now opens directly inside the tile picker ("Pick area on map"), in addition to the LiDAR tab and the Google-Map bounds hand-off.
+3. Add instrumentation for cancellation, per-tile retry, partial-project resumption, and mosaic reopening. **Complete; unit verified.** `LazDownloadQueueCancellationTest`, `LazDownloadQueueRetryTest`, `MosaicProjectResumeTest`, and `MosaicProjectEntityTest` pin cancellation timing, per-tile retry, pause/resume state transitions, recovery messages, and manifest round-trips for reopening.
 4. Validate a multi-tile project through the release build on device.
 
 ### Sprint 3 — Establish ranking baseline
 
-1. Define the reviewed candidate-example format.
+1. Define the reviewed candidate-example format. **Complete; unit verified.** `ReviewedCandidateExample` plus the append-only `ReviewedExampleStore` in the analysis package; productive, rejected, and ambiguous verdicts are all retained with model/processing versions.
 2. Improve ground filtering.
-3. Implement multi-scale LRM.
-4. Add cellar, platform, road, and wall geometry.
-5. Add natural and modern-disturbance penalties.
-6. Produce explainable baseline scores.
+3. Implement multi-scale LRM. **Complete; unit verified.** `MULTI_SCALE_RELIEF` layer with per-scale standardization so cellar- and platform-sized features both survive.
+4. Add cellar, platform, road, and wall geometry. **Implemented; unit verified.** `cellarRimGeometry`, `platformEdgeGeometry`, and `linearContinuity` shape checks now adjust candidate scores and surface as supporting/negative evidence.
+5. Add natural and modern-disturbance penalties. **Implemented; unit verified.** A `MODERN_DISTURBANCE_PENALTY` layer joins the existing natural-feature penalty; both apply as bounded, explainable score adjustments per detector type.
+6. Produce explainable baseline scores. **Implemented.** Candidates carry per-feature evidence plus penalty percentages and geometry findings, so every score adjustment is traceable.
 
 ## Milestones
 
@@ -657,3 +657,5 @@ A feature is complete only when:
 - **2026-07-26:** Field outcomes must feed future ranking through reviewed, versioned data.
 - **2026-07-26:** Complete field workflows must remain offline-capable.
 - **2026-07-26:** Candidate rankings must remain explainable and versioned.
+- **2026-08-03:** GPU terrain previews render at 1,024 cells or finer on every path; coarse progressive stubs and sub-1,024 cache restores are not acceptable render quality.
+- **2026-08-03:** Candidate scoring combines per-cell response with shape-verified geometry and bounded natural/modern-disturbance penalties; every adjustment must appear in candidate evidence or notes.
