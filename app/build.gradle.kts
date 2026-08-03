@@ -171,5 +171,6 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
   add("kapt", libs.androidx.room.compiler)
-    debugImplementation(libs.leakcanary)
+  // Studio LeakCanary registers LeakLauncherActivity as a second LAUNCHER entry, so the system
+  // resolver (and some home screens) open that instead of MainActivity. Omit it from device builds.
 }
