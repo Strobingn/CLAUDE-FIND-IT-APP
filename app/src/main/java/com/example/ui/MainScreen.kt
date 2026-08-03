@@ -349,6 +349,8 @@ private fun TerrainTab(
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val controlsMaxHeight = maxHeight * 0.76f
+
         LidarMapCanvas(
             bitmap = bitmap,
             isRendering = isRendering,
@@ -641,7 +643,7 @@ private fun TerrainTab(
                 basemapStatus = basemapStatus,
                 modifier = Modifier
                     .fillMaxWidth(0.92f)
-                    .heightIn(max = maxHeight * 0.76f)
+                    .heightIn(max = controlsMaxHeight)
                     .verticalScroll(rememberScrollState()),
             )
         }
