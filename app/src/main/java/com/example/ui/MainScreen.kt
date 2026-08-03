@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Landscape
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.filled.WbSunny
@@ -59,6 +60,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -92,6 +94,7 @@ import com.example.ui.components.TerrainElevationProfilePanel
 import com.example.ui.components.TerrainGoogleMapScreen
 import com.example.ui.components.SurveyLayerImporter
 import java.util.Locale
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private data class AppTab(
@@ -290,6 +293,44 @@ private fun TerrainTab(
     val localViewportResetKey = rememberSaveable { mutableIntStateOf(0) }
     val viewportResetKey = vmViewportReset + localViewportResetKey.intValue
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pendingScreenshot by remember { mutableStateOf(ByteArray(0)) }
+    var screenshotMessage by remember { mutableStateOf<String?>(null) }
+    var isExportingScreenshot by remember { mutableStateOf(false) }
+    val screenshotLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/png"),
+    ) { uri ->
+        if (uri == null) {
+            isExportingScreenshot = false
+            screenshotMessage = "Screenshot canceled"
+            return@rememberLauncherForActivityResult
+        }
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(pendingScreenshot) }
+                ?: error("Could not open the selected destination")
+        }.onSuccess {
+            screenshotMessage = "Terrain PNG saved"
+        }.onFailure {
+            screenshotMessage = "Screenshot failed: ${it.localizedMessage}"
+        }
+        isExportingScreenshot = false
+    }
+    fun exportScreenshot() {
+        if (isExportingScreenshot || bitmap == null || isRendering) return
+        isExportingScreenshot = true
+        screenshotMessage = "Building terrain PNG…"
+        scope.launch {
+            runCatching { viewModel.buildProjectExportFiles() }
+                .onSuccess { files ->
+                    pendingScreenshot = files.terrainPng
+                    screenshotLauncher.launch("${files.fileStem}-terrain.png")
+                }
+                .onFailure {
+                    isExportingScreenshot = false
+                    screenshotMessage = "Screenshot failed: ${it.localizedMessage}"
+                }
+        }
+    }
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> viewModel.onLocationPermissionResult(granted) }
@@ -445,6 +486,13 @@ private fun TerrainTab(
                 TerrainQuickAction("Light +", Icons.Default.RotateRight) { viewModel.rotateSunAzimuth(45f) }
                 TerrainQuickAction("Fit", Icons.Default.CenterFocusStrong) { localViewportResetKey.intValue++ }
                 TerrainQuickAction(
+                    if (isExportingScreenshot) "Saving…" else "Screenshot",
+                    Icons.Default.Save,
+                    enabled = bitmap != null && !isRendering && !isExportingScreenshot,
+                    modifier = Modifier.testTag("terrain_screenshot_button"),
+                    onClick = ::exportScreenshot,
+                )
+                TerrainQuickAction(
                     when {
                         !canRefine -> "No LAZ source"
                         isRefining -> "Loading"
@@ -597,6 +645,21 @@ private fun TerrainTab(
                     .verticalScroll(rememberScrollState()),
             )
         }
+
+        screenshotMessage?.let { message ->
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                tonalElevation = 3.dp,
+                shadowElevation = 4.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 70.dp),
+            ) {
+                Text(message, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+            }
+        }
     }
 }
 
@@ -606,11 +669,13 @@ private fun TerrainQuickAction(
     icon: ImageVector,
     active: Boolean = false,
     enabled: Boolean = true,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
     TextButton(
         onClick = onClick,
         enabled = enabled,
+        modifier = modifier,
         shape = RoundedCornerShape(12.dp),
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
     ) {
