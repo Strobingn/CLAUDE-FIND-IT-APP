@@ -94,6 +94,7 @@ import com.example.ui.components.LidarControlPanel
 import com.example.ui.components.LidarMapCanvas
 import com.example.ui.components.NysLazTilePicker
 import com.example.ui.components.OfflineBasemapManager
+import com.example.ui.components.SavedLidarLibrarySection
 import com.example.ui.components.TargetLoggerPanel
 import com.example.ui.components.TerrainCellInspectionPanel
 import com.example.ui.components.TerrainElevationProfilePanel
@@ -911,6 +912,17 @@ private fun ImportTab(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        // Always first: previous downloads, rename, reopen — so users never miss stored LAZ tiles.
+        SavedLidarLibrarySection(
+            onTerrainLoaded = { result, source ->
+                viewModel.setCustomTerrain(result, source)
+                onImported()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+        )
+
         OfflineBasemapManager(
             suggestedName = metadata.siteName,
             regions = offlineRegions,
@@ -929,7 +941,7 @@ private fun ImportTab(
             onDelete = viewModel::deleteOfflineBasemapRegion,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+                .padding(start = 16.dp, end = 16.dp),
         )
 
         SurveyLayerImporter(
@@ -941,7 +953,7 @@ private fun ImportTab(
             onDelete = viewModel::deleteSurveyLayer,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+                .padding(start = 16.dp, end = 16.dp),
         )
 
         NysLazTilePicker(
@@ -951,7 +963,7 @@ private fun ImportTab(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+                .padding(start = 16.dp, end = 16.dp),
         )
 
         CustomFileLoader(

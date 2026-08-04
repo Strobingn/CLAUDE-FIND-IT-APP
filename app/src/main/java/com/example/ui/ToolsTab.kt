@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Hub
@@ -20,6 +21,8 @@ import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.WbSunny
+import androidx.compose.ui.platform.LocalContext
+import com.example.data.download.LazDownloadQueue
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -50,6 +53,7 @@ fun ToolsTab(
     padding: PaddingValues,
     onNavigateToTab: (Int) -> Unit,
 ) {
+    val context = LocalContext.current
     val loggedSignals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val plannedRoute by viewModel.plannedRoute.collectAsStateWithLifecycle()
     val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
@@ -65,6 +69,8 @@ fun ToolsTab(
     val positionedFinds = loggedSignals.count { it.latitude != null && it.longitude != null }
     val openDigs = excavationLogs.count { !it.isComplete }
     val completedDigs = excavationLogs.count { it.isComplete }
+    val savedLidarCount = remember(context) { LazDownloadQueue.store(context).list().size }
+    val lidarFolderPath = remember(context) { LazDownloadQueue.store(context).directory.absolutePath }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(padding).testTag("tools_tab"),
@@ -77,6 +83,25 @@ fun ToolsTab(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        item {
+            ToolCard(
+                icon = Icons.Default.Folder,
+                title = "Saved LiDAR downloads",
+                status = if (savedLidarCount == 0) {
+                    "No files yet"
+                } else {
+                    "$savedLidarCount file(s) · rename on Import"
+                },
+                statusActive = savedLidarCount > 0,
+                description = "App-private folder for every downloaded or imported LAZ/LAS. " +
+                    "Path: $lidarFolderPath. Open the Import tab to reopen, rename for future reuse, or delete.",
+            ) {
+                TextButton(
+                    onClick = { onNavigateToTab(TAB_IMPORT) },
+                    modifier = Modifier.testTag("tool_open_saved_lidar"),
+                ) { Text("Open Import library") }
+            }
         }
         item {
             ToolCard(
@@ -329,3 +354,4 @@ private fun routeDistanceText(totalMeters: Double): String =
 private const val TAB_TERRAIN = 0
 private const val TAB_MAP = 1
 private const val TAB_FINDS = 5
+private const val TAB_IMPORT = 6
