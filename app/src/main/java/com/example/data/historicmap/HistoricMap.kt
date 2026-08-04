@@ -55,12 +55,12 @@ data class HistoricMapFeature(
 )
 
 /** Locale-independent control-point storage, matching the breadcrumb codec conventions. */
-internal fun controlPointsToStorage(points: List<HistoricMapControlPoint>): String =
+fun controlPointsToStorage(points: List<HistoricMapControlPoint>): String =
     points.joinToString(";") { point ->
         "${point.imageX},${point.imageY},${point.latitude},${point.longitude}"
     }
 
-internal fun controlPointsFromStorage(value: String): List<HistoricMapControlPoint> = buildList {
+fun controlPointsFromStorage(value: String): List<HistoricMapControlPoint> = buildList {
     value.split(';').forEach { serializedPoint ->
         val values = serializedPoint.split(',')
         if (values.size != 4) return@forEach

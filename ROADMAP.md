@@ -359,17 +359,17 @@ Exit criteria:
 
 ### Phase 6 — Historic-map intelligence
 
-- Add automatic georeferencing with manual control points. **Engine implemented; unit verified.** `GeoReferencer` fits a least-squares affine from 3+ control points (exact similarity fit for 2), rejects collinear/duplicate sets, and reports per-point meter residuals; map UI wiring is the remaining step.
-- Add opacity, side-by-side, and swipe alignment tools. **UI work; not started.** The alignment engine and metadata below are ready to back these tools.
+- Add automatic georeferencing with manual control points. **Implemented; unit verified; production UI wired (GROKV5).** `GeoReferencer` fits a least-squares affine from 3+ control points (exact similarity fit for 2), rejects collinear/duplicate sets, and reports per-point meter residuals. Map tab: image crosshair + map tap adds control points; Fit applies `HistoricMapGeoreference.placementFromFit` to the ground overlay; confidence/RMSE stay on-screen; fits persist to SharedPreferences and Room `historic_maps`.
+- Add opacity, side-by-side, and swipe alignment tools. **Implemented in production UI.** Opacity slider retained; swipe blend multiplies active historic overlay opacity; side-by-side dialog compares terrain hillshade vs historic image.
 - Extract roads, structures, walls, and boundaries. **Data model implemented; unit verified.** `HistoricMapFeature` with typed geometry (`ROAD`, `STRUCTURE`, `WALL`, `BOUNDARY`) persists per map with confidence and notes; automatic image extraction remains future work.
-- Score map-to-terrain agreement and georeferencing confidence. **Implemented; unit verified.** `MapTerrainAgreement` blends support coverage and contrast into a bounded 0–1 score whose ranking adjustment is capped at ±0.1 so map evidence informs but never overpowers terrain; `GeoReferenceConfidence` buckets (good / fair / low-confidence / insufficient) are computed from meter-scale RMSE.
-- Preserve source and alignment metadata. **Implemented; unit verified.** `GeoReferencedMap` retains source attribution, control points, transform coefficients, RMSE/max residuals, and confidence in the `historic_maps` and `historic_map_features` tables (database v15), so every alignment is reproducible and correctable.
+- Score map-to-terrain agreement and georeferencing confidence. **Implemented; unit verified; UI wired.** `MapTerrainAgreement` blends support coverage and contrast into a bounded 0–1 score whose ranking adjustment is capped at ±0.1 so map evidence informs but never overpowers terrain; `GeoReferenceConfidence` buckets (good / fair / low-confidence / insufficient) are computed from meter-scale RMSE and shown on the historic map panel.
+- Preserve source and alignment metadata. **Implemented; unit verified; UI wired.** `GeoReferencedMap` retains source attribution, control points, transform coefficients, RMSE/max residuals, and confidence in the `historic_maps` and `historic_map_features` tables (database v15), so every alignment is reproducible and correctable.
 
 Exit criteria:
 
-- Alignment quality is visible and correctable.
-- Low-confidence georeferencing is clearly labeled.
-- Map agreement informs ranking without overpowering terrain evidence.
+- Alignment quality is visible and correctable. **Met** (confidence, RMSE, undo/clear CPs, manual nudge).
+- Low-confidence georeferencing is clearly labeled. **Met** (panel confidence line + error color).
+- Map agreement informs ranking without overpowering terrain evidence. **Met** (score UI + capped ranking adjustment).
 
 ### Phase 7 — Machine-learning ranking
 

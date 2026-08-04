@@ -13,7 +13,7 @@
 | 3 Historic-feature analysis | Yes | Yes (AI workspace + evidence) | **Mostly** (field-area false-positive metrics open) |
 | 4 Performance architecture | Partial | Partial | **Partial** |
 | 5 Field verification | Yes | **Wired this session** | **Yes for offline record path** (AR deferred) |
-| 6 Historic-map intelligence | Yes (GeoReferencer, agreement) | Partial (manual overlay + agreement score) | **No** — control-point UI + swipe tools remain |
+| 6 Historic-map intelligence | Yes (GeoReferencer, agreement) | Yes (control points, fit, swipe, side-by-side) | **Yes** (auto feature extraction still future) |
 | 7 ML ranking | Yes | Yes (Gemini assistant train/activate) | **Mostly** (regional datasets field-data dependent) |
 | 8 Advanced terrain tools | Yes | Yes (viewshed, profile, compare) | **Mostly** |
 | 9 Interop / cloud | Partial writers | Partial exports (CSV/GPX/KML/SHP/KMZ/PDF/PNG) | **No** — GeoTIFF/QGIS/archive UI + cloud not wired |
@@ -41,9 +41,17 @@
 - AR guidance (device-bound future work per ROADMAP)
 - Live cloud delivery of the sync queue (Phase 9)
 
+## Phase 6 — wired this session (after Phase 5)
+
+| Component | Before | After |
+| --------- | ------ | ----- |
+| Control-point georeferencing | Engine + tests only | Map panel: image X/Y crosshair + map tap → Fit → ground overlay + Room |
+| Opacity / swipe / side-by-side | Opacity only | Opacity + swipe blend on active map + side-by-side dialog |
+| Confidence / RMSE labels | Fit metadata in engine | Always shown on historic map panel |
+
 ## Next phase to fully wire
 
-**Phase 6 remaining UI:** control-point georeferencing (`GeoReferencer`) in the historic-map flow, then opacity / side-by-side / swipe alignment tools.
+**Phase 9 remaining exports** (GeoTIFF / QGIS project / portable archive UI) or Phase 4 performance polish, depending on priority. Automatic historic-map feature extraction remains future work under Phase 6.
 
 ## AI feature TODO list (`TODO LIST.mdown`)
 

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Sync
@@ -235,6 +236,22 @@ fun ToolsTab(
                     onClick = { onNavigateToTab(TAB_FINDS) },
                     modifier = Modifier.testTag("tool_open_sync"),
                 ) { Text("Open targets") }
+            }
+        }
+        item {
+            ToolCard(
+                icon = Icons.Default.History,
+                title = "Historic map georeference",
+                status = "Map tab · control points + swipe + side-by-side",
+                statusActive = true,
+                description = "Import a scanned plat, set control points (image crosshair + map tap), " +
+                    "fit an affine transform with visible confidence/RMSE, blend with swipe, or " +
+                    "compare side-by-side. Fits persist to Room historic_maps.",
+            ) {
+                TextButton(
+                    onClick = { onNavigateToTab(TAB_MAP) },
+                    modifier = Modifier.testTag("tool_open_historic_georef"),
+                ) { Text("Open map") }
             }
         }
     }
