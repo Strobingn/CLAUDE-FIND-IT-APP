@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ContentCopy
@@ -81,6 +82,9 @@ import com.example.data.field.deleteVoiceNoteFile
 import com.example.geospatial.trueToMagneticBearingDegrees
 import com.example.data.export.buildCsv
 import com.example.data.field.FindSiteClusterer
+import com.example.data.field.FieldWaypoint
+import com.example.data.field.OptimizedFieldRoute
+import com.example.data.field.TargetRouteOptimizer
 import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
 import com.example.data.export.buildKml
@@ -88,7 +92,9 @@ import com.example.data.export.buildKmz
 import com.example.data.export.buildShapefileZip
 import com.example.data.export.ProjectExportFiles
 import com.example.geospatial.MeasurementFormat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 @Composable
@@ -132,6 +138,20 @@ fun TargetLoggerPanel(
     var binarySuccessMessage by remember { mutableStateOf("") }
     var pendingProjectBytes by remember { mutableStateOf(ByteArray(0)) }
     var navigationTarget by remember { mutableStateOf<TargetSignal?>(null) }
+    var plannedRoute by remember { mutableStateOf<OptimizedFieldRoute?>(null) }
+    val routeStopCount = loggedSignals.count { it.latitude != null && it.longitude != null }
+    val planRoute: () -> Unit = {
+        scope.launch {
+            val waypoints = loggedSignals.mapNotNull { signal ->
+                val latitude = signal.latitude ?: return@mapNotNull null
+                val longitude = signal.longitude ?: return@mapNotNull null
+                FieldWaypoint(signal.id.toString(), latitude, longitude, signal.metalType.label)
+            }
+            plannedRoute = withContext(Dispatchers.Default) {
+                TargetRouteOptimizer.optimize(waypoints, deviceLatitude, deviceLongitude)
+            }
+        }
+    }
 
     LaunchedEffect(navigationTarget?.id) {
         onSetCompassNavigationActive(navigationTarget != null)
@@ -288,10 +308,28 @@ fun TargetLoggerPanel(
                     Spacer(Modifier.width(8.dp))
                     Text(if (isBuildingProjectExport) "Building export…" else "Export terrain and report")
                 }
+                OutlinedButton(
+                    onClick = planRoute,
+                    enabled = routeStopCount >= 2,
+                    modifier = Modifier.fillMaxWidth().height(52.dp).testTag("plan_route_button"),
+                ) {
+                    Icon(Icons.Default.Route, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Plan target route · $routeStopCount stops")
+                }
             }
         }
 
         SitesCard(loggedSignals)
+
+        plannedRoute?.let { route ->
+            PlannedRouteCard(
+                route = route,
+                signals = loggedSignals,
+                onNavigate = { navigationTarget = it },
+                onDismiss = { plannedRoute = null },
+            )
+        }
 
         val recordedBreadcrumbPoints = breadcrumbTracks.sumOf { it.points.size }
         Card(
@@ -1173,6 +1211,82 @@ private fun SitesCard(signals: List<TargetSignal>) {
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+        }
+    }
+}
+
+
+/**
+ * The optimized walking order across all georeferenced targets, built by [TargetRouteOptimizer].
+ * Each stop shows its leg distance from the previous one; tapping a stop hands it to the
+ * compass navigation flow.
+ */
+@Composable
+private fun PlannedRouteCard(
+    route: OptimizedFieldRoute,
+    signals: List<TargetSignal>,
+    onNavigate: (TargetSignal) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val signalsById = remember(signals) { signals.associateBy { it.id.toString() } }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Planned route",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onDismiss) { Text("Clear") }
+            }
+            Text(
+                "Shortest walking order across ${route.waypoints.size} stops · " +
+                    "${MeasurementFormat.length(route.totalDistanceMeters.toFloat())} total · tap a stop to navigate to it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            var previous: FieldWaypoint? = null
+            route.waypoints.forEachIndexed { index, waypoint ->
+                val legMeters = previous?.let {
+                    FieldNavigation.distanceMeters(it.latitude, it.longitude, waypoint.latitude, waypoint.longitude)
+                }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { signalsById[waypoint.id]?.let(onNavigate) },
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            "${index + 1}.",
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.width(30.dp),
+                        )
+                        Column {
+                            Text(waypoint.displayName, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (legMeters != null) {
+                                    "+${MeasurementFormat.length(legMeters.toFloat())} from previous stop"
+                                } else {
+                                    "First stop"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                previous = waypoint
             }
         }
     }
