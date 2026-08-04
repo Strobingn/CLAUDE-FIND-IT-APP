@@ -404,14 +404,14 @@ Exit criteria:
 
 ### Phase 9 — Interoperability and cloud services
 
-- Full terrain-image and report export
-- Shapefile, GeoPackage, KMZ, GeoTIFF, and PDF export
-- Image bundles and annotated maps
-- QR project sharing
-- QGIS auto-project creation
-- Portable project archives
-- Optional cloud backup and multi-device synchronization
-- Conflict detection and resolution
+- Full terrain-image and report export. **Partially implemented.** Terrain rasters export as GeoTIFF (below); styled PDF report export remains future work.
+- Shapefile, GeoPackage, KMZ, GeoTIFF, and PDF export. **Partially implemented; unit verified.** `GeoTiffWriter` (Float32 WGS-84 with geokeys), `ShapefileWriter` (.shp/.shx/.dbf point layers with attributes), and `KmzExporter` are byte-verified; GeoPackage and PDF remain future work.
+- Image bundles and annotated maps. **Not started.** KMZ supporting files and archive packaging (below) provide the bundling primitives.
+- QR project sharing. **Not started** (camera/scan UI); portable archives below are the payload it would carry.
+- QGIS auto-project creation. **Implemented; unit verified.** `QgisProjectWriter` emits a well-formed .qgs referencing exported rasters and vectors with names, relative datasources, and EPSG:4326 preset.
+- Portable project archives. **Implemented; unit verified.** `ProjectArchiveWriter` bundles a project into one self-describing zip with a manifest that round-trips and rejects malformed archives.
+- Optional cloud backup and multi-device synchronization. **Not started** (external service); the Phase 5 offline sync queue and the conflict resolver below are its local prerequisites. Field use never requires connectivity.
+- Conflict detection and resolution. **Implemented; unit verified.** `SyncConflictResolver`: both-sides-changed conflicts are reported for review instead of guessed, single-side changes win, and ties break deterministically on timestamps.
 
 Exit criteria:
 
