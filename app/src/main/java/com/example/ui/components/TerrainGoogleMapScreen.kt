@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -174,12 +175,16 @@ fun TerrainGoogleMapScreen(
     // Search coverage: ground swept so far, derived from GPS breadcrumb tracks and rendered
     // as a translucent layer under the terrain overlay.
     var showCoverage by rememberSaveable(terrainKey) { mutableStateOf(false) }
+    var sweepWidthMeters by rememberSaveable(terrainKey) {
+        mutableFloatStateOf(SweepCoverageTracker.DEFAULT_SWEEP_WIDTH_METERS)
+    }
     var coverageOverlay by remember { mutableStateOf<GroundOverlay?>(null) }
     val sweepCoverage by produceState<SweepCoverageGrid?>(
         null,
         showCoverage,
         breadcrumbTracks,
         metadata.bounds,
+        sweepWidthMeters,
     ) {
         val bounds = metadata.bounds
         if (!showCoverage || bounds == null || breadcrumbTracks.isEmpty()) {
@@ -190,6 +195,7 @@ fun TerrainGoogleMapScreen(
             runCatching {
                 SweepCoverageTracker.build(
                     tracks = breadcrumbTracks,
+                    sweepWidthMeters = sweepWidthMeters,
                     minLatitude = bounds.minLat,
                     maxLatitude = bounds.maxLat,
                     minLongitude = bounds.minLon,
@@ -619,16 +625,39 @@ fun TerrainGoogleMapScreen(
                     },
                 )
             }
-            sweepCoverage?.let { coverage ->
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            if (showCoverage) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                    ),
+                    modifier = Modifier.widthIn(max = 240.dp),
                 ) {
-                    Text(
-                        "Swept ${(coverage.coverageRatio * 100f).toInt()}% · " + sweptAreaText(coverage),
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                    )
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Search coverage",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        sweepCoverage?.let { coverage ->
+                            Text(
+                                "Swept ${(coverage.coverageRatio * 100f).toInt()}% · " + sweptAreaText(coverage),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        } ?: Text(
+                            "Record a GPS trail to build the coverage layer.",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        Text("Sweep width", style = MaterialTheme.typography.labelSmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf(1f, 2f, 3f, 4f).forEach { width ->
+                                FilterChip(
+                                    selected = sweepWidthMeters == width,
+                                    onClick = { sweepWidthMeters = width },
+                                    label = { Text("${width.toInt()} m") },
+                                )
+                            }
+                        }
+                    }
                 }
             }
             if (!historicPanelExpanded) {
