@@ -491,10 +491,14 @@ private fun TerrainTab(
                 .testTag("terrain_workspace"),
         )
 
-        viewshedState.value?.let { shed ->
+        // The viewshed lives on its own compact card; the full cell-inspection panel closes
+        // as soon as a viewshed is requested so neither one covers the overlay on the map.
+        if (viewshedState.value != null || viewshedComputing.value) {
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                tonalElevation = 4.dp,
+                shadowElevation = 6.dp,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(top = 84.dp, start = 12.dp)
@@ -505,15 +509,33 @@ private fun TerrainTab(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
-                        "Viewshed overlay active",
+                        "Viewshed",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
-                    Text(
-                        "${(shed.visibilityRatio * 100f).toInt()}% of the grid visible from the marked cell",
+                    viewshedState.value?.let { shed ->
+                        Text(
+                            "Observer ${shed.observerXPercent.toInt()}%, ${shed.observerYPercent.toInt()}% · radius ${MeasurementFormat.length(shed.maxRadiusMeters)}",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        Text(
+                            "${(shed.visibilityRatio * 100f).toInt()}% visible (${shed.visibleCells} of ${shed.analyzedCells} cells)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "Green = visible from observer · dark = blocked",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } ?: Text(
+                        "Computing viewshed…",
                         style = MaterialTheme.typography.labelSmall,
                     )
-                    TextButton(onClick = { viewshedState.value = null }) { Text("Clear") }
+                    TextButton(
+                        onClick = { viewshedState.value = null },
+                        enabled = !viewshedComputing.value,
+                    ) { Text("Clear") }
                 }
             }
         }
@@ -528,6 +550,8 @@ private fun TerrainTab(
                 onComputeViewshed = {
                     if (!viewshedComputing.value) {
                         viewshedComputing.value = true
+                        // Free the map immediately; results arrive on the compact viewshed card.
+                        inspectedCell.value = null
                         scope.launch {
                             val result = withContext(Dispatchers.Default) {
                                 TerrainViewshedAnalyzer.sample(
