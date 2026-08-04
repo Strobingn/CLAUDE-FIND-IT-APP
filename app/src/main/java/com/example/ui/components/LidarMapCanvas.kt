@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ai.TerrainVisionSession
+import com.example.analysis.TerrainViewshed
 import com.example.data.NormalizedRasterBounds
 import com.example.data.TargetSignal
 import com.example.data.TerrainPerformanceSession
@@ -116,6 +117,9 @@ fun LidarMapCanvas(
     profileStartPoint: Pair<Float, Float>? = null,
     profileEndPoint: Pair<Float, Float>? = null,
     onInspectPosition: ((Float, Float) -> Unit)? = null,
+    viewshed: TerrainViewshed? = null,
+    viewshedGridWidth: Int = 0,
+    viewshedGridHeight: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     val imageBitmap = remember(bitmap) {
@@ -130,6 +134,39 @@ fun LidarMapCanvas(
     }
     val heatmapCells = remember(loggedSignals, showHeatmap) {
         if (showHeatmap) computeDigPriorityHeatmap(loggedSignals, HEATMAP_BINS) else null
+    }
+    // Binned viewshed overlay: -1 = no grid data, 0 = analyzed but blocked, 1 = visible.
+    val viewshedBins = remember(viewshed, viewshedGridWidth, viewshedGridHeight) {
+        val shed = viewshed ?: return@remember null
+        if (viewshedGridWidth <= 0 || viewshedGridHeight <= 0) return@remember null
+        if (shed.visibility.isEmpty()) return@remember null
+        val bins = IntArray(VIEWSHED_BINS * VIEWSHED_BINS) { -1 }
+        for (binRow in 0 until VIEWSHED_BINS) {
+            val y0 = binRow * viewshedGridHeight / VIEWSHED_BINS
+            val y1 = ((binRow + 1) * viewshedGridHeight / VIEWSHED_BINS).coerceAtLeast(y0 + 1)
+            for (binCol in 0 until VIEWSHED_BINS) {
+                val x0 = binCol * viewshedGridWidth / VIEWSHED_BINS
+                val x1 = ((binCol + 1) * viewshedGridWidth / VIEWSHED_BINS).coerceAtLeast(x0 + 1)
+                var anyCell = false
+                var anyVisible = false
+                for (y in y0 until y1.coerceAtMost(viewshedGridHeight)) {
+                    val rowOffset = y * viewshedGridWidth
+                    for (x in x0 until x1.coerceAtMost(viewshedGridWidth)) {
+                        val index = rowOffset + x
+                        if (index < shed.visibility.size) {
+                            anyCell = true
+                            if (shed.visibility[index]) anyVisible = true
+                        }
+                    }
+                }
+                bins[binRow * VIEWSHED_BINS + binCol] = when {
+                    anyVisible -> 1
+                    anyCell -> 0
+                    else -> -1
+                }
+            }
+        }
+        bins
     }
     val surveyGeometries = remember(surveyFeatures, geoMetadata) {
         surveyFeatures.mapNotNull { feature ->
@@ -359,6 +396,35 @@ fun LidarMapCanvas(
                             )
                         }
                     }
+                }
+                if (viewshedBins != null && viewshed != null) {
+                    val cellWidth = displayWidth / VIEWSHED_BINS
+                    val cellHeight = displayHeight / VIEWSHED_BINS
+                    for (row in 0 until VIEWSHED_BINS) {
+                        for (col in 0 until VIEWSHED_BINS) {
+                            when (viewshedBins[row * VIEWSHED_BINS + col]) {
+                                0 -> drawRect(
+                                    color = Color(0xFF303A46),
+                                    topLeft = Offset(imageLeft + col * cellWidth, imageTop + row * cellHeight),
+                                    size = androidx.compose.ui.geometry.Size(cellWidth, cellHeight),
+                                    alpha = 0.35f,
+                                )
+                                1 -> drawRect(
+                                    color = Color(0xFF2ECC71),
+                                    topLeft = Offset(imageLeft + col * cellWidth, imageTop + row * cellHeight),
+                                    size = androidx.compose.ui.geometry.Size(cellWidth, cellHeight),
+                                    alpha = 0.45f,
+                                )
+                            }
+                        }
+                    }
+                    val observer = Offset(
+                        imageLeft + (viewshed.observerXPercent.coerceIn(0f, 100f) / 100f) * displayWidth,
+                        imageTop + (viewshed.observerYPercent.coerceIn(0f, 100f) / 100f) * displayHeight,
+                    )
+                    drawCircle(color = Color.Black, radius = 12f, center = observer, alpha = 0.65f)
+                    drawCircle(color = Color(0xFF29B6F6), radius = 8f, center = observer)
+                    drawCircle(color = Color.White, radius = 8f, center = observer, style = Stroke(2f))
                 }
                 if (gridSpacing >= 1f) {
                     // gridSpacing is a real-world spacing in feet (e.g. 3 ft or 10 ft survey
@@ -666,6 +732,7 @@ private fun containScale(
 )
 
 private const val HEATMAP_BINS = 24
+private const val VIEWSHED_BINS = 64
 private const val VIEWPORT_PUBLISH_DEBOUNCE_MS = 120L
 
 private fun heatmapColor(intensity: Float): Color = if (intensity < 0.5f) {

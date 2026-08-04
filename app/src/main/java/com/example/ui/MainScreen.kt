@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -390,6 +391,9 @@ private fun TerrainTab(
             breadcrumbPaths = breadcrumbPaths,
             surveyFeatures = surveyLayers.flatMap { it.features },
             inspectionPoint = inspectedCell.value?.let { it.xPercent to it.yPercent },
+            viewshed = viewshedState.value,
+            viewshedGridWidth = elevationGrid.width,
+            viewshedGridHeight = elevationGrid.height,
             profileStartPoint = profileStartPoint,
             profileEndPoint = profileEndPoint,
             onInspectPosition = { xPercent, yPercent ->
@@ -419,6 +423,33 @@ private fun TerrainTab(
                 .padding(top = 76.dp, bottom = 58.dp)
                 .testTag("terrain_workspace"),
         )
+
+        viewshedState.value?.let { shed ->
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 84.dp, start = 12.dp)
+                    .widthIn(max = 280.dp),
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(
+                        "Viewshed overlay active",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "${(shed.visibilityRatio * 100f).toInt()}% of the grid visible from the marked cell",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                    TextButton(onClick = { viewshedState.value = null }) { Text("Clear") }
+                }
+            }
+        }
 
         inspectedCell.value?.let { inspection ->
             TerrainCellInspectionPanel(
