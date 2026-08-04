@@ -5,8 +5,10 @@ import kotlin.math.max
 /** Debounce before hillshade work. Heavy analysis modes recompute local stats/curvature. */
 internal fun hillshadeDebounceMs(visualizationMode: Int, immediate: Boolean): Long = when {
     immediate -> 0L
-    visualizationMode in HEAVY_HILLSHADE_MODES -> 180L
-    else -> 80L
+    // Tighter than the previous 180/80 ms so slider drags feel snappier while still
+    // coalescing intermediate frames (renderGeneration already drops superseded work).
+    visualizationMode in HEAVY_HILLSHADE_MODES -> 120L
+    else -> 48L
 }
 
 /**

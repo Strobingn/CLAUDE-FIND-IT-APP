@@ -29,6 +29,9 @@ data class TerrainDecodeOutcome(
  *
  * Full-footprint opens decode at the requested overview resolution on the first pass (default
  * 1,024 px). There is no progressive 256 px stub — first paint is the detailed product.
+ *
+ * When [onPreview] is provided, the decoded elevation product is handed off before the GPU mesh
+ * is finished so 2D hillshade can paint while 3D mesh work continues.
  */
 class TerrainDecodeCoordinator(
     private val cache: LazTerrainCache,
@@ -42,10 +45,6 @@ class TerrainDecodeCoordinator(
         onPreview: (suspend (TerrainDecodeOutcome) -> Unit)? = null,
         onStage: suspend (String) -> Unit = {},
     ): TerrainDecodeOutcome {
-        // onPreview is retained for call-site compatibility but is intentionally unused: first
-        // paint is always the full requested resolution, not a coarse progressive stub.
-        @Suppress("UNUSED_PARAMETER")
-        val unusedPreview = onPreview
         val sanitized = options.sanitized()
         val fullKey = decodeKey(file, sanitized)
         val lock = locks.getOrPut(fullKey) { Mutex() }
@@ -61,9 +60,13 @@ class TerrainDecodeCoordinator(
                             LazTerrainCache.Hit.MISS -> "Reading point cloud…"
                         },
                     )
-                    val scene = buildGpuScene(fullLookup.result.grid)
+                    val cached = fullLookup.result
+                    val scene = buildGpuScene(cached.grid)
                     LazSpatialIndex.ensureBuiltAsync(file)
-                    return@withLock TerrainDecodeOutcome(fullLookup.result, fullLookup.hit, scene)
+                    val outcome = TerrainDecodeOutcome(cached, fullLookup.hit, scene)
+                    // Cache hits are already fast; still notify so callers share one paint path.
+                    onPreview?.invoke(outcome)
+                    return@withLock outcome
                 }
 
                 onStage("Decoding LAZ/LAS at ${sanitized.rasterResolution} px…")
@@ -76,7 +79,27 @@ class TerrainDecodeCoordinator(
                 LazSpatialIndex.ensureBuiltAsync(file)
 
                 currentCoroutineContext().ensureActive()
-                onStage("Preparing detailed GPU terrain…")
+                // 2D path can start as soon as the elevation grid exists; GPU mesh is secondary.
+                if (onPreview != null) {
+                    onStage("Terrain ready — finishing GPU mesh…")
+                    onPreview(
+                        TerrainDecodeOutcome(
+                            terrain = decoded,
+                            cacheHit = LazTerrainCache.Hit.MISS,
+                            // Same quality floor (1,024) but coarser tiling so mesh work is cheaper
+                            // for the intermediate publish; final return still uses standard tiles.
+                            gpuScene = withContext(Dispatchers.Default) {
+                                TerrainGpuSceneBuilder.build(
+                                    source = decoded.grid,
+                                    maxFinestDimension = GPU_PREVIEW_MAX_DIMENSION,
+                                    tileSize = GPU_FAST_TILE_SIZE,
+                                )
+                            },
+                        ),
+                    )
+                } else {
+                    onStage("Preparing detailed GPU terrain…")
+                }
                 val scene = buildGpuScene(decoded.grid)
                 TerrainDecodeOutcome(decoded, LazTerrainCache.Hit.MISS, scene)
             }
@@ -175,6 +198,8 @@ class TerrainDecodeCoordinator(
     companion object {
         internal const val GPU_PREVIEW_MAX_DIMENSION = 1_024
         internal const val GPU_PREVIEW_TILE_SIZE = 128
+        /** Larger tiles = fewer GPU batches for intermediate first-paint publish. */
+        internal const val GPU_FAST_TILE_SIZE = 256
     }
 }
 

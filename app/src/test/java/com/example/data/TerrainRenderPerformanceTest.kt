@@ -24,10 +24,10 @@ class TerrainRenderPerformanceTest {
     @Test
     fun hillshadeDebounceIsLongerForHeavyAnalysisModes() {
         assertEquals(0L, hillshadeDebounceMs(visualizationMode = 5, immediate = true))
-        assertEquals(80L, hillshadeDebounceMs(visualizationMode = 0, immediate = false))
-        assertEquals(180L, hillshadeDebounceMs(visualizationMode = 3, immediate = false))
-        assertEquals(180L, hillshadeDebounceMs(visualizationMode = 4, immediate = false))
-        assertEquals(180L, hillshadeDebounceMs(visualizationMode = 5, immediate = false))
+        assertEquals(48L, hillshadeDebounceMs(visualizationMode = 0, immediate = false))
+        assertEquals(120L, hillshadeDebounceMs(visualizationMode = 3, immediate = false))
+        assertEquals(120L, hillshadeDebounceMs(visualizationMode = 4, immediate = false))
+        assertEquals(120L, hillshadeDebounceMs(visualizationMode = 5, immediate = false))
     }
 
     @Test

@@ -55,6 +55,8 @@ internal class LidarRasterizer(
 ) {
     private val options = options.sanitized()
     private val isOverview = this.options.focusBounds == null
+    /** Classification / ground-class tracking is only needed for source-classified ground mode. */
+    private val tracksSourceClasses = this.options.groundMode == GroundSurfaceMode.SOURCE_CLASSIFIED
     private val sourceRangeX = (maxX - minX).takeIf { it.isFinite() && it > 0.0 } ?: 1.0
     private val sourceRangeY = (maxY - minY).takeIf { it.isFinite() && it > 0.0 } ?: 1.0
     private val focus = this.options.focusBounds
@@ -67,6 +69,9 @@ internal class LidarRasterizer(
     private val longSide = this.options.rasterResolution
     val width: Int
     val height: Int
+    /** Precomputed cell scales: multiplies replace two divisions on every return (hot path). */
+    private val xToGrid: Double
+    private val yToGrid: Double
 
     private val groundMin: FloatArray
     private val groundCount: IntArray
@@ -102,6 +107,8 @@ internal class LidarRasterizer(
             height = longSide
             width = (longSide * rangeX / rangeY).roundToInt().coerceIn(MIN_SHORT_SIDE, longSide)
         }
+        xToGrid = (width - 1).toDouble() / rangeX
+        yToGrid = (height - 1).toDouble() / rangeY
         groundMin = FloatArray(width * height) { Float.MAX_VALUE }
         groundCount = IntArray(width * height)
         allMin = FloatArray(width * height) { Float.MAX_VALUE }
@@ -198,15 +205,19 @@ internal class LidarRasterizer(
         allCount[index]++
         pointsBinned++
 
-        val normalizedClass = classification.coerceIn(0, 255)
-        classHistogram[normalizedClass]++
-        // Class 2 is Ground. Class 8 was historically Model Key-Point; modern files use the key-point flag.
-        val isSourceGround = normalizedClass == 2 || normalizedClass == 8 ||
-            (isKeyPoint && normalizedClass == 2)
-        if (isSourceGround) {
-            if (z < groundMin[index]) groundMin[index] = z
-            groundCount[index]++
-            groundPointsBinned++
+        // Skip classification work when the requested surface does not use ASPRS ground classes.
+        // On multi-hundred-million-point tiles this avoids histogram + class tests for every sample.
+        if (tracksSourceClasses) {
+            val normalizedClass = classification.coerceIn(0, 255)
+            classHistogram[normalizedClass]++
+            // Class 2 is Ground. Class 8 was historically Model Key-Point; modern files use the key-point flag.
+            val isSourceGround = normalizedClass == 2 || normalizedClass == 8 ||
+                (isKeyPoint && normalizedClass == 2)
+            if (isSourceGround) {
+                if (z < groundMin[index]) groundMin[index] = z
+                groundCount[index]++
+                groundPointsBinned++
+            }
         }
         return true
     }
@@ -223,8 +234,10 @@ internal class LidarRasterizer(
     private fun cellIndex(x: Double, y: Double): Int? {
         if (!x.isFinite() || !y.isFinite()) return null
         if (x < cropMinX || x > cropMaxX || y < cropMinY || y > cropMaxY) return null
-        val gx = (((x - cropMinX) / rangeX) * (width - 1)).toInt().coerceIn(0, width - 1)
-        val gy = ((1.0 - (y - cropMinY) / rangeY) * (height - 1)).toInt().coerceIn(0, height - 1)
+        // Multiplication by precomputed scales matches the prior division mapping and is
+        // substantially cheaper on every return of large LAZ tiles.
+        val gx = ((x - cropMinX) * xToGrid).toInt().coerceIn(0, width - 1)
+        val gy = ((cropMaxY - y) * yToGrid).toInt().coerceIn(0, height - 1)
         return gy * width + gx
     }
 
@@ -232,9 +245,10 @@ internal class LidarRasterizer(
         if (pointsBinned == 0 || allCount.none { it > 0 }) return null
 
         val populatedCells = allCount.count { it > 0 }
-        val classifiedCells = groundCount.count { it > 0 }
+        val classifiedCells = if (tracksSourceClasses) groundCount.count { it > 0 } else 0
         val classifiedCoverageIsUsable =
-            groundPointsBinned >= MIN_CLASSIFIED_POINTS &&
+            tracksSourceClasses &&
+                groundPointsBinned >= MIN_CLASSIFIED_POINTS &&
                 classifiedCells >= max(MIN_CLASSIFIED_CELLS, (populatedCells * 0.08f).roundToInt())
 
         val requestedMode = options.groundMode
@@ -378,11 +392,15 @@ internal class LidarRasterizer(
                 append(" isolated low spikes rejected")
             }
         }
-        val classNote = classHistogram.withIndex()
-            .filter { it.value > 0 }
-            .sortedByDescending { it.value }
-            .take(5)
-            .joinToString(prefix = "classes ", separator = ", ") { "${it.index}:${it.value}" }
+        val classNote = if (tracksSourceClasses) {
+            classHistogram.withIndex()
+                .filter { it.value > 0 }
+                .sortedByDescending { it.value }
+                .take(5)
+                .joinToString(prefix = "classes ", separator = ", ") { "${it.index}:${it.value}" }
+        } else {
+            "classification not tracked for this ground mode"
+        }
 
         return DemGenerator.LasLoadResult(
             grid = ElevationGrid(width, height, bareEarth, canopy, cellSize, coverageMask),
@@ -537,7 +555,17 @@ private fun suppressIsolatedLowNoiseRow(
                 neighbors[count++] = source[(y + dy) * width + x + dx]
             }
         }
-        neighbors.sort(0, count)
+        // Eight-element insertion sort avoids generic Array.sort overhead across up to a
+        // million raster cells while producing the same median.
+        for (i in 1 until count) {
+            val value = neighbors[i]
+            var j = i - 1
+            while (j >= 0 && neighbors[j] > value) {
+                neighbors[j + 1] = neighbors[j]
+                j--
+            }
+            neighbors[j + 1] = value
+        }
         val median = neighbors[count / 2]
         val index = y * width + x
         // Remove only extreme low outliers; shallow cellars, ditches and tracks remain untouched.

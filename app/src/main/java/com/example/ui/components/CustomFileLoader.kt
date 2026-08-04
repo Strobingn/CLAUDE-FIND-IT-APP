@@ -155,36 +155,59 @@ fun CustomFileLoader(
         workJob = scope.launch {
             try {
                 val sourceUri = Uri.fromFile(file).toString()
+                val source = TerrainImportSource(
+                    uri = sourceUri,
+                    displayName = displayName,
+                    options = options,
+                )
+                var paintedEarly = false
                 val outcome = decodeCoordinator.decode(
                     file = file,
                     displayName = displayName,
                     options = options,
+                    onPreview = { preview ->
+                        // Hillshade can paint as soon as the elevation grid is ready; GPU mesh may
+                        // still be finishing at full tile density.
+                        withContext(Dispatchers.Main.immediate) {
+                            TerrainPerformanceSession.publish(preview.gpuScene)
+                            if (!paintedEarly) {
+                                paintedEarly = true
+                                onCustomTerrainLoaded(preview.terrain, source)
+                                progressText = "Terrain visible — finishing GPU mesh…"
+                            }
+                        }
+                    },
                     onStage = { stage ->
                         withContext(Dispatchers.Main.immediate) { progressText = stage }
                     },
                 )
                 TerrainPerformanceSession.publish(outcome.gpuScene)
                 cacheSizeBytes = terrainCache.diskSizeBytes()
-                val source = TerrainImportSource(
-                    uri = sourceUri,
-                    displayName = displayName,
-                    options = options,
-                )
                 val cacheLabel = when (outcome.cacheHit) {
                     LazTerrainCache.Hit.MEMORY -> "memory cache"
                     LazTerrainCache.Hit.DISK -> "disk cache"
                     LazTerrainCache.Hit.MISS -> "streamed point-cloud decode"
                 }
-                showResult(
-                    result = outcome.terrain,
-                    name = displayName,
-                    source = source,
-                    successMessage = if (downloadedNow) {
+                if (!paintedEarly) {
+                    showResult(
+                        result = outcome.terrain,
+                        name = displayName,
+                        source = source,
+                        successMessage = if (downloadedNow) {
+                            "Saved $displayName and opened it at ${outcome.terrain.grid.width}×${outcome.terrain.grid.height} using $cacheLabel."
+                        } else {
+                            "Opened $displayName at ${outcome.terrain.grid.width}×${outcome.terrain.grid.height} using $cacheLabel."
+                        },
+                    )
+                } else {
+                    resetWorkState()
+                    isError = false
+                    message = if (downloadedNow) {
                         "Saved $displayName and opened it at ${outcome.terrain.grid.width}×${outcome.terrain.grid.height} using $cacheLabel."
                     } else {
                         "Opened $displayName at ${outcome.terrain.grid.width}×${outcome.terrain.grid.height} using $cacheLabel."
-                    },
-                )
+                    }
+                }
             } catch (_: CancellationException) {
                 resetWorkState()
                 isError = false

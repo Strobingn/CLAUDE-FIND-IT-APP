@@ -117,23 +117,34 @@ fun SavedLidarLibrarySection(
         openJob = scope.launch {
             try {
                 val options = LidarImportOptions()
+                val source = TerrainImportSource(
+                    uri = Uri.fromFile(dataset.file).toString(),
+                    displayName = dataset.displayName,
+                    options = options,
+                )
+                var paintedEarly = false
                 val outcome = decodeCoordinator.decode(
                     file = dataset.file,
                     displayName = dataset.displayName,
                     options = options,
+                    onPreview = { preview ->
+                        withContext(Dispatchers.Main.immediate) {
+                            TerrainPerformanceSession.publish(preview.gpuScene)
+                            if (!paintedEarly) {
+                                paintedEarly = true
+                                onTerrainLoaded(preview.terrain, source)
+                                progressText = "Terrain visible — finishing GPU mesh…"
+                            }
+                        }
+                    },
                     onStage = { stage ->
                         withContext(Dispatchers.Main.immediate) { progressText = stage }
                     },
                 )
                 TerrainPerformanceSession.publish(outcome.gpuScene)
-                onTerrainLoaded(
-                    outcome.terrain,
-                    TerrainImportSource(
-                        uri = Uri.fromFile(dataset.file).toString(),
-                        displayName = dataset.displayName,
-                        options = options,
-                    ),
-                )
+                if (!paintedEarly) {
+                    onTerrainLoaded(outcome.terrain, source)
+                }
                 isOpening = false
                 progressText = null
                 message = "Opened ${dataset.displayName} · ${outcome.terrain.grid.width}×${outcome.terrain.grid.height}"
