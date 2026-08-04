@@ -46,6 +46,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -79,6 +80,7 @@ import com.example.data.field.createVoiceNoteFile
 import com.example.data.field.deleteVoiceNoteFile
 import com.example.geospatial.trueToMagneticBearingDegrees
 import com.example.data.export.buildCsv
+import com.example.data.field.FindSiteClusterer
 import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
 import com.example.data.export.buildKml
@@ -87,6 +89,7 @@ import com.example.data.export.buildShapefileZip
 import com.example.data.export.ProjectExportFiles
 import com.example.geospatial.MeasurementFormat
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun TargetLoggerPanel(
@@ -287,6 +290,8 @@ fun TargetLoggerPanel(
                 }
             }
         }
+
+        SitesCard(loggedSignals)
 
         val recordedBreadcrumbPoints = breadcrumbTracks.sumOf { it.points.size }
         Card(
@@ -1111,4 +1116,64 @@ private fun ExportGisDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+
+/**
+ * Groups logged finds into proximity sites (see [FindSiteClusterer]) and summarizes each one:
+ * find count, dominant types, field-check outcomes, and centroid. Hidden until at least one
+ * find has real coordinates.
+ */
+@Composable
+private fun SitesCard(signals: List<TargetSignal>) {
+    val sites = remember(signals) { FindSiteClusterer.cluster(signals) }
+    if (sites.isEmpty()) return
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Detected sites", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "Finds within 50 m of each other are grouped automatically. Mark outcomes on your finds to see which sites are producing.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            sites.take(8).forEach { site ->
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            "${site.label} — ${site.signals.size} find${if (site.signals.size == 1) "" else "s"}",
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            buildString {
+                                append(site.topTypes.take(2).joinToString(" · "))
+                                if (site.confirmedCount > 0) append(" · ${site.confirmedCount} confirmed")
+                                if (site.rejectedCount > 0) append(" · ${site.rejectedCount} rejected")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(
+                            String.format(Locale.US, "%.5f, %.5f", site.centerLatitude, site.centerLongitude),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (sites.size > 8) {
+                Text(
+                    "+${sites.size - 8} more site${if (sites.size - 8 == 1) "" else "s"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 }
