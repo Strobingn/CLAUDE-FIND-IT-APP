@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -71,11 +72,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.R
 import com.example.analysis.TerrainCellInspector
 import com.example.analysis.TerrainViewshedAnalyzer
 import com.example.analysis.TerrainElevationProfiler
@@ -141,11 +144,18 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
             if (!terrainSelected && !terrainFocusMode.value) {
                 CenterAlignedTopAppBar(
                     title = {
-                        Text(
-                            activeTab.title,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Image(
+                                painter = painterResource(R.drawable.findit_emblem),
+                                contentDescription = null,
+                                modifier = Modifier.height(30.dp).padding(end = 10.dp),
+                            )
+                            Text(
+                                activeTab.title,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
                     },
                     colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
