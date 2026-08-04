@@ -8,6 +8,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.analysis.FeatureTypeCalibration
 import com.example.analysis.MetalDetectingTargetType
+import com.example.analysis.TerrainDerivedLayerCache
+import com.example.analysis.TerrainDerivedLayers
+import com.example.analysis.TerrainIntelligenceEngine
 import com.example.data.DemGenerator
 import com.example.data.DetectionSource
 import com.example.data.ElevationGrid
@@ -115,6 +118,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val pendingSyncDao = AppDatabase.get(application).pendingSyncDao()
     private val refinementMemoryCache = LazTerrainMemoryCache()
     private val refinementDiskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
+    // Shares its directory with AiTerrainViewModel so layers analyzed on the AI tab
+    // are visible here (homesite overlay) without re-running the extraction.
+    private val terrainDerivedLayerCache = TerrainDerivedLayerCache(File(application.cacheDir, "terrain-intelligence-v2"))
 
     // Guard flag to prevent saveSettings() from overwriting DB values with defaults before loading completes
     private var isSettingsLoaded = false
@@ -334,6 +340,18 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
      */
     suspend fun savedDatasetSnapshot(datasetKey: String): AnalyzedDatasetEntity? =
         analyzedDatasetDao.getByKey(datasetKey)
+
+    /**
+     * Loads the AI tab's cached derived terrain layers for the current grid, when a local
+     * analysis has already been run for this exact terrain signature. Used by the homesite
+     * probability overlay on the Terrain tab; a cache miss returns null instead of starting
+     * the expensive analysis path from a surface that only wants a cheap overlay.
+     */
+    suspend fun cachedDerivedLayers(): TerrainDerivedLayers? {
+        val grid = _elevationGrid.value
+        if (grid.width <= 2 || grid.height <= 2) return null
+        return terrainDerivedLayerCache.get(TerrainIntelligenceEngine.terrainSignature(grid)).layers
+    }
 
     /**
      * Forgets one dataset's saved targets.

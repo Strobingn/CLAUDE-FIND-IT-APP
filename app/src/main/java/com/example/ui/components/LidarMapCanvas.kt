@@ -107,6 +107,8 @@ fun LidarMapCanvas(
     initialPanY: Float = 0f,
     viewportRestoreToken: Int = 0,
     showHeatmap: Boolean = false,
+    /** Binned HOMESITE_BINS x HOMESITE_BINS 0..1 homesite probabilities; null hides the overlay. */
+    homesiteCells: FloatArray? = null,
     basemapBitmap: Bitmap? = null,
     showBasemap: Boolean = false,
     basemapOpacity: Float = 0.6f,
@@ -396,6 +398,22 @@ fun LidarMapCanvas(
                                 topLeft = Offset(imageLeft + col * cellWidth, imageTop + row * cellHeight),
                                 size = androidx.compose.ui.geometry.Size(cellWidth, cellHeight),
                                 alpha = 0.18f + intensity * 0.5f,
+                            )
+                        }
+                    }
+                }
+                if (homesiteCells != null) {
+                    val cellWidth = displayWidth / HOMESITE_BINS
+                    val cellHeight = displayHeight / HOMESITE_BINS
+                    for (row in 0 until HOMESITE_BINS) {
+                        for (col in 0 until HOMESITE_BINS) {
+                            val intensity = homesiteCells[row * HOMESITE_BINS + col]
+                            if (intensity <= 0.22f) continue
+                            drawRect(
+                                color = homesiteColor(intensity),
+                                topLeft = Offset(imageLeft + col * cellWidth, imageTop + row * cellHeight),
+                                size = androidx.compose.ui.geometry.Size(cellWidth, cellHeight),
+                                alpha = 0.10f + intensity * 0.45f,
                             )
                         }
                     }
@@ -736,10 +754,19 @@ private fun containScale(
 
 private const val HEATMAP_BINS = 24
 private const val VIEWSHED_BINS = 64
+internal const val HOMESITE_BINS = 96
 private const val VIEWPORT_PUBLISH_DEBOUNCE_MS = 120L
 
 private fun heatmapColor(intensity: Float): Color = if (intensity < 0.5f) {
     lerp(Color(0xFF1565C0), Color(0xFFFFC107), intensity / 0.5f)
 } else {
     lerp(Color(0xFFFFC107), Color(0xFFE53935), (intensity - 0.5f) / 0.5f)
+}
+
+// Warm ramp (amber to brick red) so the homesite surface reads as 'occupation likelihood'
+// and stays visually distinct from the blue-to-red dig-priority heatmap.
+private fun homesiteColor(intensity: Float): Color = if (intensity < 0.55f) {
+    lerp(Color(0xFFFFE082), Color(0xFFFF8F00), (intensity - 0.22f) / 0.33f)
+} else {
+    lerp(Color(0xFFFF8F00), Color(0xFFD84315), (intensity - 0.55f) / 0.45f)
 }

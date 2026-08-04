@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.GpsNotFixed
+import androidx.compose.material.icons.filled.HomeWork
 import androidx.compose.material.icons.filled.Landscape
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.automirrored.filled.RotateLeft
@@ -81,6 +82,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.analysis.HomesiteProbabilityMap
 import com.example.analysis.TerrainCellInspector
 import com.example.analysis.TerrainViewshedAnalyzer
 import com.example.analysis.TerrainElevationProfiler
@@ -89,6 +91,7 @@ import com.example.data.NormalizedRasterBounds
 import com.example.geospatial.GeoSpatialLibrary
 import com.example.geospatial.MeasurementFormat
 import com.example.ui.components.CustomFileLoader
+import com.example.ui.components.HOMESITE_BINS
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarAreaPickerMapScreen
 import com.example.ui.components.LidarControlPanel
@@ -317,6 +320,9 @@ private fun TerrainTab(
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
     val inspectedCell = remember { mutableStateOf<com.example.analysis.TerrainCellInspection?>(null) }
     val viewshedState = remember { mutableStateOf<com.example.analysis.TerrainViewshed?>(null) }
+    var homesiteOverlayEnabled by rememberSaveable { mutableStateOf(false) }
+    val homesiteCells = remember { mutableStateOf<FloatArray?>(null) }
+    val homesiteStatus = remember { mutableStateOf<String?>(null) }
     val viewshedComputing = remember { mutableStateOf(false) }
     var isSelectingProfile by rememberSaveable { mutableStateOf(false) }
     var profileStartPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
@@ -392,6 +398,27 @@ private fun TerrainTab(
         if (visualization != 0) viewModel.updateVisualizationMode(0)
     }
 
+    // Homesite probability overlay: reuses the AI tab's cached derived layers instead of
+    // re-running analysis here. Refining or resetting the terrain changes the grid signature,
+    // so this effect re-runs and the overlay clears itself when no cached analysis matches.
+    LaunchedEffect(homesiteOverlayEnabled, elevationGrid) {
+        if (!homesiteOverlayEnabled) {
+            homesiteCells.value = null
+            homesiteStatus.value = null
+            return@LaunchedEffect
+        }
+        val layers = viewModel.cachedDerivedLayers()
+        if (layers == null) {
+            homesiteCells.value = null
+            homesiteStatus.value = "No saved analysis for this terrain - run Analyze on the AI tab"
+            return@LaunchedEffect
+        }
+        homesiteCells.value = withContext(Dispatchers.Default) {
+            HomesiteProbabilityMap.compute(layers).binned(HOMESITE_BINS)
+        }
+        homesiteStatus.value = null
+    }
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val controlsMaxHeight = maxHeight * 0.76f
 
@@ -422,6 +449,7 @@ private fun TerrainTab(
             },
             onViewportStretch = { _, stretch -> viewportStretch.floatValue = stretch },
             showHeatmap = heatmapEnabled,
+            homesiteCells = homesiteCells.value,
             basemapBitmap = basemapBitmap,
             showBasemap = basemapEnabled,
             basemapOpacity = basemapOpacity,
@@ -610,6 +638,11 @@ private fun TerrainTab(
                     TerrainQuickAction("Whole", Icons.Default.ZoomOutMap) { viewModel.showWholeTerrain() }
                 }
                 TerrainQuickAction(
+                    if (homesiteOverlayEnabled) "Homesite on" else "Homesite",
+                    Icons.Default.HomeWork,
+                    active = homesiteOverlayEnabled,
+                ) { homesiteOverlayEnabled = !homesiteOverlayEnabled }
+                TerrainQuickAction(
                     if (showControls.value) "Close" else "Analyze",
                     Icons.Default.Tune,
                     active = showControls.value,
@@ -697,6 +730,26 @@ private fun TerrainTab(
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.SemiBold,
             )
+        }
+
+        if (homesiteOverlayEnabled) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                tonalElevation = 3.dp,
+                shadowElevation = 4.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 12.dp),
+            ) {
+                Text(
+                    homesiteStatus.value
+                        ?: "Homesite probability: amber-red = likely historic occupation ground",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
         }
 
         AnimatedVisibility(
