@@ -61,11 +61,19 @@ data class TerrainGpuScene(
  * pyramid still provides cheap coarse levels for zoomed-out rendering.
  */
 object TerrainGpuSceneBuilder {
+    /**
+     * Max [tileSize] step for [TerrainSpatialGridIndex]. Inclusive tile ends make each full tile
+     * (tileSize + 1) vertices wide, so tileSize must stay ≤ 254 for ushort batches (255² ≤ 65,535).
+     */
+    const val MAX_SAFE_TILE_SIZE = 254
+
     fun build(
         source: ElevationGrid,
         maxFinestDimension: Int = 1_024,
         tileSize: Int = 64,
     ): TerrainGpuScene {
+        // Cap so a full tile never exceeds 65,535 vertices (ushort index limit).
+        val safeTileSize = tileSize.coerceIn(16, MAX_SAFE_TILE_SIZE)
         val pyramid = TerrainLodPyramid.build(
             source = source,
             maxFinestDimension = maxFinestDimension,
@@ -73,7 +81,7 @@ object TerrainGpuSceneBuilder {
             maxLevels = 4,
         )
         val levels = pyramid.levels.map { level ->
-            val index = TerrainSpatialGridIndex.build(level.grid, tileSize)
+            val index = TerrainSpatialGridIndex.build(level.grid, safeTileSize)
             val elevationBounds = elevationBounds(level.grid)
             TerrainGpuLevel(
                 reductionFactor = level.reductionFactor,
@@ -104,7 +112,10 @@ object TerrainGpuSceneBuilder {
         val localWidth = tile.endXInclusive - tile.startX + 1
         val localHeight = tile.endYInclusive - tile.startY + 1
         if (localWidth < 2 || localHeight < 2) return null
-        require(localWidth.toLong() * localHeight <= 65_535L)
+        // OpenGL ES commonly uses unsigned short indices → max 65,535 vertices per batch.
+        require(localWidth.toLong() * localHeight <= 65_535L) {
+            "GPU tile too large (${localWidth}×${localHeight}); tile size must keep vertices ≤ 65,535"
+        }
         val elevationRange = (maxElevation - minElevation).takeIf { it > 0f } ?: 1f
 
         val vertices = FloatArray(localWidth * localHeight * TerrainGpuBatch.FLOATS_PER_VERTEX)

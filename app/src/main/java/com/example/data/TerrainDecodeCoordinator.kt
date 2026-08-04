@@ -198,8 +198,12 @@ class TerrainDecodeCoordinator(
     companion object {
         internal const val GPU_PREVIEW_MAX_DIMENSION = 1_024
         internal const val GPU_PREVIEW_TILE_SIZE = 128
-        /** Larger tiles = fewer GPU batches for intermediate first-paint publish. */
-        internal const val GPU_FAST_TILE_SIZE = 256
+        /**
+         * Larger tiles = fewer GPU batches for intermediate first-paint publish.
+         * Spatial tiles use inclusive ends → (tileSize+1)² vertices; 256 was one over the
+         * ushort limit and crashed LAS/LAZ open with bare "Failed requirement".
+         */
+        internal const val GPU_FAST_TILE_SIZE = 192
     }
 }
 
