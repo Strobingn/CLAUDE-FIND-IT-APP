@@ -167,4 +167,41 @@ class TerrainViewshedAnalyzerTest {
         assertFalse(withCanopy.visibility[behindTrees])
         assertTrue(bareEarthOnly.visibility[behindTrees])
     }
+
+    @Test
+    fun parallelScanProducesIdenticalResultsToSequential() {
+        val width = 96
+        val height = 96
+        val bareEarth = FloatArray(width * height) { index ->
+            val x = index % width
+            val y = index / width
+            10f + 3f * kotlin.math.sin(x * 0.3f) * kotlin.math.cos(y * 0.3f) +
+                if (x == 48) 8f else 0f
+        }
+        val grid = ElevationGrid(
+            width = width,
+            height = height,
+            bareEarth = bareEarth,
+            canopySpikes = FloatArray(width * height),
+            cellSizeMeters = 1f,
+        )
+
+        val sequential = TerrainViewshedAnalyzer.sample(
+            grid = grid,
+            observerXPercent = 50f,
+            observerYPercent = 50f,
+            maxWorkers = 1,
+        )
+        val parallel = TerrainViewshedAnalyzer.sample(
+            grid = grid,
+            observerXPercent = 50f,
+            observerYPercent = 50f,
+            maxWorkers = 4,
+        )
+
+        assertTrue(sequential.visibility.contentEquals(parallel.visibility))
+        assertEquals(sequential.analyzedCells, parallel.analyzedCells)
+        assertEquals(sequential.visibleCells, parallel.visibleCells)
+        assertTrue(parallel.analyzedCells > 0)
+    }
 }

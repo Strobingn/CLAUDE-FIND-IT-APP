@@ -390,11 +390,11 @@ Exit criteria:
 
 - Viewshed analysis. **Implemented; unit verified.** `TerrainViewshedAnalyzer` computes line-of-sight visibility from any observer point with adjustable eye height, radius caps, vegetation filtering, and cancellation — all on the real elevation grid.
 - Horizon-line calculation. **Implemented; unit verified.** Per-azimuth skyline angles, distances, and elevations around any observer point; open directions report the farthest visible ground.
-- Elevation profile along a selected path
-- Adaptive terrain sampling
-- Multi-threaded ray processing
-- Multi-dataset analysis
-- Measurement and profile export
+- Elevation profile along a selected path. **Implemented** (`TerrainElevationProfiler`): distance, ascent/descent, min/max over real grid cells.
+- Adaptive terrain sampling. **Implemented** in the import pipeline: `LidarRasterizer` budgets samples per cell and adapts stride to tile size and focus area.
+- Multi-threaded ray processing. **Implemented; unit verified.** Viewshed row ranges scan on a bounded worker pool with per-row cancellation polling; parallel output is verified bit-identical to sequential output.
+- Multi-dataset analysis. **Implemented** (`DatasetComparison` / dataset comparison dialog): datasets are compared side by side.
+- Measurement and profile export. **Implemented** through the existing CSV/GPX/KML/GeoJSON export paths (`ProjectExport`); Phase 9 adds GeoTIFF/Shapefile/KMZ alongside them.
 
 Exit criteria:
 

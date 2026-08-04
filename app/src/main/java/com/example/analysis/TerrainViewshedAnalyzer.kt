@@ -1,6 +1,8 @@
 package com.example.analysis
 
 import com.example.data.ElevationGrid
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.atan
 import kotlin.math.ceil
@@ -60,7 +62,11 @@ data class TerrainHorizon(
  * The observer's eye sits [TerrainViewshed.observerHeightMeters] above the local surface.
  */
 object TerrainViewshedAnalyzer {
-    private const val CANCELLATION_CHECK_INTERVAL = 4_096
+    private const val MAX_RAY_WORKERS = 4
+    private const val MIN_ROWS_FOR_PARALLEL = 64
+    private val viewshedRayPool = Executors.newFixedThreadPool(MAX_RAY_WORKERS) { task ->
+        Thread(task, "viewshed-ray").apply { isDaemon = true }
+    }
 
     fun sample(
         grid: ElevationGrid,
@@ -70,6 +76,7 @@ object TerrainViewshedAnalyzer {
         maxRadiusMeters: Float = Float.POSITIVE_INFINITY,
         vegetationFilter: Float = 0f,
         isCanceled: () -> Boolean = { false },
+        maxWorkers: Int = 0,
     ): TerrainViewshed {
         val observerX = observerXPercent.coerceIn(0f, 100f) / 100f * (grid.width - 1)
         val observerY = observerYPercent.coerceIn(0f, 100f) / 100f * (grid.height - 1)
@@ -85,46 +92,81 @@ object TerrainViewshedAnalyzer {
         }
 
         val visibility = BooleanArray(grid.width * grid.height)
-        var analyzed = 0
-        var visible = 0
-        var canceled = false
-        var sinceCancellationCheck = 0
+        val cancelScan = AtomicBoolean(false)
 
-        for (row in 0 until grid.height) {
-            for (col in 0 until grid.width) {
-                if (++sinceCancellationCheck >= CANCELLATION_CHECK_INTERVAL) {
-                    sinceCancellationCheck = 0
-                    if (isCanceled()) {
-                        canceled = true
-                        break
+        // Cells are independent, so row ranges scan in parallel with identical results.
+        // Cancellation is polled once per row for responsive aborts on any worker count.
+        fun scanRows(startRow: Int, endRow: Int, counts: IntArray) {
+            var row = startRow
+            while (row < endRow && !cancelScan.get()) {
+                if (isCanceled()) {
+                    cancelScan.set(true)
+                    break
+                }
+                for (col in 0 until grid.width) {
+                    val distanceCells = hypot(
+                        (col - observerX).toDouble(),
+                        (row - observerY).toDouble(),
+                    ).toFloat()
+                    if (distanceCells > maxRadiusCells) continue
+                    val index = row * grid.width + col
+                    if (!grid.validData[index]) continue
+                    counts[0]++
+                    val isVisible = isLineOfSightClear(
+                        grid = grid,
+                        observerX = observerX,
+                        observerY = observerY,
+                        eyeElevation = eyeElevation,
+                        targetCol = col,
+                        targetRow = row,
+                        targetDistanceCells = distanceCells,
+                        cellSize = cellSize,
+                        vegetationFilter = vegetationFilter,
+                    )
+                    if (isVisible) {
+                        visibility[index] = true
+                        counts[1]++
                     }
                 }
-                val distanceCells = hypot(
-                    (col - observerX).toDouble(),
-                    (row - observerY).toDouble(),
-                ).toFloat()
-                if (distanceCells > maxRadiusCells) continue
-                val index = row * grid.width + col
-                if (!grid.validData[index]) continue
-                analyzed++
-                val isVisible = isLineOfSightClear(
-                    grid = grid,
-                    observerX = observerX,
-                    observerY = observerY,
-                    eyeElevation = eyeElevation,
-                    targetCol = col,
-                    targetRow = row,
-                    targetDistanceCells = distanceCells,
-                    cellSize = cellSize,
-                    vegetationFilter = vegetationFilter,
-                )
-                if (isVisible) {
-                    visibility[index] = true
-                    visible++
+                row++
+            }
+        }
+
+        val workerTarget = if (maxWorkers > 0) {
+            maxWorkers.coerceIn(1, MAX_RAY_WORKERS)
+        } else {
+            Runtime.getRuntime().availableProcessors().coerceIn(1, MAX_RAY_WORKERS)
+        }
+        val analyzed: Int
+        val visible: Int
+        if (workerTarget <= 1 || grid.height < MIN_ROWS_FOR_PARALLEL) {
+            val counts = IntArray(2)
+            scanRows(0, grid.height, counts)
+            analyzed = counts[0]
+            visible = counts[1]
+        } else {
+            val workers = workerTarget.coerceAtMost(grid.height)
+            val rowsPerWorker = (grid.height + workers - 1) / workers
+            val futures = (0 until workers).map { worker ->
+                val startRow = worker * rowsPerWorker
+                val endRow = minOf(startRow + rowsPerWorker, grid.height)
+                viewshedRayPool.submit<IntArray> {
+                    val counts = IntArray(2)
+                    scanRows(startRow, endRow, counts)
+                    counts
                 }
             }
-            if (canceled) break
+            var analyzedSum = 0
+            var visibleSum = 0
+            for (future in futures) {
+                val counts = future.get()
+                analyzedSum += counts[0]
+                visibleSum += counts[1]
+            }
+            analyzed = analyzedSum
+            visible = visibleSum
         }
+        val canceled = cancelScan.get()
 
         return TerrainViewshed(
             observerXPercent = observerXPercent.coerceIn(0f, 100f),
