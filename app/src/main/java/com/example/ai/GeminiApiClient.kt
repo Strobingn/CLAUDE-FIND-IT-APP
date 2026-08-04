@@ -160,7 +160,9 @@ internal class GeminiApiClient(
 
         fun isConfigured(context: Context): Boolean = configuredApiKey(context).isNotBlank()
 
-        fun hasDeviceApiKey(context: Context): Boolean = configuredApiKey(context).isNotBlank()
+        /** True when a key was saved on-device (excludes build-time [BuildConfig.GEMINI_API_KEY]). */
+        fun hasDeviceApiKey(context: Context): Boolean =
+            sanitizeApiKey(GeminiCredentialVault.read(context, ::sanitizeApiKey)).isNotBlank()
 
         fun saveDeviceApiKey(context: Context, value: String): Boolean {
             val cleaned = sanitizeApiKey(value)
@@ -173,6 +175,9 @@ internal class GeminiApiClient(
         }
 
         fun configuredModel(): String = BuildConfig.GEMINI_MODEL.trim().ifBlank { DEFAULT_MODEL }
+
+        /** Build-time key from local.properties / env (never logged). */
+        fun hasBuildConfigApiKey(): Boolean = sanitizeApiKey(BuildConfig.GEMINI_API_KEY).isNotBlank()
 
         @Suppress("DEPRECATION")
         private fun androidSigningCertificateSha1(context: Context): String? {
@@ -198,8 +203,14 @@ internal class GeminiApiClient(
                 .joinToString(separator = "") { byte -> "%02X".format(byte) }
         }
 
+        /**
+         * Device vault first (user can rotate without rebuild), then [BuildConfig.GEMINI_API_KEY]
+         * from local.properties / env `GEMINI_API_KEY`.
+         */
         private fun configuredApiKey(context: Context): String {
-            return GeminiCredentialVault.read(context, ::sanitizeApiKey)
+            val deviceKey = sanitizeApiKey(GeminiCredentialVault.read(context, ::sanitizeApiKey))
+            if (deviceKey.isNotBlank()) return deviceKey
+            return sanitizeApiKey(BuildConfig.GEMINI_API_KEY)
         }
 
         private fun sanitizeApiKey(value: String?): String {

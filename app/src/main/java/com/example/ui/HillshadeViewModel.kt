@@ -24,7 +24,9 @@ import com.example.data.field.PendingSyncEntry
 import com.example.data.field.SurveyBoundary
 import com.example.data.field.SyncEntityType
 import com.example.data.field.SyncOperation
+import com.example.data.AppTerrainStorage
 import com.example.data.LazDatasetStore
+import com.example.data.LazTerrainCache
 import com.example.data.LazTerrainDiskCache
 import com.example.data.LazTerrainMemoryCache
 import com.example.data.LazSpatialIndex
@@ -32,9 +34,11 @@ import com.example.data.LazTerrainReader
 import com.example.data.LidarImportOptions
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
+import com.example.data.TerrainDecodeCoordinator
 import com.example.data.TerrainGpuSceneBuilder
 import com.example.data.TerrainImportSource
 import com.example.data.TerrainPerformanceSession
+import com.example.data.TerrainSessionStore
 import com.example.data.TargetSignal
 import com.example.data.gridForHillshadePreview
 import com.example.data.hillshadeDebounceMs
@@ -107,7 +111,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val surveyBoundaryDao = AppDatabase.get(application).surveyBoundaryDao()
     private val pendingSyncDao = AppDatabase.get(application).pendingSyncDao()
     private val refinementMemoryCache = LazTerrainMemoryCache()
-    private val refinementDiskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
+    private val refinementDiskCache = AppTerrainStorage.decodedTerrainCache(application)
+    private val terrainSessionStore = TerrainSessionStore(application)
 
     // Guard flag to prevent saveSettings() from overwriting DB values with defaults before loading completes
     private var isSettingsLoaded = false
@@ -912,6 +917,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 uri.path?.let { path -> LazSpatialIndex.ensureBuiltAsync(File(path)) }
             }
         }
+        // Durable session pointer so cold start reopens this LAZ even if the decode cache was purged.
+        source?.let(terrainSessionStore::save)
         applyCustomTerrain(result, resetViewport = true)
     }
 
@@ -1654,41 +1661,87 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Restores the most recently imported LAZ/LAS after process death, but only from an existing
-     * decoded cache. Startup never reparses a multi-hundred-megabyte point cloud unexpectedly.
+     * Restores the last opened LiDAR after process death.
+     *
+     * Order: session pointer → durable filesDir decode cache → re-decode from the saved LAZ file.
+     * Source LAZ files live under [AppTerrainStorage.lidarStore]; decode cache under
+     * [AppTerrainStorage.decodedTerrainCache] (filesDir, not purgeable cacheDir).
      */
     private suspend fun restoreLastCachedTerrain() {
         val application = getApplication<Application>()
-        val storageRoot = application.getExternalFilesDir(null) ?: application.filesDir
-        val dataset = withContext(Dispatchers.IO) {
-            LazDatasetStore(File(storageRoot, "lidar")).list().firstOrNull()
-        } ?: return
-        val diskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
-        val optionCandidates = listOf(1_024, 1_536).map { resolution ->
-            LidarImportOptions(
-                groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
-                rasterResolution = resolution,
-                smoothingRadius = 0,
-            )
+        _activeTerrainSummary.value = "Restoring last LiDAR project…"
+        val session = withContext(Dispatchers.IO) { terrainSessionStore.load() }
+        val store = withContext(Dispatchers.IO) { AppTerrainStorage.lidarStore(application) }
+        val file = session?.file?.takeIf { it.isFile }
+            ?: withContext(Dispatchers.IO) { store.list().firstOrNull()?.file }
+            ?: run {
+                _activeTerrainSummary.value = "Built-in demonstration terrain"
+                return
+            }
+        val displayName = session?.displayName ?: file.name
+        val preferredOptions = session?.options ?: LidarImportOptions(
+            groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
+            rasterResolution = LidarImportOptions.DEFAULT_OVERVIEW_RESOLUTION,
+            smoothingRadius = 0,
+        )
+        val optionCandidates = buildList {
+            add(preferredOptions)
+            listOf(1_024, 1_536).forEach { resolution ->
+                val candidate = preferredOptions.copy(rasterResolution = resolution)
+                if (candidate != preferredOptions) add(candidate)
+            }
         }
+        val diskCache = AppTerrainStorage.decodedTerrainCache(application)
         val cached = withContext(Dispatchers.IO) {
             optionCandidates.firstNotNullOfOrNull { options ->
-                diskCache.get(dataset.file, options)?.let { terrain -> options to terrain }
+                diskCache.get(file, options)?.let { terrain -> options to terrain }
             }
-        } ?: return
-        val (options, terrain) = cached
-        val scene = withContext(Dispatchers.Default) {
-            TerrainGpuSceneBuilder.build(terrain.grid)
         }
-        TerrainPerformanceSession.publish(scene)
-        setCustomTerrain(
-            result = terrain,
-            source = TerrainImportSource(
-                uri = Uri.fromFile(dataset.file).toString(),
-                displayName = dataset.displayName,
-                options = options,
-            ),
-        )
+        if (cached != null) {
+            val (options, terrain) = cached
+            val scene = withContext(Dispatchers.Default) {
+                TerrainGpuSceneBuilder.build(terrain.grid)
+            }
+            TerrainPerformanceSession.publish(scene)
+            setCustomTerrain(
+                result = terrain,
+                source = TerrainImportSource(
+                    uri = Uri.fromFile(file).toString(),
+                    displayName = displayName,
+                    options = options,
+                ),
+            )
+            return
+        }
+
+        // Cache miss: re-decode from the durable source LAZ so closing the app never loses the project.
+        _activeTerrainSummary.value = "Rebuilding terrain from saved LAZ…"
+        try {
+            val terrainCache = LazTerrainCache(LazTerrainMemoryCache(), diskCache)
+            val coordinator = TerrainDecodeCoordinator(terrainCache)
+            val outcome = coordinator.decode(
+                file = file,
+                displayName = displayName,
+                options = preferredOptions,
+                onStage = { stage ->
+                    withContext(Dispatchers.Main.immediate) {
+                        _activeTerrainSummary.value = stage
+                    }
+                },
+            )
+            TerrainPerformanceSession.publish(outcome.gpuScene)
+            setCustomTerrain(
+                result = outcome.terrain,
+                source = TerrainImportSource(
+                    uri = Uri.fromFile(file).toString(),
+                    displayName = displayName,
+                    options = preferredOptions,
+                ),
+            )
+        } catch (error: Throwable) {
+            _activeTerrainSummary.value =
+                "Could not restore ${displayName}: ${error.localizedMessage ?: "decode failed"}"
+        }
     }
 
     private fun saveSettings() {

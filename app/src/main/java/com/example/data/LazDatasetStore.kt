@@ -1,5 +1,6 @@
 package com.example.data
 
+import android.content.Context
 import java.io.File
 import java.io.IOException
 import java.util.Locale
@@ -141,7 +142,40 @@ class LazDatasetStore(
     }
 
     companion object {
+        private const val FOLDER_NAME = "lidar"
+
         /** Dot-prefixed and not a .laz/.las file, so [list] never surfaces it as a dataset. */
         private const val SOURCE_INDEX_NAME = ".sources.json"
+
+        /**
+         * Canonical durable store under [Context.getFilesDir] (not cache, not media that can
+         * unmount). Migrates any older files from the external-files `lidar` folder once.
+         */
+        fun open(context: Context): LazDatasetStore {
+            val app = context.applicationContext
+            val primary = File(app.filesDir, FOLDER_NAME)
+            primary.mkdirs()
+            val legacyExternal = app.getExternalFilesDir(null)?.let { File(it, FOLDER_NAME) }
+            if (legacyExternal != null &&
+                legacyExternal.isDirectory &&
+                runCatching { legacyExternal.canonicalPath != primary.canonicalPath }.getOrDefault(true)
+            ) {
+                migrateLegacyFolder(legacyExternal, primary)
+            }
+            return LazDatasetStore(primary)
+        }
+
+        /** One-way copy of LAZ/LAS and the source-URL index into the durable folder. */
+        private fun migrateLegacyFolder(from: File, to: File) {
+            to.mkdirs()
+            from.listFiles()?.forEach { file ->
+                if (!file.isFile) return@forEach
+                val dest = File(to, file.name)
+                if (dest.exists()) return@forEach
+                runCatching {
+                    file.copyTo(dest, overwrite = false)
+                }
+            }
+        }
     }
 }

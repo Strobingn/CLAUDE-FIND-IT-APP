@@ -100,6 +100,7 @@ import com.example.ui.components.TerrainCellInspectionPanel
 import com.example.ui.components.TerrainElevationProfilePanel
 import com.example.ui.components.TerrainGoogleMapScreen
 import com.example.ui.components.SurveyLayerImporter
+import com.example.ui.components.ViewshedCard
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -440,43 +441,28 @@ private fun TerrainTab(
                 .testTag("terrain_workspace"),
         )
 
-        viewshedState.value?.let { shed ->
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(top = 84.dp, start = 12.dp)
-                    .widthIn(max = 280.dp),
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        "Viewshed overlay active",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        "${(shed.visibilityRatio * 100f).toInt()}% of the grid visible from the marked cell",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                    TextButton(onClick = { viewshedState.value = null }) { Text("Clear") }
-                }
-            }
-        }
+        // Viewshed status sits on its own small card — never inside the cell-inspection sheet —
+        // so the green/blocked overlay on the canvas stays fully visible.
+        ViewshedCard(
+            viewshed = viewshedState.value,
+            isComputing = viewshedComputing.value,
+            cellSizeMeters = elevationGrid.cellSizeMeters,
+            onClear = { viewshedState.value = null },
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = 84.dp, start = 12.dp),
+        )
 
         inspectedCell.value?.let { inspection ->
             TerrainCellInspectionPanel(
                 inspection = inspection,
-                viewshed = viewshedState.value,
-                gridWidth = elevationGrid.width,
-                gridHeight = elevationGrid.height,
                 isComputingViewshed = viewshedComputing.value,
+                canComputeViewshed = elevationGrid.width > 2 && elevationGrid.height > 2,
                 onComputeViewshed = {
                     if (!viewshedComputing.value) {
                         viewshedComputing.value = true
+                        // Free the map immediately: results go to ViewshedCard + canvas overlay.
+                        inspectedCell.value = null
                         scope.launch {
                             val result = withContext(Dispatchers.Default) {
                                 TerrainViewshedAnalyzer.sample(
@@ -491,16 +477,11 @@ private fun TerrainTab(
                         }
                     }
                 },
-                onClearViewshed = { viewshedState.value = null },
-                onDismiss = {
-                    inspectedCell.value = null
-                    viewshedState.value = null
-                },
+                onDismiss = { inspectedCell.value = null },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .navigationBarsPadding()
-                    .padding(start = 12.dp, end = 12.dp, bottom = 72.dp)
-                    .fillMaxWidth(0.94f),
+                    .padding(end = 12.dp, bottom = 72.dp),
             )
         }
 
