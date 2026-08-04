@@ -73,6 +73,12 @@ import com.example.analysis.TerrainIntelligenceRenderer
 import com.example.analysis.TerrainIntelligenceResult
 import com.example.analysis.VerifiedFeedback
 import com.example.analysis.VerifiedFeedbackPoint
+import com.example.analysis.ml.CandidateFeatures
+import com.example.analysis.ml.FeatureContribution
+import com.example.analysis.ml.ModelRegistry
+import com.example.analysis.ml.RankerModelStore
+import com.example.analysis.ml.RankerTrainer
+import com.example.analysis.ml.RankerTrainingExample
 import com.example.data.AppMemoryBudget
 import com.example.data.ElevationGrid
 import com.example.data.ai.AnomalyClusterer
@@ -139,6 +145,12 @@ internal fun parseCloudMapTargets(
 private fun removeCloudMapTargetTags(response: String): String =
     response.replace(cloudMapTargetPattern, "").replace(Regex("\n{3,}"), "\n\n").trim()
 
+data class RankedCandidate(
+    val candidate: TerrainFeatureCandidate,
+    val probability: Float,
+    val contributions: List<FeatureContribution>,
+)
+
 data class AiTerrainState(
     val messages: List<AiMessage> = emptyList(),
     val isSending: Boolean = false,
@@ -165,6 +177,12 @@ data class AiTerrainState(
     val classificationError: String? = null,
     /** Field-verified points for the current dataset, derived from logged finds - see [VerifiedFeedback]. */
     val verifiedFeedback: List<VerifiedFeedbackPoint> = emptyList(),
+    /** Active explainable-ranker version, when one has been trained and activated. */
+    val rankerVersion: String? = null,
+    /** Candidates re-ordered by the active ranker; null when no model is active. */
+    val rankedCandidates: List<RankedCandidate>? = null,
+    val rankerMessage: String? = null,
+    val isTrainingRanker: Boolean = false,
 )
 
 class AiTerrainViewModel(application: Application) : AndroidViewModel(application) {
@@ -173,6 +191,8 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
     private val localEngine = TerrainIntelligenceEngine(
         TerrainDerivedLayerCache(File(application.cacheDir, "terrain-intelligence-v2")),
     )
+    private val rankerStore = RankerModelStore(appContext)
+    private var modelRegistry: ModelRegistry = rankerStore.load()
     private val ids = AtomicLong(1L)
     private var localAnalysisJob: Job? = null
     private val _state = MutableStateFlow(
@@ -184,6 +204,7 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                     text = "OpenAI is the primary cloud analyst, Gemini is the automatic fallback, and local terrain intelligence runs without either provider.",
                 ),
             ),
+            rankerVersion = modelRegistry.activeVersion,
         ).withProviderStatus(),
     )
     val state: StateFlow<AiTerrainState> = _state.asStateFlow()
@@ -210,6 +231,90 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
     fun clearGeminiKey() {
         GeminiApiClient.clearDeviceApiKey(appContext)
         _state.value = _state.value.withProviderStatus().copy(cloudError = null)
+    }
+
+    /** Scores and re-orders candidates with the active ranker; null when no model is active. */
+    private fun rank(result: TerrainIntelligenceResult): List<RankedCandidate>? {
+        val model = modelRegistry.activeModel ?: return null
+        return result.candidates.map { candidate ->
+            val vector = CandidateFeatures.extract(candidate, result.layers)
+            RankedCandidate(
+                candidate = candidate,
+                probability = model.probability(vector.values),
+                contributions = model.contributions(vector.values).take(3),
+            )
+        }.sortedByDescending { it.probability }
+    }
+
+    /**
+     * Trains a new explainable ranker from this dataset's field-verified outcomes: every confirmed
+     * or rejected check within matching distance of a candidate becomes one labeled example, the
+     * trained model is activated through the registry, and the registry is persisted so the same
+     * ranking survives restarts.
+     */
+    fun trainRankerFromFeedback() {
+        val result = _state.value.localResult
+        if (_state.value.isTrainingRanker) return
+        if (result == null || result.candidates.isEmpty()) {
+            _state.value = _state.value.copy(
+                rankerMessage = "Run local analysis first — training needs its candidates.",
+            )
+            return
+        }
+        val examples = _state.value.verifiedFeedback.mapNotNull { point ->
+            val nearest = result.candidates.minByOrNull { candidate ->
+                val dx = candidate.xPercent - point.xPercent
+                val dy = candidate.yPercent - point.yPercent
+                dx * dx + dy * dy
+            } ?: return@mapNotNull null
+            val dx = nearest.xPercent - point.xPercent
+            val dy = nearest.yPercent - point.yPercent
+            if (dx * dx + dy * dy > VerifiedFeedback.MATCH_DISTANCE_SQUARED) return@mapNotNull null
+            RankerTrainingExample(
+                features = CandidateFeatures.extract(nearest, result.layers).values,
+                productive = point.confirmed,
+            )
+        }
+        val confirmed = examples.count { it.productive }
+        val rejected = examples.size - confirmed
+        if (confirmed == 0 || rejected == 0) {
+            _state.value = _state.value.copy(
+                rankerMessage = "Need at least one confirmed and one rejected field check near a " +
+                    "candidate — matched $confirmed confirmed and $rejected rejected.",
+            )
+            return
+        }
+        _state.value = _state.value.copy(isTrainingRanker = true, rankerMessage = null)
+        viewModelScope.launch {
+            val training = withContext(Dispatchers.Default) {
+                RankerTrainer.train(
+                    examples = examples,
+                    modelVersion = "field-checks-${System.currentTimeMillis()}",
+                    featureNames = CandidateFeatures.FEATURE_NAMES,
+                )
+            }
+            modelRegistry = modelRegistry.activate(training.ranker)
+            rankerStore.save(modelRegistry)
+            _state.value = _state.value.copy(
+                isTrainingRanker = false,
+                rankerVersion = training.ranker.modelVersion,
+                rankedCandidates = rank(result),
+                rankerMessage = "Trained on ${examples.size} field checks " +
+                    "($confirmed confirmed, $rejected rejected) · accuracy " +
+                    String.format(Locale.US, "%.0f%%", training.accuracy * 100f),
+            )
+        }
+    }
+
+    /** Deactivates the trained ranker and drops all retained versions from the device. */
+    fun clearRanker() {
+        modelRegistry = ModelRegistry()
+        rankerStore.clear()
+        _state.value = _state.value.copy(
+            rankerVersion = null,
+            rankedCandidates = null,
+            rankerMessage = "Ranker cleared — rule-based detector order is shown.",
+        )
     }
 
     /** Clusters disturbance cells and asks the selected cloud provider for typed target labels. */
@@ -325,6 +430,7 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                     localLayerBitmap = bitmap,
                     localError = null,
                     verifiedFeedback = verifiedPoints,
+                    rankedCandidates = rank(result),
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -365,6 +471,7 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                     _state.value = _state.value.copy(
                         isLocalRestoring = false,
                         localStage = "Source detail ready · tap Analyze to update derived layers",
+                        rankedCandidates = null,
                     )
                     return@launch
                 }
@@ -374,6 +481,7 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                 _state.value = _state.value.copy(
                     isLocalRestoring = false,
                     localStage = "Saved analysis restored · ${result.candidates.size} candidates",
+                    rankedCandidates = rank(result),
                     localResult = result,
                     localLayerBitmap = bitmap,
                     localError = null,
@@ -721,7 +829,19 @@ fun GeminiAssistantScreen(
                 }
             }
             item {
-                LocalCandidateSummary(result.candidates, result.recommendation)
+                RankerCard(
+                    state = state,
+                    onTrain = assistantViewModel::trainRankerFromFeedback,
+                    onClear = assistantViewModel::clearRanker,
+                )
+            }
+            item {
+                LocalCandidateSummary(
+                    candidates = result.candidates,
+                    recommendation = result.recommendation,
+                    ranked = state.rankedCandidates,
+                    rankerVersion = state.rankerVersion,
+                )
             }
         }
 
@@ -915,9 +1035,60 @@ private fun ProviderKeyEditor(
 }
 
 @Composable
+private fun RankerCard(
+    state: AiTerrainState,
+    onTrain: () -> Unit,
+    onClear: () -> Unit,
+) {
+    val confirmed = state.verifiedFeedback.count { it.confirmed }
+    val rejected = state.verifiedFeedback.size - confirmed
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Field-check ranker", fontWeight = FontWeight.Bold)
+            Text(
+                if (state.rankerVersion != null) {
+                    "Active model ${state.rankerVersion} — candidates are re-ordered by calibrated " +
+                        "field-check probability, with the evidence behind every score."
+                } else {
+                    "No trained model. Mark logged finds as confirmed or false positive in the " +
+                        "Targets panel, then train here to re-rank candidates by what actually panned out."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            state.rankerMessage?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onTrain,
+                    enabled = !state.isTrainingRanker && confirmed > 0 && rejected > 0,
+                ) {
+                    Text(
+                        if (state.isTrainingRanker) {
+                            "Training…"
+                        } else {
+                            "Train from $confirmed confirmed · $rejected rejected"
+                        },
+                    )
+                }
+                if (state.rankerVersion != null) {
+                    TextButton(onClick = onClear) { Text("Clear model") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun LocalCandidateSummary(
     candidates: List<TerrainFeatureCandidate>,
     recommendation: String,
+    ranked: List<RankedCandidate>?,
+    rankerVersion: String?,
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
@@ -926,7 +1097,18 @@ private fun LocalCandidateSummary(
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Local detector results", fontWeight = FontWeight.Bold)
             Text(recommendation, style = MaterialTheme.typography.bodySmall)
-            candidates.take(12).forEachIndexed { index, candidate ->
+            if (ranked != null && rankerVersion != null) {
+                Text(
+                    "Ordered by field-check model $rankerVersion",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            val display: List<RankedCandidate> = ranked ?: candidates.map {
+                RankedCandidate(it, probability = -1f, contributions = emptyList())
+            }
+            display.take(12).forEachIndexed { index, entry ->
+                val candidate = entry.candidate
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceContainer,
@@ -934,7 +1116,12 @@ private fun LocalCandidateSummary(
                 ) {
                     Column(Modifier.padding(10.dp)) {
                         Text(
-                            "${index + 1}. ${candidate.type.label} · ${(candidate.score * 100f).toInt()}%",
+                            buildString {
+                                append("${index + 1}. ${candidate.type.label} · ${(candidate.score * 100f).toInt()}%")
+                                if (entry.probability >= 0f) {
+                                    append(" → field-check ${(entry.probability * 100f).toInt()}%")
+                                }
+                            },
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
@@ -942,7 +1129,9 @@ private fun LocalCandidateSummary(
                             style = MaterialTheme.typography.bodySmall,
                         )
                         Text(
-                            candidate.evidence.joinToString(" · "),
+                            (candidate.evidence + entry.contributions.map { contribution ->
+                                "${if (contribution.contribution >= 0f) "+" else "−"} ${contribution.featureName}"
+                            }).joinToString(" · "),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

@@ -82,6 +82,8 @@ import com.example.data.export.buildCsv
 import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
 import com.example.data.export.buildKml
+import com.example.data.export.buildKmz
+import com.example.data.export.buildShapefileZip
 import com.example.data.export.ProjectExportFiles
 import com.example.geospatial.MeasurementFormat
 import kotlinx.coroutines.launch
@@ -123,6 +125,8 @@ fun TargetLoggerPanel(
     var pendingGpx by remember { mutableStateOf("") }
     var pendingKml by remember { mutableStateOf("") }
     var pendingGeoJson by remember { mutableStateOf("") }
+    var pendingBinaryBytes by remember { mutableStateOf(ByteArray(0)) }
+    var binarySuccessMessage by remember { mutableStateOf("") }
     var pendingProjectBytes by remember { mutableStateOf(ByteArray(0)) }
     var navigationTarget by remember { mutableStateOf<TargetSignal?>(null) }
 
@@ -210,6 +214,28 @@ fun TargetLoggerPanel(
                 context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(pendingKml) }
                     ?: error("Could not open the selected destination")
             }.onSuccess { exportMessage = "KML saved" }
+                .onFailure { exportMessage = "Save failed: ${it.localizedMessage}" }
+        }
+    }
+    val shapefileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(pendingBinaryBytes) }
+                    ?: error("Could not open the selected destination")
+            }.onSuccess { exportMessage = binarySuccessMessage }
+                .onFailure { exportMessage = "Save failed: ${it.localizedMessage}" }
+        }
+    }
+    val kmzLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/vnd.google-earth.kmz"),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(pendingBinaryBytes) }
+                    ?: error("Could not open the selected destination")
+            }.onSuccess { exportMessage = binarySuccessMessage }
                 .onFailure { exportMessage = "Save failed: ${it.localizedMessage}" }
         }
     }
@@ -421,6 +447,18 @@ fun TargetLoggerPanel(
                 pendingGeoJson = buildGeoJson(loggedSignals)
                 showExport = false
                 geoJsonLauncher.launch("find-it-targets.geojson")
+            },
+            onSaveShapefile = {
+                pendingBinaryBytes = buildShapefileZip(loggedSignals)
+                binarySuccessMessage = "Shapefile bundle saved"
+                showExport = false
+                shapefileLauncher.launch("find-it-targets-shp.zip")
+            },
+            onSaveKmz = {
+                pendingBinaryBytes = buildKmz(loggedSignals)
+                binarySuccessMessage = "KMZ saved"
+                showExport = false
+                kmzLauncher.launch("find-it-targets.kmz")
             },
         )
     }
@@ -1003,17 +1041,21 @@ private fun ExportGisDialog(
     onSaveGpx: () -> Unit,
     onSaveKml: () -> Unit,
     onSaveGeoJson: () -> Unit,
+    onSaveShapefile: () -> Unit,
+    onSaveKmz: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
     var format by remember { mutableStateOf(0) }
     val georeferenced = signals.count { it.latitude != null && it.longitude != null }
-    val labels = listOf("CSV", "GPX", "KML", "GeoJSON")
+    val labels = listOf("CSV", "GPX", "KML", "GeoJSON", "Shapefile", "KMZ")
     val content = remember(signals, format) {
         when (format) {
             0 -> buildCsv(signals)
             1 -> buildGpx(signals)
             2 -> buildKml(signals)
-            else -> buildGeoJson(signals)
+            3 -> buildGeoJson(signals)
+            4 -> "Binary shapefile bundle — .shp, .shx, and .dbf in one zip. Opens in QGIS and other GIS tools."
+            else -> "KMZ packages the KML export as a single compressed file for Google Earth."
         }
     }
     AlertDialog(
@@ -1045,6 +1087,7 @@ private fun ExportGisDialog(
                 )
                 OutlinedButton(
                     onClick = { clipboard.setText(AnnotatedString(content)) },
+                    enabled = format <= 3,
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) {
                     Icon(Icons.Default.ContentCopy, contentDescription = null)
@@ -1059,7 +1102,9 @@ private fun ExportGisDialog(
                     0 -> onSaveCsv
                     1 -> onSaveGpx
                     2 -> onSaveKml
-                    else -> onSaveGeoJson
+                    3 -> onSaveGeoJson
+                    4 -> onSaveShapefile
+                    else -> onSaveKmz
                 },
                 enabled = format == 0 || georeferenced > 0,
             ) { Text("Save file") }

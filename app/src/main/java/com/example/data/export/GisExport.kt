@@ -111,3 +111,46 @@ private fun jsonEscape(value: String) = buildString {
         }
     }
 }
+
+
+/**
+ * ESRI shapefile point layer (shp + shx + dbf) zipped for a single save target. Only signals
+ * with real WGS84 coordinates are included, matching the GPX/KML/GeoJSON behavior.
+ */
+fun buildShapefileZip(signals: List<TargetSignal>): ByteArray {
+    val fields = listOf(
+        ShapefileField("TYPE", ShapefileFieldType.CHARACTER, 24),
+        ShapefileField("SOURCE", ShapefileFieldType.CHARACTER, 12),
+        ShapefileField("STRENGTH", ShapefileFieldType.NUMBER, 6, 1),
+        ShapefileField("DEPTHCM", ShapefileFieldType.NUMBER, 6),
+        ShapefileField("STATUS", ShapefileFieldType.CHARACTER, 24),
+        ShapefileField("NOTES", ShapefileFieldType.CHARACTER, 80),
+    )
+    val points = signals.mapNotNull { signal ->
+        val latitude = signal.latitude ?: return@mapNotNull null
+        val longitude = signal.longitude ?: return@mapNotNull null
+        ShapefilePoint(
+            longitude = longitude,
+            latitude = latitude,
+            attributes = listOf(
+                signal.metalType.label,
+                signal.source.name,
+                formatDecimal(signal.signalStrength.toDouble(), 1),
+                signal.depthCm?.toString().orEmpty(),
+                signal.status,
+                signal.notes,
+            ),
+        )
+    }
+    val bundle = ShapefileWriter.writePoints(fields, points)
+    return createZipArchive(
+        linkedMapOf(
+            "find-it-targets.shp" to bundle.shp,
+            "find-it-targets.shx" to bundle.shx,
+            "find-it-targets.dbf" to bundle.dbf,
+        ),
+    )
+}
+
+/** KMZ is the zipped form of the KML export, so it reuses [buildKml] verbatim. */
+fun buildKmz(signals: List<TargetSignal>): ByteArray = KmzExporter.createKmz(buildKml(signals))

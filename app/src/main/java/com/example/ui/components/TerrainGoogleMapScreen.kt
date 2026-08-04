@@ -65,6 +65,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -84,6 +85,8 @@ import com.example.BuildConfig
 import com.example.data.ElevationGrid
 import com.example.data.HistoricMapOverlay
 import com.example.data.HistoricMapOverlayRepository
+import com.example.data.historicmap.HistoricMapAgreementScorer
+import com.example.data.historicmap.MapFeatureAgreement
 import com.example.data.field.BreadcrumbTrack
 import com.example.data.survey.SurveyFeature
 import com.example.data.survey.SurveyGeometryType
@@ -156,6 +159,56 @@ fun TerrainGoogleMapScreen(
     var activeHistoricMapId by rememberSaveable { mutableStateOf<String?>(null) }
     var historicPanelExpanded by rememberSaveable { mutableStateOf(false) }
     var historicMapMessage by remember { mutableStateOf<String?>(null) }
+
+    // Live terrain-agreement feedback for the map being aligned: a relief-contrast evidence
+    // layer is built once per terrain grid, then the active map's ink is scored against it.
+    val reliefEvidence by produceState<HistoricMapAgreementScorer.EvidenceGrid?>(null, grid) {
+        value = withContext(Dispatchers.Default) {
+            runCatching { HistoricMapAgreementScorer.buildReliefEvidence(grid) }.getOrNull()
+        }
+    }
+    val activeHistoricMap = historicMaps.firstOrNull { it.id == activeHistoricMapId }
+    val activeHistoricBitmap = activeHistoricMap?.let { historicBitmaps[it.id] }
+    val historicAgreement by produceState<MapFeatureAgreement?>(
+        null,
+        reliefEvidence,
+        activeHistoricMap,
+        activeHistoricBitmap,
+        metadata.bounds,
+    ) {
+        val evidence = reliefEvidence
+        val record = activeHistoricMap
+        val bounds = metadata.bounds
+        val bitmap = activeHistoricBitmap?.takeIf { !it.isRecycled }
+        if (evidence == null || record == null || bounds == null || bitmap == null) {
+            value = null
+            return@produceState
+        }
+        // Debounce slider drags: every alignment change restarts this effect, and only the
+        // configuration that stays put briefly gets scored.
+        kotlinx.coroutines.delay(250)
+        value = withContext(Dispatchers.Default) {
+            runCatching {
+                val pixels = IntArray(bitmap.width * bitmap.height)
+                bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                HistoricMapAgreementScorer.scoreOverlay(
+                    pixels = pixels,
+                    imageWidth = bitmap.width,
+                    imageHeight = bitmap.height,
+                    centerLatitude = record.latitude,
+                    centerLongitude = record.longitude,
+                    widthMeters = record.widthMeters,
+                    heightMeters = record.heightMeters,
+                    bearingDegrees = record.bearingDegrees,
+                    gridMinLatitude = bounds.minLat,
+                    gridMaxLatitude = bounds.maxLat,
+                    gridMinLongitude = bounds.minLon,
+                    gridMaxLongitude = bounds.maxLon,
+                    evidence = evidence,
+                )
+            }.getOrNull()
+        }
+    }
 
     fun refreshHistoricMaps() {
         historicMaps = historicMapRepository.list()
@@ -460,6 +513,7 @@ fun TerrainGoogleMapScreen(
                 historicMaps = historicMaps,
                 activeId = activeHistoricMapId,
                 message = historicMapMessage,
+                agreement = historicAgreement,
                 onImport = { historicMapPicker.launch(arrayOf("image/*")) },
                 onSelect = { activeHistoricMapId = it },
                 onToggleVisible = { record -> updateHistoricMap(record.copy(visible = !record.visible)) },
@@ -757,6 +811,7 @@ private fun HistoricMapPanel(
     historicMaps: List<HistoricMapOverlay>,
     activeId: String?,
     message: String?,
+    agreement: MapFeatureAgreement?,
     onImport: () -> Unit,
     onSelect: (String) -> Unit,
     onToggleVisible: (HistoricMapOverlay) -> Unit,
@@ -893,6 +948,30 @@ private fun HistoricMapPanel(
                         onClick = { onCenterHere(active) },
                         contentPadding = PaddingValues(horizontal = 12.dp),
                     ) { Text("Center here") }
+                }
+                if (agreement != null) {
+                    HorizontalDivider()
+                    Text(
+                        "Terrain agreement: ${(agreement.score * 100f).toInt()}%",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = when {
+                            agreement.score >= 0.66f -> MaterialTheme.colorScheme.primary
+                            agreement.score >= 0.4f -> MaterialTheme.colorScheme.onSurface
+                            else -> MaterialTheme.colorScheme.error
+                        },
+                    )
+                    Text(
+                        agreement.note,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "Terrain agreement appears once this map overlaps georeferenced terrain detail. " +
+                            "Higher percentages mean the map's drawn features sit on real terrain evidence.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
