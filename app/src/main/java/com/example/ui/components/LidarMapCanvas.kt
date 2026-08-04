@@ -100,6 +100,8 @@ fun LidarMapCanvas(
     showSurveyCursor: Boolean = true,
     showCoordinateHud: Boolean = true,
     onViewportChanged: (NormalizedRasterBounds, Float, Float, Float) -> Unit = { _, _, _, _ -> },
+    /** Reports how far the current raster is being stretched (screen px per raster px). */
+    onViewportStretch: (NormalizedRasterBounds, Float) -> Unit = { _, _ -> },
     initialZoom: Float = 1f,
     initialPanX: Float = 0f,
     initialPanY: Float = 0f,
@@ -247,6 +249,7 @@ fun LidarMapCanvas(
                 ).sanitized()
                 TerrainVisionSession.publish(sourceBitmap, bounds, currentZoom)
                 onViewportChanged(bounds, currentZoom, currentPan.x, currentPan.y)
+                onViewportStretch(bounds, fit * currentZoom)
             }
     }
 

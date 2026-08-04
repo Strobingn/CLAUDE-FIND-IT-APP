@@ -60,6 +60,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -101,6 +102,7 @@ import com.example.ui.components.TerrainGoogleMapScreen
 import com.example.ui.components.SurveyLayerImporter
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
@@ -129,6 +131,9 @@ private val tabs = listOf(
  * "tablet" layout - full-height labelled items - exactly when landscape height is tightest.
  */
 internal fun usesCompactBottomNavigation(smallestScreenWidthDp: Int): Boolean = smallestScreenWidthDp < 600
+
+private const val AUTO_REFINE_STRETCH_THRESHOLD = 2.0f
+private const val AUTO_REFINE_SETTLE_MS = 1_500L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -291,6 +296,24 @@ private fun TerrainTab(
     val vmViewportRestoreToken by viewModel.viewportRestoreToken.collectAsStateWithLifecycle()
 
     val visibleBounds = remember { mutableStateOf(NormalizedRasterBounds.Full) }
+    val viewportStretch = remember { mutableFloatStateOf(1f) }
+    val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
+    val lastAutoRefinedBounds = remember(terrainKey) { mutableStateOf<NormalizedRasterBounds?>(null) }
+
+    // Zoom-aware auto refine: once the raster is stretched past 2 screen px per source
+    // px and the viewport settles, quietly re-render the visible window from the source
+    // LAZ at full detail. The manual Detail button stays available either way.
+    LaunchedEffect(visibleBounds.value, viewportStretch.floatValue, canRefine, isRefining) {
+        if (!canRefine || isRefining) return@LaunchedEffect
+        if (viewportStretch.floatValue <= AUTO_REFINE_STRETCH_THRESHOLD) return@LaunchedEffect
+        val settledBounds = visibleBounds.value
+        if (settledBounds == lastAutoRefinedBounds.value) return@LaunchedEffect
+        delay(AUTO_REFINE_SETTLE_MS)
+        if (visibleBounds.value != settledBounds) return@LaunchedEffect
+        if (viewportStretch.floatValue <= AUTO_REFINE_STRETCH_THRESHOLD) return@LaunchedEffect
+        lastAutoRefinedBounds.value = settledBounds
+        viewModel.refineTerrain(settledBounds)
+    }
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
     val inspectedCell = remember { mutableStateOf<com.example.analysis.TerrainCellInspection?>(null) }
     val viewshedState = remember { mutableStateOf<com.example.analysis.TerrainViewshed?>(null) }
@@ -397,6 +420,7 @@ private fun TerrainTab(
                 zoomLevel.value = zoom
                 viewModel.updateViewport(zoom, panX, panY)
             },
+            onViewportStretch = { _, stretch -> viewportStretch.floatValue = stretch },
             showHeatmap = heatmapEnabled,
             basemapBitmap = basemapBitmap,
             showBasemap = basemapEnabled,
