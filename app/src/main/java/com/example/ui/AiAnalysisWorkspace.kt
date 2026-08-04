@@ -37,6 +37,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.analysis.MetalDetectingTarget
+import androidx.compose.ui.text.font.FontFamily
+import com.example.analysis.LayerVerdict
 import com.example.analysis.MetalDetectingTargetRefiner
 import com.example.analysis.TerrainDerivedLayer
 import com.example.analysis.TerrainIntelligenceEngine
@@ -672,6 +674,45 @@ private fun TargetDetailCard(target: MetalDetectingTarget, onLog: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Text(
+                "Search radius: ${target.radiusMeters.toInt()} m",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (target.layerEvidence.isNotEmpty()) {
+                Text(
+                    "Layer agreement",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                target.layerEvidence.forEach { layer ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            layer.layer,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            layer.measurement,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                        Text(
+                            layer.verdict.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when (layer.verdict) {
+                                LayerVerdict.SUPPORTS -> MaterialTheme.colorScheme.tertiary
+                                LayerVerdict.MIXED -> MaterialTheme.colorScheme.primary
+                                LayerVerdict.DISAGREES -> MaterialTheme.colorScheme.error
+                            },
+                        )
+                    }
+                }
+            }
             target.cautionReasons.forEach { reason ->
                 Text(
                     "⚠ $reason",
