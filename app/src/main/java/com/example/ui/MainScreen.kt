@@ -608,6 +608,7 @@ private fun TerrainTab(
             LidarControlPanel(
                 selectedSiteIndex = site,
                 onSiteSelected = viewModel::selectSite,
+                siteLatitude = metadata?.bounds?.let { (it.minLat + it.maxLat) / 2.0 },
                 sunAzimuth = azimuth,
                 onSunAzimuthChanged = viewModel::updateSunAzimuth,
                 sunAltitude = altitude,
