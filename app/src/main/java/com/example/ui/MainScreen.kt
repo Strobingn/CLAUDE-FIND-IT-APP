@@ -827,6 +827,10 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
     val sweepX by viewModel.sweepX.collectAsStateWithLifecycle()
     val sweepY by viewModel.sweepY.collectAsStateWithLifecycle()
     val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
+    val excavationLogs by viewModel.excavationLogs.collectAsStateWithLifecycle()
+    val surveyBoundaries by viewModel.surveyBoundaries.collectAsStateWithLifecycle()
+    val pendingSyncCount by viewModel.pendingSyncCount.collectAsStateWithLifecycle()
+    val findsMetadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
     val isBreadcrumbRecording by viewModel.isBreadcrumbRecording.collectAsStateWithLifecycle()
     val gpsEnabled by viewModel.gpsEnabled.collectAsStateWithLifecycle()
     val deviceLatitude by viewModel.deviceLatitude.collectAsStateWithLifecycle()
@@ -872,7 +876,17 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         onUpdateSignal = viewModel::updateLoggedSignal,
         onClearAll = viewModel::clearLoggedSignals,
         onBuildProjectExport = viewModel::buildProjectExportFiles,
+        onBuildQgisBundle = viewModel::buildQgisBundleBytes,
+        onBuildProjectArchive = viewModel::buildProjectArchiveBytes,
         onRoutePlanned = viewModel::setPlannedRoute,
+        excavationLogs = excavationLogs,
+        surveyBoundaries = surveyBoundaries,
+        pendingSyncCount = pendingSyncCount,
+        terrainBounds = findsMetadata.bounds,
+        onSaveExcavationLog = viewModel::saveExcavationLog,
+        onDeleteExcavationLog = viewModel::deleteExcavationLog,
+        onCreateBoundary = viewModel::createSurveyBoundary,
+        onDeleteBoundary = viewModel::deleteSurveyBoundary,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }

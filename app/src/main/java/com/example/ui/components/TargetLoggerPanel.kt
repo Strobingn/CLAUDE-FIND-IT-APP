@@ -29,6 +29,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Construction
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -43,6 +46,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -79,9 +83,13 @@ import com.example.data.field.FieldNavigation
 import com.example.data.field.VoiceNoteRecorder
 import com.example.data.field.createVoiceNoteFile
 import com.example.data.field.deleteVoiceNoteFile
+import com.example.geospatial.GeoSpatialLibrary
 import com.example.geospatial.trueToMagneticBearingDegrees
 import com.example.data.export.buildCsv
+import com.example.data.field.BoundaryVertex
+import com.example.data.field.ExcavationLogEntry
 import com.example.data.field.FindSiteClusterer
+import com.example.data.field.SurveyBoundary
 import com.example.data.field.FieldWaypoint
 import com.example.data.field.OptimizedFieldRoute
 import com.example.data.field.TargetRouteOptimizer
@@ -95,7 +103,11 @@ import com.example.geospatial.MeasurementFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.UUID
+import kotlin.math.cos
 
 @Composable
 fun TargetLoggerPanel(
@@ -119,12 +131,23 @@ fun TargetLoggerPanel(
     onUpdateSignal: (TargetSignal) -> Unit,
     onClearAll: () -> Unit,
     onBuildProjectExport: suspend () -> ProjectExportFiles,
+    onBuildQgisBundle: suspend () -> ByteArray? = { null },
+    onBuildProjectArchive: suspend () -> ByteArray = { ByteArray(0) },
     onRoutePlanned: (OptimizedFieldRoute?) -> Unit = {},
+    excavationLogs: List<ExcavationLogEntry> = emptyList(),
+    surveyBoundaries: List<SurveyBoundary> = emptyList(),
+    pendingSyncCount: Int = 0,
+    terrainBounds: GeoSpatialLibrary.GeographicBounds? = null,
+    onSaveExcavationLog: (ExcavationLogEntry) -> Unit = {},
+    onDeleteExcavationLog: (ExcavationLogEntry) -> Unit = {},
+    onCreateBoundary: (String, List<BoundaryVertex>) -> Unit = { _, _ -> },
+    onDeleteBoundary: (SurveyBoundary) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var editingSignal by remember { mutableStateOf<TargetSignal?>(null) }
+    var digLogSignal by remember { mutableStateOf<TargetSignal?>(null) }
     var showExport by remember { mutableStateOf(false) }
     var showProjectExport by remember { mutableStateOf(false) }
     var isBuildingProjectExport by remember { mutableStateOf(false) }
@@ -189,6 +212,17 @@ fun TargetLoggerPanel(
                 .onFailure { exportMessage = "Save failed: ${it.localizedMessage}" }
         }
     }
+    val projectZipLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(pendingProjectBytes) }
+                    ?: error("Could not open the selected destination")
+            }.onSuccess { exportMessage = "Archive saved" }
+                .onFailure { exportMessage = "Save failed: ${it.localizedMessage}" }
+        }
+    }
 
     val buildProjectExport: (Boolean) -> Unit = { pdf ->
         showProjectExport = false
@@ -203,6 +237,40 @@ fun TargetLoggerPanel(
                     } else {
                         terrainImageLauncher.launch("${files.fileStem}-terrain.png")
                     }
+                }
+                .onFailure { exportMessage = "Export failed: ${it.localizedMessage}" }
+            isBuildingProjectExport = false
+        }
+    }
+
+    val buildQgisBundleExport: () -> Unit = {
+        showProjectExport = false
+        isBuildingProjectExport = true
+        exportMessage = "Building QGIS bundle..."
+        scope.launch {
+            runCatching { onBuildQgisBundle() }
+                .onSuccess { bytes ->
+                    if (bytes == null) {
+                        exportMessage = "This terrain has no geographic bounds, so a GeoTIFF/QGIS bundle cannot be placed safely."
+                    } else {
+                        pendingProjectBytes = bytes
+                        projectZipLauncher.launch("find-it-qgis-bundle.zip")
+                    }
+                }
+                .onFailure { exportMessage = "Export failed: ${it.localizedMessage}" }
+            isBuildingProjectExport = false
+        }
+    }
+
+    val buildArchiveExport: () -> Unit = {
+        showProjectExport = false
+        isBuildingProjectExport = true
+        exportMessage = "Building portable project archive..."
+        scope.launch {
+            runCatching { onBuildProjectArchive() }
+                .onSuccess { bytes ->
+                    pendingProjectBytes = bytes
+                    projectZipLauncher.launch("find-it-project-archive.zip")
                 }
                 .onFailure { exportMessage = "Export failed: ${it.localizedMessage}" }
             isBuildingProjectExport = false
@@ -374,6 +442,23 @@ fun TargetLoggerPanel(
             }
         }
 
+        if (pendingSyncCount > 0) {
+            Text(
+                "Offline sync: $pendingSyncCount change${if (pendingSyncCount == 1) "" else "s"} queued - they replay in order when connectivity returns.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        BoundariesCard(
+            boundaries = surveyBoundaries,
+            terrainBounds = terrainBounds,
+            deviceLatitude = deviceLatitude,
+            deviceLongitude = deviceLongitude,
+            onCreateBoundary = onCreateBoundary,
+            onDeleteBoundary = onDeleteBoundary,
+        )
+
         navigationTarget?.let { target ->
             FieldNavigationCard(
                 target = target,
@@ -437,6 +522,8 @@ fun TargetLoggerPanel(
                             onDeleteSignal(signal)
                         },
                         onNavigate = { navigationTarget = signal },
+                        digLogCount = excavationLogs.count { it.targetId == signal.id },
+                        onOpenDigLogs = { digLogSignal = signal },
                     )
                 }
             }
@@ -451,6 +538,16 @@ fun TargetLoggerPanel(
                 onUpdateSignal(it)
                 editingSignal = null
             },
+        )
+    }
+
+    digLogSignal?.let { signal ->
+        ExcavationLogsDialog(
+            signal = signal,
+            logs = excavationLogs.filter { it.targetId == signal.id },
+            onSave = onSaveExcavationLog,
+            onDelete = onDeleteExcavationLog,
+            onDismiss = { digLogSignal = null },
         )
     }
 
@@ -537,6 +634,16 @@ fun TargetLoggerPanel(
                     )
                     Text("PNG includes saved targets, survey layers, legend, scale, and source coordinates.")
                     Text("PDF includes the annotated map, metadata, target records, survey provenance, and integrity notes.")
+                    Text("QGIS bundle packs a GeoTIFF terrain raster, a shapefile of your targets, and a ready-to-open .qgs project.")
+                    Text("Portable archive moves the whole project (targets in every format, PNG, PDF, QGIS bundle) between devices as one zip.")
+                    TextButton(
+                        onClick = { buildQgisBundleExport() },
+                        modifier = Modifier.fillMaxWidth().testTag("export_qgis_bundle"),
+                    ) { Text("Save QGIS bundle (.zip)") }
+                    TextButton(
+                        onClick = { buildArchiveExport() },
+                        modifier = Modifier.fillMaxWidth().testTag("export_project_archive"),
+                    ) { Text("Save portable archive (.zip)") }
                 }
             },
             confirmButton = {
@@ -694,6 +801,8 @@ private fun SignalCard(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onNavigate: () -> Unit,
+    digLogCount: Int = 0,
+    onOpenDigLogs: () -> Unit = {},
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
@@ -758,6 +867,13 @@ private fun SignalCard(
                         color = MaterialTheme.colorScheme.secondary,
                     )
                 }
+                if (digLogCount > 0) {
+                    Text(
+                        "$digLogCount dig log${if (digLogCount == 1) "" else "s"}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                }
             }
             IconButton(onClick = onEdit, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Default.Edit, contentDescription = "Edit find")
@@ -768,6 +884,9 @@ private fun SignalCard(
                 modifier = Modifier.size(48.dp),
             ) {
                 Icon(Icons.Default.Navigation, contentDescription = "Navigate to find")
+            }
+            IconButton(onClick = onOpenDigLogs, modifier = Modifier.size(48.dp)) {
+                Icon(Icons.Default.Construction, contentDescription = "Dig logs")
             }
             IconButton(onClick = onDelete, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete find")
@@ -1296,3 +1415,243 @@ private fun PlannedRouteCard(
         }
     }
 }
+
+@Composable
+private fun BoundariesCard(
+    boundaries: List<SurveyBoundary>,
+    terrainBounds: GeoSpatialLibrary.GeographicBounds?,
+    deviceLatitude: Double?,
+    deviceLongitude: Double?,
+    onCreateBoundary: (String, List<BoundaryVertex>) -> Unit,
+    onDeleteBoundary: (SurveyBoundary) -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text("Survey boundaries", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "Boundaries record the permitted search area for this project. They persist " +
+                    "offline and are queued for sync with the rest of your field data.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            boundaries.forEach { boundary ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(boundary.displayName, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "${boundary.vertices.size} vertices",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { onDeleteBoundary(boundary) }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Delete boundary")
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = {
+                        terrainBounds?.let { bounds ->
+                            onCreateBoundary(
+                                "Terrain extent",
+                                listOf(
+                                    BoundaryVertex(bounds.minLat, bounds.minLon),
+                                    BoundaryVertex(bounds.minLat, bounds.maxLon),
+                                    BoundaryVertex(bounds.maxLat, bounds.maxLon),
+                                    BoundaryVertex(bounds.maxLat, bounds.minLon),
+                                ),
+                            )
+                        }
+                    },
+                    enabled = terrainBounds != null,
+                    modifier = Modifier.weight(1f).height(48.dp).testTag("boundary_from_terrain"),
+                ) {
+                    Text("From terrain extent")
+                }
+                OutlinedButton(
+                    onClick = {
+                        val lat = deviceLatitude
+                        val lon = deviceLongitude
+                        if (lat != null && lon != null) {
+                            onCreateBoundary("Around me (100 m)", boundarySquareAround(lat, lon, 50.0))
+                        }
+                    },
+                    enabled = deviceLatitude != null && deviceLongitude != null,
+                    modifier = Modifier.weight(1f).height(48.dp).testTag("boundary_around_me"),
+                ) {
+                    Text("Around me")
+                }
+            }
+        }
+    }
+}
+
+private fun boundarySquareAround(
+    latitude: Double,
+    longitude: Double,
+    radiusMeters: Double,
+): List<BoundaryVertex> {
+    val latDelta = radiusMeters / 111_320.0
+    val lonDelta = radiusMeters / (111_320.0 * cos(Math.toRadians(latitude)).coerceAtLeast(0.01))
+    return listOf(
+        BoundaryVertex(latitude - latDelta, longitude - lonDelta),
+        BoundaryVertex(latitude - latDelta, longitude + lonDelta),
+        BoundaryVertex(latitude + latDelta, longitude + lonDelta),
+        BoundaryVertex(latitude + latDelta, longitude - lonDelta),
+    )
+}
+
+@Composable
+private fun ExcavationLogsDialog(
+    signal: TargetSignal,
+    logs: List<ExcavationLogEntry>,
+    onSave: (ExcavationLogEntry) -> Unit,
+    onDelete: (ExcavationLogEntry) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var showForm by remember(signal.id) { mutableStateOf(false) }
+    var depthText by remember(signal.id) { mutableStateOf("") }
+    var soilNotes by remember(signal.id) { mutableStateOf("") }
+    var findsDescription by remember(signal.id) { mutableStateOf("") }
+    var findsCountText by remember(signal.id) { mutableStateOf("0") }
+    var markComplete by remember(signal.id) { mutableStateOf(true) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Dig logs · ${signal.metalType.label}") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+            ) {
+                if (logs.isEmpty() && !showForm) {
+                    Text(
+                        "No dig logs yet. Record each check or excavation so the full visit " +
+                            "history stays with this target, offline.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                logs.forEach { entry ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                formatDigLogTime(entry.startedAtMillis) +
+                                    if (entry.isComplete) " · complete" else " · open",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            val detail = buildString {
+                                entry.depthCentimeters?.let { append("Depth $it cm") }
+                                if (entry.findsCount > 0) {
+                                    if (isNotEmpty()) append(" · ")
+                                    append("${entry.findsCount} find(s)")
+                                }
+                                if (entry.soilNotes.isNotBlank()) {
+                                    if (isNotEmpty()) append(" · ")
+                                    append(entry.soilNotes)
+                                }
+                                if (entry.findsDescription.isNotBlank()) {
+                                    if (isNotEmpty()) append(" · ")
+                                    append(entry.findsDescription)
+                                }
+                            }
+                            if (detail.isNotBlank()) {
+                                Text(
+                                    detail,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        IconButton(onClick = { onDelete(entry) }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete dig log")
+                        }
+                    }
+                }
+                if (showForm) {
+                    OutlinedTextField(
+                        value = depthText,
+                        onValueChange = { depthText = it.filter(Char::isDigit).take(3) },
+                        label = { Text("Depth (cm)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("diglog_depth"),
+                    )
+                    OutlinedTextField(
+                        value = soilNotes,
+                        onValueChange = { soilNotes = it.take(200) },
+                        label = { Text("Soil notes") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = findsDescription,
+                        onValueChange = { findsDescription = it.take(200) },
+                        label = { Text("What came out") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = findsCountText,
+                        onValueChange = { findsCountText = it.filter(Char::isDigit).take(3) },
+                        label = { Text("Finds count") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    FilterChip(
+                        selected = markComplete,
+                        onClick = { markComplete = !markComplete },
+                        label = { Text(if (markComplete) "Dig complete" else "Still open") },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (showForm) {
+                Button(
+                    onClick = {
+                        val now = System.currentTimeMillis()
+                        onSave(
+                            ExcavationLogEntry(
+                                id = UUID.randomUUID().toString(),
+                                targetId = signal.id,
+                                terrainKey = signal.terrainKey,
+                                startedAtMillis = now,
+                                completedAtMillis = if (markComplete) now else null,
+                                depthCentimeters = depthText.toIntOrNull(),
+                                soilNotes = soilNotes.trim(),
+                                findsDescription = findsDescription.trim(),
+                                findsCount = findsCountText.toIntOrNull() ?: 0,
+                                photoUris = emptyList(),
+                                voiceNoteUris = emptyList(),
+                                createdAtMillis = now,
+                                updatedAtMillis = now,
+                            ),
+                        )
+                        showForm = false
+                        depthText = ""
+                        soilNotes = ""
+                        findsDescription = ""
+                        findsCountText = "0"
+                    },
+                    modifier = Modifier.testTag("diglog_save"),
+                ) { Text("Save log") }
+            } else {
+                Button(
+                    onClick = { showForm = true },
+                    modifier = Modifier.testTag("diglog_new"),
+                ) { Text("New dig log") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { if (showForm) showForm = false else onDismiss() }) {
+                Text(if (showForm) "Back" else "Close")
+            }
+        },
+    )
+}
+
+private fun formatDigLogTime(millis: Long): String =
+    SimpleDateFormat("MMM d, HH:mm", Locale.US).format(Date(millis))
