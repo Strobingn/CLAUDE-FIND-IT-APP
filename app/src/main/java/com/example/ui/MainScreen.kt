@@ -98,11 +98,13 @@ import com.example.ui.components.LidarControlPanel
 import com.example.ui.components.LidarMapCanvas
 import com.example.ui.components.NysLazTilePicker
 import com.example.ui.components.OfflineBasemapManager
+import com.example.ui.components.SavedLidarLibrarySection
 import com.example.ui.components.TargetLoggerPanel
 import com.example.ui.components.TerrainCellInspectionPanel
 import com.example.ui.components.TerrainElevationProfilePanel
 import com.example.ui.components.TerrainGoogleMapScreen
 import com.example.ui.components.SurveyLayerImporter
+import com.example.ui.components.ViewshedCard
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -491,66 +493,27 @@ private fun TerrainTab(
                 .testTag("terrain_workspace"),
         )
 
-        // The viewshed lives on its own compact card; the full cell-inspection panel closes
-        // as soon as a viewshed is requested so neither one covers the overlay on the map.
-        if (viewshedState.value != null || viewshedComputing.value) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-                tonalElevation = 4.dp,
-                shadowElevation = 6.dp,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(top = 84.dp, start = 12.dp)
-                    .widthIn(max = 280.dp),
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        "Viewshed",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    viewshedState.value?.let { shed ->
-                        Text(
-                            "Observer ${shed.observerXPercent.toInt()}%, ${shed.observerYPercent.toInt()}% · radius ${MeasurementFormat.length(shed.maxRadiusMeters)}",
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                        Text(
-                            "${(shed.visibilityRatio * 100f).toInt()}% visible (${shed.visibleCells} of ${shed.analyzedCells} cells)",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            "Green = visible from observer · dark = blocked",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } ?: Text(
-                        "Computing viewshed…",
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                    TextButton(
-                        onClick = { viewshedState.value = null },
-                        enabled = !viewshedComputing.value,
-                    ) { Text("Clear") }
-                }
-            }
-        }
+        // Viewshed status sits on its own small card — never inside the cell-inspection sheet —
+        // so the green/blocked overlay on the canvas stays fully visible.
+        ViewshedCard(
+            viewshed = viewshedState.value,
+            isComputing = viewshedComputing.value,
+            cellSizeMeters = elevationGrid.cellSizeMeters,
+            onClear = { viewshedState.value = null },
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = 84.dp, start = 12.dp),
+        )
 
         inspectedCell.value?.let { inspection ->
             TerrainCellInspectionPanel(
                 inspection = inspection,
-                viewshed = viewshedState.value,
-                gridWidth = elevationGrid.width,
-                gridHeight = elevationGrid.height,
                 isComputingViewshed = viewshedComputing.value,
+                canComputeViewshed = elevationGrid.width > 2 && elevationGrid.height > 2,
                 onComputeViewshed = {
                     if (!viewshedComputing.value) {
                         viewshedComputing.value = true
-                        // Free the map immediately; results arrive on the compact viewshed card.
+                        // Free the map immediately: results go to ViewshedCard + canvas overlay.
                         inspectedCell.value = null
                         scope.launch {
                             val result = withContext(Dispatchers.Default) {
@@ -566,16 +529,11 @@ private fun TerrainTab(
                         }
                     }
                 },
-                onClearViewshed = { viewshedState.value = null },
-                onDismiss = {
-                    inspectedCell.value = null
-                    viewshedState.value = null
-                },
+                onDismiss = { inspectedCell.value = null },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .navigationBarsPadding()
-                    .padding(start = 12.dp, end = 12.dp, bottom = 72.dp)
-                    .fillMaxWidth(0.94f),
+                    .padding(end = 12.dp, bottom = 72.dp),
             )
         }
 
@@ -928,11 +886,10 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
     val sweepX by viewModel.sweepX.collectAsStateWithLifecycle()
     val sweepY by viewModel.sweepY.collectAsStateWithLifecycle()
     val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
+    val isBreadcrumbRecording by viewModel.isBreadcrumbRecording.collectAsStateWithLifecycle()
     val excavationLogs by viewModel.excavationLogs.collectAsStateWithLifecycle()
     val surveyBoundaries by viewModel.surveyBoundaries.collectAsStateWithLifecycle()
-    val pendingSyncCount by viewModel.pendingSyncCount.collectAsStateWithLifecycle()
-    val findsMetadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
-    val isBreadcrumbRecording by viewModel.isBreadcrumbRecording.collectAsStateWithLifecycle()
+    val pendingSyncEntries by viewModel.pendingSyncEntries.collectAsStateWithLifecycle()
     val gpsEnabled by viewModel.gpsEnabled.collectAsStateWithLifecycle()
     val deviceLatitude by viewModel.deviceLatitude.collectAsStateWithLifecycle()
     val deviceLongitude by viewModel.deviceLongitude.collectAsStateWithLifecycle()
@@ -948,6 +905,9 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         currentSweepY = sweepY,
         breadcrumbTracks = breadcrumbTracks,
         isBreadcrumbRecording = isBreadcrumbRecording,
+        excavationLogs = excavationLogs,
+        surveyBoundaries = surveyBoundaries,
+        pendingSyncEntries = pendingSyncEntries,
         gpsEnabled = gpsEnabled,
         deviceLatitude = deviceLatitude,
         deviceLongitude = deviceLongitude,
@@ -980,14 +940,14 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         onBuildQgisBundle = viewModel::buildQgisBundleBytes,
         onBuildProjectArchive = viewModel::buildProjectArchiveBytes,
         onRoutePlanned = viewModel::setPlannedRoute,
-        excavationLogs = excavationLogs,
-        surveyBoundaries = surveyBoundaries,
-        pendingSyncCount = pendingSyncCount,
-        terrainBounds = findsMetadata.bounds,
         onSaveExcavationLog = viewModel::saveExcavationLog,
         onDeleteExcavationLog = viewModel::deleteExcavationLog,
-        onCreateBoundary = viewModel::createSurveyBoundary,
-        onDeleteBoundary = viewModel::deleteSurveyBoundary,
+        onStartExcavationLog = viewModel::startExcavationLog,
+        onCreateBoundaryFromTrail = { track -> viewModel.createSurveyBoundaryFromTrail(track) },
+        onCreateBoundaryAroundGps = { viewModel.createSurveyBoundaryAroundGps() },
+        onDeleteSurveyBoundary = viewModel::deleteSurveyBoundary,
+        onMarkSyncSent = viewModel::markPendingSyncSent,
+        onClearSyncQueue = viewModel::clearPendingSyncQueue,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }
@@ -1012,6 +972,17 @@ private fun ImportTab(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        // Always first: previous downloads, rename, reopen — so users never miss stored LAZ tiles.
+        SavedLidarLibrarySection(
+            onTerrainLoaded = { result, source ->
+                viewModel.setCustomTerrain(result, source)
+                onImported()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+        )
+
         OfflineBasemapManager(
             suggestedName = metadata.siteName,
             regions = offlineRegions,
@@ -1030,7 +1001,7 @@ private fun ImportTab(
             onDelete = viewModel::deleteOfflineBasemapRegion,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+                .padding(start = 16.dp, end = 16.dp),
         )
 
         SurveyLayerImporter(
@@ -1042,7 +1013,7 @@ private fun ImportTab(
             onDelete = viewModel::deleteSurveyLayer,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+                .padding(start = 16.dp, end = 16.dp),
         )
 
         NysLazTilePicker(
@@ -1052,7 +1023,7 @@ private fun ImportTab(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 12.dp, end = 16.dp),
+                .padding(start = 16.dp, end = 16.dp),
         )
 
         CustomFileLoader(

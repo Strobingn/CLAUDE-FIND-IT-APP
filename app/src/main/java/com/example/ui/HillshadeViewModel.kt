@@ -17,15 +17,19 @@ import com.example.data.ElevationGrid
 import com.example.data.GroundSurfaceMode
 import com.example.data.basemap.OfflineBasemapRegion
 import com.example.data.basemap.OfflineBasemapStatus
+import com.example.data.AppTerrainStorage
+import com.example.data.field.BoundaryVertex
 import com.example.data.field.BreadcrumbPoint
 import com.example.data.field.BreadcrumbTrack
-import com.example.data.field.OptimizedFieldRoute
-import com.example.data.field.BoundaryVertex
 import com.example.data.field.ExcavationLogEntry
+import com.example.data.field.FieldSyncQueue
+import com.example.data.field.OptimizedFieldRoute
+import com.example.data.field.PendingSyncEntry
 import com.example.data.field.SurveyBoundary
 import com.example.data.field.SyncEntityType
 import com.example.data.field.SyncOperation
 import com.example.data.LazDatasetStore
+import com.example.data.LazTerrainCache
 import com.example.data.LazTerrainDiskCache
 import com.example.data.LazTerrainMemoryCache
 import com.example.data.LazSpatialIndex
@@ -33,9 +37,11 @@ import com.example.data.LazTerrainReader
 import com.example.data.LidarImportOptions
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
+import com.example.data.TerrainDecodeCoordinator
 import com.example.data.TerrainGpuSceneBuilder
 import com.example.data.TerrainImportSource
 import com.example.data.TerrainPerformanceSession
+import com.example.data.TerrainSessionStore
 import com.example.data.TargetSignal
 import com.example.data.gridForHillshadePreview
 import com.example.data.hillshadeDebounceMs
@@ -117,7 +123,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val surveyBoundaryDao = AppDatabase.get(application).surveyBoundaryDao()
     private val pendingSyncDao = AppDatabase.get(application).pendingSyncDao()
     private val refinementMemoryCache = LazTerrainMemoryCache()
-    private val refinementDiskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
+    private val refinementDiskCache = AppTerrainStorage.decodedTerrainCache(application)
+    private val terrainSessionStore = TerrainSessionStore(application)
     // Shares its directory with AiTerrainViewModel so layers analyzed on the AI tab
     // are visible here (homesite overlay) without re-running the extraction.
     private val terrainDerivedLayerCache = TerrainDerivedLayerCache(File(application.cacheDir, "terrain-intelligence-v2"))
@@ -243,18 +250,20 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     fun setPlannedRoute(route: OptimizedFieldRoute?) {
         _plannedRoute.value = route
     }
+    private val _isBreadcrumbRecording = MutableStateFlow(false)
+    val isBreadcrumbRecording: StateFlow<Boolean> = _isBreadcrumbRecording.asStateFlow()
+    private var breadcrumbTrackJob: Job? = null
+    private var recordingBreadcrumbTrack: BreadcrumbTrack? = null
     private val _excavationLogs = MutableStateFlow<List<ExcavationLogEntry>>(emptyList())
     val excavationLogs: StateFlow<List<ExcavationLogEntry>> = _excavationLogs.asStateFlow()
     private var excavationLogJob: Job? = null
     private val _surveyBoundaries = MutableStateFlow<List<SurveyBoundary>>(emptyList())
     val surveyBoundaries: StateFlow<List<SurveyBoundary>> = _surveyBoundaries.asStateFlow()
     private var surveyBoundaryJob: Job? = null
+    private val _pendingSyncEntries = MutableStateFlow<List<PendingSyncEntry>>(emptyList())
+    val pendingSyncEntries: StateFlow<List<PendingSyncEntry>> = _pendingSyncEntries.asStateFlow()
     private val _pendingSyncCount = MutableStateFlow(0)
     val pendingSyncCount: StateFlow<Int> = _pendingSyncCount.asStateFlow()
-    private val _isBreadcrumbRecording = MutableStateFlow(false)
-    val isBreadcrumbRecording: StateFlow<Boolean> = _isBreadcrumbRecording.asStateFlow()
-    private var breadcrumbTrackJob: Job? = null
-    private var recordingBreadcrumbTrack: BreadcrumbTrack? = null
 
     private val _activeGeoMetadata = MutableStateFlow(GeoSpatialLibrary.SITES_METADATA.first())
     val activeGeoMetadata: StateFlow<GeoSpatialMetadata> = _activeGeoMetadata.asStateFlow()
@@ -296,6 +305,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         observeSurveyLayers(_activeTerrainKey.value)
         observeOfflineBasemapRegions(_activeTerrainKey.value)
         observeBreadcrumbTracks(_activeTerrainKey.value)
+        observeExcavationLogs(_activeTerrainKey.value)
+        observeSurveyBoundaries(_activeTerrainKey.value)
         // loadSettings must finish before the first scheduleRender — scheduleRender saves the
         // *current* StateFlow values back to disk, and if that runs while loadSettings' reads are
         // still in flight, it stomps the just-persisted settings with hardcoded defaults on every
@@ -315,13 +326,15 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
         viewModelScope.launch {
-            pendingSyncDao.observeAll().collect { stored ->
-                _pendingSyncCount.value = stored.size
+            analyzedDatasetDao.observeAll().collect { stored ->
+                _analyzedDatasets.value = stored
             }
         }
         viewModelScope.launch {
-            analyzedDatasetDao.observeAll().collect { stored ->
-                _analyzedDatasets.value = stored
+            pendingSyncDao.observeAll().collect { stored ->
+                val entries = stored.map { it.toDomain() }
+                _pendingSyncEntries.value = entries
+                _pendingSyncCount.value = entries.size
             }
         }
     }
@@ -414,7 +427,15 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         )
         recordingBreadcrumbTrack = track
         _isBreadcrumbRecording.value = true
-        viewModelScope.launch { breadcrumbTrackDao.upsert(track.toEntity()) }
+        viewModelScope.launch {
+            breadcrumbTrackDao.upsert(track.toEntity())
+            enqueuePendingSync(
+                entityType = SyncEntityType.BREADCRUMB_TRACK,
+                entityId = track.id,
+                operation = SyncOperation.UPSERT,
+                payload = "points=${track.points.size};terrain=${track.terrainKey}",
+            )
+        }
         if (_hasLocationPermission.value) startLocationUpdates()
     }
 
@@ -425,19 +446,215 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         val paused = track.copy(isRecording = false, updatedAtMillis = System.currentTimeMillis())
         recordingBreadcrumbTrack = null
         _isBreadcrumbRecording.value = false
-        viewModelScope.launch { breadcrumbTrackDao.upsert(paused.toEntity()) }
+        viewModelScope.launch {
+            breadcrumbTrackDao.upsert(paused.toEntity())
+            enqueuePendingSync(
+                entityType = SyncEntityType.BREADCRUMB_TRACK,
+                entityId = paused.id,
+                operation = SyncOperation.UPSERT,
+                payload = "points=${paused.points.size};terrain=${paused.terrainKey};paused=1",
+            )
+        }
         if (!_gpsEnabled.value) stopLocationUpdates()
     }
 
     fun deleteBreadcrumbTrack(track: BreadcrumbTrack) {
         if (track.id == recordingBreadcrumbTrack?.id) pauseBreadcrumbRecording()
-        viewModelScope.launch { breadcrumbTrackDao.deleteById(track.id) }
+        viewModelScope.launch {
+            breadcrumbTrackDao.deleteById(track.id)
+            enqueuePendingSync(
+                entityType = SyncEntityType.BREADCRUMB_TRACK,
+                entityId = track.id,
+                operation = SyncOperation.DELETE,
+                payload = "",
+            )
+        }
     }
 
     fun clearBreadcrumbTracks() {
         if (_isBreadcrumbRecording.value) pauseBreadcrumbRecording()
         val terrainKey = _activeTerrainKey.value
-        viewModelScope.launch { breadcrumbTrackDao.deleteByTerrainKey(terrainKey) }
+        val tracks = _breadcrumbTracks.value
+        viewModelScope.launch {
+            breadcrumbTrackDao.deleteByTerrainKey(terrainKey)
+            tracks.forEach { track ->
+                enqueuePendingSync(
+                    entityType = SyncEntityType.BREADCRUMB_TRACK,
+                    entityId = track.id,
+                    operation = SyncOperation.DELETE,
+                    payload = "",
+                )
+            }
+        }
+    }
+
+    /** Persists a dig/check log tied to a target and the active terrain project. */
+    fun saveExcavationLog(entry: ExcavationLogEntry) {
+        val scoped = entry.copy(terrainKey = entry.terrainKey ?: _activeTerrainKey.value)
+        viewModelScope.launch {
+            excavationLogDao.upsert(scoped.toEntity())
+            enqueuePendingSync(
+                entityType = SyncEntityType.EXCAVATION_LOG,
+                entityId = scoped.id,
+                operation = SyncOperation.UPSERT,
+                payload = "target=${scoped.targetId};depth=${scoped.depthCentimeters ?: ""};finds=${scoped.findsCount}",
+            )
+        }
+    }
+
+    fun deleteExcavationLog(entry: ExcavationLogEntry) {
+        viewModelScope.launch {
+            excavationLogDao.deleteById(entry.id)
+            enqueuePendingSync(
+                entityType = SyncEntityType.EXCAVATION_LOG,
+                entityId = entry.id,
+                operation = SyncOperation.DELETE,
+                payload = "",
+            )
+        }
+    }
+
+    /**
+     * Starts a new open dig log for [targetId] on the active terrain. Completing is a separate
+     * save so partial visit notes survive process restart.
+     */
+    fun startExcavationLog(targetId: Long): ExcavationLogEntry {
+        val now = System.currentTimeMillis()
+        val entry = ExcavationLogEntry(
+            id = UUID.randomUUID().toString(),
+            targetId = targetId,
+            terrainKey = _activeTerrainKey.value,
+            startedAtMillis = now,
+            completedAtMillis = null,
+            depthCentimeters = null,
+            soilNotes = "",
+            findsDescription = "",
+            findsCount = 0,
+            photoUris = emptyList(),
+            voiceNoteUris = emptyList(),
+            createdAtMillis = now,
+            updatedAtMillis = now,
+        )
+        saveExcavationLog(entry)
+        return entry
+    }
+
+    /** Saves a survey boundary polygon for the active terrain project. */
+    fun saveSurveyBoundary(boundary: SurveyBoundary) {
+        val scoped = boundary.copy(terrainKey = _activeTerrainKey.value)
+        viewModelScope.launch {
+            surveyBoundaryDao.upsert(scoped.toEntity())
+            enqueuePendingSync(
+                entityType = SyncEntityType.SURVEY_BOUNDARY,
+                entityId = scoped.id,
+                operation = SyncOperation.UPSERT,
+                payload = "name=${scoped.displayName};vertices=${scoped.vertices.size}",
+            )
+        }
+    }
+
+    fun deleteSurveyBoundary(boundary: SurveyBoundary) {
+        viewModelScope.launch {
+            surveyBoundaryDao.deleteById(boundary.id)
+            enqueuePendingSync(
+                entityType = SyncEntityType.SURVEY_BOUNDARY,
+                entityId = boundary.id,
+                operation = SyncOperation.DELETE,
+                payload = "",
+            )
+        }
+    }
+
+    /**
+     * Builds a survey boundary from a recorded GPS trail (needs ≥3 points). Used so the
+     * walked perimeter becomes the project search area without a separate drawing mode.
+     */
+    fun createSurveyBoundaryFromTrail(track: BreadcrumbTrack, displayName: String = "Search boundary"): SurveyBoundary? {
+        if (track.points.size < 3) return null
+        val now = System.currentTimeMillis()
+        val boundary = SurveyBoundary(
+            id = UUID.randomUUID().toString(),
+            terrainKey = _activeTerrainKey.value,
+            displayName = displayName.ifBlank { "Search boundary" },
+            vertices = track.points.map { BoundaryVertex(it.latitude, it.longitude) },
+            createdAtMillis = now,
+        )
+        saveSurveyBoundary(boundary)
+        return boundary
+    }
+
+    /**
+     * Builds a simple square boundary around the current device GPS fix when no trail is available.
+     * [halfSideMeters] is half the square's side length (default 50 m → 100 m box).
+     */
+    fun createSurveyBoundaryAroundGps(
+        displayName: String = "GPS search area",
+        halfSideMeters: Double = 50.0,
+    ): SurveyBoundary? {
+        val lat = _deviceLatitude.value ?: return null
+        val lon = _deviceLongitude.value ?: return null
+        val latOffset = halfSideMeters / 111_000.0
+        val lonOffset = halfSideMeters / (111_000.0 * kotlin.math.cos(Math.toRadians(lat)).coerceAtLeast(0.2))
+        val now = System.currentTimeMillis()
+        val boundary = SurveyBoundary(
+            id = UUID.randomUUID().toString(),
+            terrainKey = _activeTerrainKey.value,
+            displayName = displayName.ifBlank { "GPS search area" },
+            vertices = listOf(
+                BoundaryVertex(lat - latOffset, lon - lonOffset),
+                BoundaryVertex(lat - latOffset, lon + lonOffset),
+                BoundaryVertex(lat + latOffset, lon + lonOffset),
+                BoundaryVertex(lat + latOffset, lon - lonOffset),
+            ),
+            createdAtMillis = now,
+        )
+        saveSurveyBoundary(boundary)
+        return boundary
+    }
+
+    /**
+     * Offline sync queue: coalesce local field mutations for later replay. No cloud endpoint yet
+     * (Phase 9); entries stay durable and never silently drop. [markPendingSyncSent] clears a
+     * successfully delivered entry; [markPendingSyncFailed] keeps it with diagnostics.
+     */
+    private suspend fun enqueuePendingSync(
+        entityType: SyncEntityType,
+        entityId: String,
+        operation: SyncOperation,
+        payload: String,
+    ) {
+        val now = System.currentTimeMillis()
+        val existing = pendingSyncDao.all().map { it.toDomain() }
+        val queue = FieldSyncQueue(existing).enqueue(
+            entityType = entityType,
+            entityId = entityId,
+            operation = operation,
+            payload = payload,
+            queuedAtMillis = now,
+        )
+        // Persist the coalesced entity state: drop prior row for this entity, write the new one.
+        pendingSyncDao.deleteByEntity(entityType.name, entityId)
+        val latest = queue.pendingFor(entityType, entityId) ?: return
+        pendingSyncDao.upsert(latest.toEntity())
+    }
+
+    fun markPendingSyncSent(entryId: Long) {
+        viewModelScope.launch { pendingSyncDao.deleteById(entryId) }
+    }
+
+    fun markPendingSyncFailed(entryId: Long, error: String) {
+        viewModelScope.launch {
+            val existing = pendingSyncDao.all().map { it.toDomain() }
+            val updated = FieldSyncQueue(existing).markFailed(entryId, error, System.currentTimeMillis())
+            updated.entries.firstOrNull { it.id == entryId }?.let { pendingSyncDao.upsert(it.toEntity()) }
+        }
+    }
+
+    /** Clears the entire offline sync queue after the operator confirms delivery is not needed. */
+    fun clearPendingSyncQueue() {
+        viewModelScope.launch {
+            _pendingSyncEntries.value.forEach { pendingSyncDao.deleteById(it.id) }
+        }
     }
 
     private fun startLocationUpdates() {
@@ -469,7 +686,18 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         val updated = activeTrack.withPoint(point)
         if (updated === activeTrack) return
         recordingBreadcrumbTrack = updated
-        viewModelScope.launch { breadcrumbTrackDao.upsert(updated.toEntity()) }
+        viewModelScope.launch {
+            breadcrumbTrackDao.upsert(updated.toEntity())
+            // Throttle sync enqueue: only on every 10th point so high-rate GPS does not flood the queue.
+            if (updated.points.size % 10 == 0) {
+                enqueuePendingSync(
+                    entityType = SyncEntityType.BREADCRUMB_TRACK,
+                    entityId = updated.id,
+                    operation = SyncOperation.UPSERT,
+                    payload = "points=${updated.points.size};terrain=${updated.terrainKey}",
+                )
+            }
+        }
     }
 
     private fun stopLocationUpdates() {
@@ -716,6 +944,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 uri.path?.let { path -> LazSpatialIndex.ensureBuiltAsync(File(path)) }
             }
         }
+        // Durable session pointer so cold start reopens this LAZ even if the decode cache was purged.
+        source?.let(terrainSessionStore::save)
         applyCustomTerrain(result, resetViewport = true)
     }
 
@@ -1026,26 +1256,55 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             timestamp = markerTime,
             terrainKey = _activeTerrainKey.value,
         )
-        viewModelScope.launch { signalDao.upsert(signal.toEntity()) }
+        viewModelScope.launch {
+            signalDao.upsert(signal.toEntity())
+            enqueuePendingSync(
+                entityType = SyncEntityType.TARGET_SIGNAL,
+                entityId = signal.id.toString(),
+                operation = SyncOperation.UPSERT,
+                payload = "terrain=${signal.terrainKey};status=${signal.status}",
+            )
+        }
     }
 
     fun updateLoggedSignal(signal: TargetSignal) {
         viewModelScope.launch {
             signalDao.upsert(signal.toEntity())
-            enqueueSync(SyncEntityType.TARGET_SIGNAL, signal.id.toString(), SyncOperation.UPSERT)
+            enqueuePendingSync(
+                entityType = SyncEntityType.TARGET_SIGNAL,
+                entityId = signal.id.toString(),
+                operation = SyncOperation.UPSERT,
+                payload = "terrain=${signal.terrainKey};status=${signal.status};outcome=${signal.outcome.name}",
+            )
         }
     }
 
     fun deleteLoggedSignal(signal: TargetSignal) {
         viewModelScope.launch {
             signalDao.deleteById(signal.id)
-            enqueueSync(SyncEntityType.TARGET_SIGNAL, signal.id.toString(), SyncOperation.DELETE)
+            enqueuePendingSync(
+                entityType = SyncEntityType.TARGET_SIGNAL,
+                entityId = signal.id.toString(),
+                operation = SyncOperation.DELETE,
+                payload = "",
+            )
         }
     }
 
     fun clearLoggedSignals() {
         val terrainKey = _activeTerrainKey.value
-        viewModelScope.launch { signalDao.deleteByTerrainKey(terrainKey) }
+        val signals = _loggedSignals.value
+        viewModelScope.launch {
+            signalDao.deleteByTerrainKey(terrainKey)
+            signals.forEach { signal ->
+                enqueuePendingSync(
+                    entityType = SyncEntityType.TARGET_SIGNAL,
+                    entityId = signal.id.toString(),
+                    operation = SyncOperation.DELETE,
+                    payload = "",
+                )
+            }
+        }
     }
 
     private fun setActiveTerrainKey(terrainKey: String) {
@@ -1087,66 +1346,6 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             surveyBoundaryDao.observeByTerrainKey(terrainKey).collect { stored ->
                 _surveyBoundaries.value = stored.map { it.toDomain() }
             }
-        }
-    }
-
-    /** Coalescing enqueue: one pending row per entity, latest operation wins. */
-    private suspend fun enqueueSync(entityType: SyncEntityType, entityId: String, operation: SyncOperation) {
-        pendingSyncDao.deleteByEntity(entityType.name, entityId)
-        val nextId = (pendingSyncDao.all().maxOfOrNull { it.id } ?: 0L) + 1L
-        pendingSyncDao.upsert(
-            PendingSyncEntity(
-                id = nextId,
-                entityType = entityType.name,
-                entityId = entityId,
-                operation = operation.name,
-                payload = "",
-                queuedAtMillis = System.currentTimeMillis(),
-                attemptCount = 0,
-                lastError = null,
-            ),
-        )
-    }
-
-    fun saveExcavationLog(entry: ExcavationLogEntry) {
-        viewModelScope.launch {
-            excavationLogDao.upsert(entry.toEntity())
-            enqueueSync(SyncEntityType.EXCAVATION_LOG, entry.id, SyncOperation.UPSERT)
-        }
-    }
-
-    fun deleteExcavationLog(entry: ExcavationLogEntry) {
-        viewModelScope.launch {
-            excavationLogDao.deleteById(entry.id)
-            enqueueSync(SyncEntityType.EXCAVATION_LOG, entry.id, SyncOperation.DELETE)
-        }
-    }
-
-    fun saveSurveyBoundary(boundary: SurveyBoundary) {
-        viewModelScope.launch {
-            surveyBoundaryDao.upsert(boundary.toEntity())
-            enqueueSync(SyncEntityType.SURVEY_BOUNDARY, boundary.id, SyncOperation.UPSERT)
-        }
-    }
-
-    /** Creates a boundary tied to the active project; the panel supplies name + vertices. */
-    fun createSurveyBoundary(displayName: String, vertices: List<BoundaryVertex>) {
-        if (vertices.size < 3) return
-        saveSurveyBoundary(
-            SurveyBoundary(
-                id = java.util.UUID.randomUUID().toString(),
-                terrainKey = _activeTerrainKey.value,
-                displayName = displayName,
-                vertices = vertices,
-                createdAtMillis = System.currentTimeMillis(),
-            ),
-        )
-    }
-
-    fun deleteSurveyBoundary(boundary: SurveyBoundary) {
-        viewModelScope.launch {
-            surveyBoundaryDao.deleteById(boundary.id)
-            enqueueSync(SyncEntityType.SURVEY_BOUNDARY, boundary.id, SyncOperation.DELETE)
         }
     }
 
@@ -1535,41 +1734,87 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
-     * Restores the most recently imported LAZ/LAS after process death, but only from an existing
-     * decoded cache. Startup never reparses a multi-hundred-megabyte point cloud unexpectedly.
+     * Restores the last opened LiDAR after process death.
+     *
+     * Order: session pointer → durable filesDir decode cache → re-decode from the saved LAZ file.
+     * Source LAZ files live under [AppTerrainStorage.lidarStore]; decode cache under
+     * [AppTerrainStorage.decodedTerrainCache] (filesDir, not purgeable cacheDir).
      */
     private suspend fun restoreLastCachedTerrain() {
         val application = getApplication<Application>()
-        val storageRoot = application.getExternalFilesDir(null) ?: application.filesDir
-        val dataset = withContext(Dispatchers.IO) {
-            LazDatasetStore(File(storageRoot, "lidar")).list().firstOrNull()
-        } ?: return
-        val diskCache = LazTerrainDiskCache(File(application.cacheDir, "decoded-terrain"))
-        val optionCandidates = listOf(1_024, 1_536).map { resolution ->
-            LidarImportOptions(
-                groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
-                rasterResolution = resolution,
-                smoothingRadius = 0,
-            )
+        _activeTerrainSummary.value = "Restoring last LiDAR project…"
+        val session = withContext(Dispatchers.IO) { terrainSessionStore.load() }
+        val store = withContext(Dispatchers.IO) { AppTerrainStorage.lidarStore(application) }
+        val file = session?.file?.takeIf { it.isFile }
+            ?: withContext(Dispatchers.IO) { store.list().firstOrNull()?.file }
+            ?: run {
+                _activeTerrainSummary.value = "Built-in demonstration terrain"
+                return
+            }
+        val displayName = session?.displayName ?: file.name
+        val preferredOptions = session?.options ?: LidarImportOptions(
+            groundMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
+            rasterResolution = LidarImportOptions.DEFAULT_OVERVIEW_RESOLUTION,
+            smoothingRadius = 0,
+        )
+        val optionCandidates = buildList {
+            add(preferredOptions)
+            listOf(1_024, 1_536).forEach { resolution ->
+                val candidate = preferredOptions.copy(rasterResolution = resolution)
+                if (candidate != preferredOptions) add(candidate)
+            }
         }
+        val diskCache = AppTerrainStorage.decodedTerrainCache(application)
         val cached = withContext(Dispatchers.IO) {
             optionCandidates.firstNotNullOfOrNull { options ->
-                diskCache.get(dataset.file, options)?.let { terrain -> options to terrain }
+                diskCache.get(file, options)?.let { terrain -> options to terrain }
             }
-        } ?: return
-        val (options, terrain) = cached
-        val scene = withContext(Dispatchers.Default) {
-            TerrainGpuSceneBuilder.build(terrain.grid)
         }
-        TerrainPerformanceSession.publish(scene)
-        setCustomTerrain(
-            result = terrain,
-            source = TerrainImportSource(
-                uri = Uri.fromFile(dataset.file).toString(),
-                displayName = dataset.displayName,
-                options = options,
-            ),
-        )
+        if (cached != null) {
+            val (options, terrain) = cached
+            val scene = withContext(Dispatchers.Default) {
+                TerrainGpuSceneBuilder.build(terrain.grid)
+            }
+            TerrainPerformanceSession.publish(scene)
+            setCustomTerrain(
+                result = terrain,
+                source = TerrainImportSource(
+                    uri = Uri.fromFile(file).toString(),
+                    displayName = displayName,
+                    options = options,
+                ),
+            )
+            return
+        }
+
+        // Cache miss: re-decode from the durable source LAZ so closing the app never loses the project.
+        _activeTerrainSummary.value = "Rebuilding terrain from saved LAZ…"
+        try {
+            val terrainCache = LazTerrainCache(LazTerrainMemoryCache(), diskCache)
+            val coordinator = TerrainDecodeCoordinator(terrainCache)
+            val outcome = coordinator.decode(
+                file = file,
+                displayName = displayName,
+                options = preferredOptions,
+                onStage = { stage ->
+                    withContext(Dispatchers.Main.immediate) {
+                        _activeTerrainSummary.value = stage
+                    }
+                },
+            )
+            TerrainPerformanceSession.publish(outcome.gpuScene)
+            setCustomTerrain(
+                result = outcome.terrain,
+                source = TerrainImportSource(
+                    uri = Uri.fromFile(file).toString(),
+                    displayName = displayName,
+                    options = preferredOptions,
+                ),
+            )
+        } catch (error: Throwable) {
+            _activeTerrainSummary.value =
+                "Could not restore ${displayName}: ${error.localizedMessage ?: "decode failed"}"
+        }
     }
 
     private fun saveSettings() {
@@ -1614,6 +1859,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         basemapJob?.cancel()
         surveyLayerJob?.cancel()
         breadcrumbTrackJob?.cancel()
+        excavationLogJob?.cancel()
+        surveyBoundaryJob?.cancel()
         offlineBasemapRegionJob?.cancel()
         offlineBasemapDownloadJob?.cancel()
         saveSettingsJob?.cancel()

@@ -22,7 +22,6 @@ import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -44,7 +43,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.DemGenerator
 import com.example.data.GroundSurfaceMode
-import com.example.data.LazDataset
 import com.example.data.LazDatasetStore
 import com.example.data.LazDownloadManager
 import com.example.data.LazImportRepository
@@ -101,9 +99,6 @@ fun CustomFileLoader(
     var rasterResolution by remember { mutableStateOf(LidarImportOptions.DEFAULT_OVERVIEW_RESOLUTION) }
     var smoothingRadius by remember { mutableStateOf(0) }
     var savedDatasets by remember { mutableStateOf(datasetStore.list()) }
-    var renameDataset by remember { mutableStateOf<LazDataset?>(null) }
-    var renameText by remember { mutableStateOf("") }
-    var renameError by remember { mutableStateOf<String?>(null) }
     var cacheSizeBytes by remember { mutableStateOf(terrainCache.diskSizeBytes()) }
     var workJob by remember { mutableStateOf<Job?>(null) }
 
@@ -200,11 +195,6 @@ fun CustomFileLoader(
                 message = error.localizedMessage ?: "Terrain decode failed"
             }
         }
-    }
-
-    fun renderSavedDataset(dataset: LazDataset) {
-        if (isWorking) return
-        decodeStoredDataset(dataset.file, dataset.displayName)
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -516,123 +506,12 @@ fun CustomFileLoader(
             }
         }
 
-        SavedDatasetLibrary(
-            datasets = savedDatasets,
-            enabled = !isWorking,
-            onOpen = ::renderSavedDataset,
-            onDelete = { dataset ->
-                terrainCache.remove(dataset.file)
-                if (datasetStore.delete(dataset)) {
-                    savedDatasets = datasetStore.list()
-                    TerrainPerformanceSession.clear()
-                    cacheSizeBytes = terrainCache.diskSizeBytes()
-                    message = "Deleted ${dataset.displayName}."
-                    isError = false
-                }
-            },
-            onRename = { dataset ->
-                renameDataset = dataset
-                renameText = dataset.file.nameWithoutExtension
-                renameError = null
-            },
+        Text(
+            "Previous downloads live in the Previous LiDAR downloads card at the top of this Import tab — open, rename, or delete them there. New downloads and file copies are saved into that same folder.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("saved_laz_dataset_list_hint"),
         )
-    }
-
-    renameDataset?.let { dataset ->
-        AlertDialog(
-            onDismissRequest = { renameDataset = null },
-            title = { Text("Rename saved LAZ file") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = renameText,
-                        onValueChange = { renameText = it; renameError = null },
-                        singleLine = true,
-                        label = { Text("File name") },
-                        supportingText = { Text(".laz is added automatically if omitted") },
-                        modifier = Modifier.fillMaxWidth().testTag("rename_saved_dataset_field"),
-                    )
-                    renameError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        runCatching { datasetStore.rename(dataset, renameText) }
-                            .onSuccess { renamed ->
-                                savedDatasets = datasetStore.list()
-                                renameDataset = null
-                                message = "Renamed to ${renamed.displayName}. It will be reused for future downloads."
-                                isError = false
-                            }
-                            .onFailure { renameError = it.localizedMessage ?: "Could not rename the dataset" }
-                    },
-                    modifier = Modifier.testTag("confirm_rename_saved_dataset"),
-                ) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { renameDataset = null }) { Text("Cancel") } },
-        )
-    }
-}
-
-@Composable
-private fun SavedDatasetLibrary(
-    datasets: List<LazDataset>,
-    enabled: Boolean,
-    onOpen: (LazDataset) -> Unit,
-    onDelete: (LazDataset) -> Unit,
-    onRename: (LazDataset) -> Unit,
-) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-        modifier = Modifier.fillMaxWidth().testTag("saved_laz_dataset_list"),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Saved LAZ datasets", style = MaterialTheme.typography.titleMedium)
-            if (datasets.isEmpty()) {
-                Text(
-                    "Downloaded or copied LAZ/LAS files will appear here.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                datasets.forEach { dataset ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        OutlinedButton(
-                            onClick = { onOpen(dataset) },
-                            enabled = enabled,
-                            modifier = Modifier.weight(1f).height(60.dp),
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalAlignment = Alignment.Start,
-                            ) {
-                                Text(dataset.displayName, maxLines = 1)
-                                Text(
-                                    "${formatBytes(dataset.sizeBytes)} · Tap to decode/render",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                        }
-                        TextButton(
-                            onClick = { onRename(dataset) },
-                            enabled = enabled,
-                            modifier = Modifier.testTag("rename_saved_dataset"),
-                        ) { Text("Rename") }
-                        TextButton(
-                            onClick = { onDelete(dataset) },
-                            enabled = enabled,
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete ${dataset.displayName}")
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 

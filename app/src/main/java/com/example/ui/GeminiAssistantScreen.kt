@@ -49,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -1010,13 +1011,25 @@ private fun ProviderKeyEditor(
                     Text("Save OpenAI")
                 }
             }
+            Text(
+                if (state.geminiConfigured && !state.hasDeviceGeminiKey) {
+                    "Gemini is configured from the build (local.properties GEMINI_API_KEY). " +
+                        "Optional: save a device key here to override without rebuilding."
+                } else if (state.hasDeviceGeminiKey) {
+                    "Gemini device key is saved encrypted on this phone."
+                } else {
+                    "Add GEMINI_API_KEY to local.properties and rebuild, or paste a key below and Save."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             OutlinedTextField(
                 value = geminiKeyDraft,
                 onValueChange = onGeminiKeyChanged,
-                label = { Text("Gemini fallback key") },
+                label = { Text("Gemini API key (optional device override)") },
                 visualTransformation = PasswordVisualTransformation(),
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag("gemini_api_key_field"),
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1024,9 +1037,13 @@ private fun ProviderKeyEditor(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (state.hasDeviceGeminiKey) {
-                    TextButton(onClick = onRemoveGemini) { Text("Remove Gemini key") }
+                    TextButton(onClick = onRemoveGemini) { Text("Remove device key") }
                 }
-                OutlinedButton(onClick = onSaveGemini, enabled = geminiKeyDraft.length >= 20) {
+                OutlinedButton(
+                    onClick = onSaveGemini,
+                    enabled = geminiKeyDraft.length >= 20,
+                    modifier = Modifier.testTag("save_gemini_api_key"),
+                ) {
                     Text("Save Gemini")
                 }
             }

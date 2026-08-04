@@ -349,27 +349,27 @@ Exit criteria:
 ### Phase 5 — Field verification
 
 - Add breadcrumbs, compass navigation, AR guidance, voice notes, and directional photos. **Mostly implemented.** Breadcrumb tracks, compass/bearing navigation, voice notes, and photos exist; AR guidance remains device-bound future work.
-- Add target states, excavation logs, boundaries, route optimization, and offline sync queue. **Implemented; unit verified.** `TargetVisitStates` validates outcome transitions (checked targets can be corrected, never erased) and maps outcomes to reviewed-example verdicts; `ExcavationLogEntry`, `SurveyBoundary` (with polygon containment), `TargetRouteOptimizer` (nearest-neighbor + 2-opt), and `FieldSyncQueue` (coalescing upserts, delete-wins, ordered replay, no silent drops) ship with Room persistence (`excavation_logs`, `survey_boundaries`, `pending_sync`, database v14).
+- Add target states, excavation logs, boundaries, route optimization, and offline sync queue. **Implemented; unit verified; production UI wired (GROKV5).** `TargetVisitStates` validates outcome transitions (checked targets can be corrected, never erased) and maps outcomes to reviewed-example verdicts; `ExcavationLogEntry`, `SurveyBoundary` (with polygon containment), `TargetRouteOptimizer` (nearest-neighbor + 2-opt), and `FieldSyncQueue` (coalescing upserts, delete-wins, ordered replay, no silent drops) ship with Room persistence (`excavation_logs`, `survey_boundaries`, `pending_sync`, database v14). HillshadeViewModel observes and persists digs/boundaries and enqueues every field mutation; Finds tab exposes dig logs, boundary create/delete, and the offline sync queue; Tools tab shows live status cards for each.
 
 Exit criteria:
 
-- A complete field visit can be recorded without connectivity.
-- Every observation remains tied to its project and target.
-- Synchronization does not duplicate or lose data.
+- A complete field visit can be recorded without connectivity. **Met** for digs, notes, photos, trails, outcomes, boundaries, and queued sync.
+- Every observation remains tied to its project and target. **Met** (`terrainKey` + `targetId` on digs; boundaries scoped by terrain).
+- Synchronization does not duplicate or lose data. **Met** for the local queue; cloud delivery remains Phase 9.
 
 ### Phase 6 — Historic-map intelligence
 
-- Add automatic georeferencing with manual control points. **Engine implemented; unit verified.** `GeoReferencer` fits a least-squares affine from 3+ control points (exact similarity fit for 2), rejects collinear/duplicate sets, and reports per-point meter residuals; map UI wiring is the remaining step.
-- Add opacity, side-by-side, and swipe alignment tools. **UI work; not started.** The alignment engine and metadata below are ready to back these tools.
+- Add automatic georeferencing with manual control points. **Implemented; unit verified; production UI wired (GROKV5).** `GeoReferencer` fits a least-squares affine from 3+ control points (exact similarity fit for 2), rejects collinear/duplicate sets, and reports per-point meter residuals. Map tab: image crosshair + map tap adds control points; Fit applies `HistoricMapGeoreference.placementFromFit` to the ground overlay; confidence/RMSE stay on-screen; fits persist to SharedPreferences and Room `historic_maps`.
+- Add opacity, side-by-side, and swipe alignment tools. **Implemented in production UI.** Opacity slider retained; swipe blend multiplies active historic overlay opacity; side-by-side dialog compares terrain hillshade vs historic image.
 - Extract roads, structures, walls, and boundaries. **Data model implemented; unit verified.** `HistoricMapFeature` with typed geometry (`ROAD`, `STRUCTURE`, `WALL`, `BOUNDARY`) persists per map with confidence and notes; automatic image extraction remains future work.
-- Score map-to-terrain agreement and georeferencing confidence. **Implemented; unit verified.** `MapTerrainAgreement` blends support coverage and contrast into a bounded 0–1 score whose ranking adjustment is capped at ±0.1 so map evidence informs but never overpowers terrain; `GeoReferenceConfidence` buckets (good / fair / low-confidence / insufficient) are computed from meter-scale RMSE.
-- Preserve source and alignment metadata. **Implemented; unit verified.** `GeoReferencedMap` retains source attribution, control points, transform coefficients, RMSE/max residuals, and confidence in the `historic_maps` and `historic_map_features` tables (database v15), so every alignment is reproducible and correctable.
+- Score map-to-terrain agreement and georeferencing confidence. **Implemented; unit verified; UI wired.** `MapTerrainAgreement` blends support coverage and contrast into a bounded 0–1 score whose ranking adjustment is capped at ±0.1 so map evidence informs but never overpowers terrain; `GeoReferenceConfidence` buckets (good / fair / low-confidence / insufficient) are computed from meter-scale RMSE and shown on the historic map panel.
+- Preserve source and alignment metadata. **Implemented; unit verified; UI wired.** `GeoReferencedMap` retains source attribution, control points, transform coefficients, RMSE/max residuals, and confidence in the `historic_maps` and `historic_map_features` tables (database v15), so every alignment is reproducible and correctable.
 
 Exit criteria:
 
-- Alignment quality is visible and correctable.
-- Low-confidence georeferencing is clearly labeled.
-- Map agreement informs ranking without overpowering terrain evidence.
+- Alignment quality is visible and correctable. **Met** (confidence, RMSE, undo/clear CPs, manual nudge).
+- Low-confidence georeferencing is clearly labeled. **Met** (panel confidence line + error color).
+- Map agreement informs ranking without overpowering terrain evidence. **Met** (score UI + capped ranking adjustment).
 
 ### Phase 7 — Machine-learning ranking
 
