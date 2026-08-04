@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.analysis.TerrainCellInspector
+import com.example.analysis.TerrainViewshedAnalyzer
 import com.example.analysis.TerrainElevationProfiler
 import com.example.data.LidarSearchRequest
 import com.example.data.NormalizedRasterBounds
@@ -94,7 +95,9 @@ import com.example.ui.components.TerrainElevationProfilePanel
 import com.example.ui.components.TerrainGoogleMapScreen
 import com.example.ui.components.SurveyLayerImporter
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 private data class AppTab(
@@ -274,6 +277,8 @@ private fun TerrainTab(
     val visibleBounds = remember { mutableStateOf(NormalizedRasterBounds.Full) }
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
     val inspectedCell = remember { mutableStateOf<com.example.analysis.TerrainCellInspection?>(null) }
+    val viewshedState = remember { mutableStateOf<com.example.analysis.TerrainViewshed?>(null) }
+    val viewshedComputing = remember { mutableStateOf(false) }
     var isSelectingProfile by rememberSaveable { mutableStateOf(false) }
     var profileStartPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
     var profileEndPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
@@ -398,6 +403,7 @@ private fun TerrainTab(
                         isSelectingProfile = false
                     }
                 } else {
+                    viewshedState.value = null
                     inspectedCell.value = TerrainCellInspector.inspect(
                         grid = elevationGrid,
                         metadata = metadata,
@@ -417,7 +423,32 @@ private fun TerrainTab(
         inspectedCell.value?.let { inspection ->
             TerrainCellInspectionPanel(
                 inspection = inspection,
-                onDismiss = { inspectedCell.value = null },
+                viewshed = viewshedState.value,
+                gridWidth = elevationGrid.width,
+                gridHeight = elevationGrid.height,
+                isComputingViewshed = viewshedComputing.value,
+                onComputeViewshed = {
+                    if (!viewshedComputing.value) {
+                        viewshedComputing.value = true
+                        scope.launch {
+                            val result = withContext(Dispatchers.Default) {
+                                TerrainViewshedAnalyzer.sample(
+                                    grid = elevationGrid,
+                                    observerXPercent = inspection.xPercent,
+                                    observerYPercent = inspection.yPercent,
+                                    maxWorkers = 4,
+                                )
+                            }
+                            viewshedState.value = result
+                            viewshedComputing.value = false
+                        }
+                    }
+                },
+                onClearViewshed = { viewshedState.value = null },
+                onDismiss = {
+                    inspectedCell.value = null
+                    viewshedState.value = null
+                },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .navigationBarsPadding()
