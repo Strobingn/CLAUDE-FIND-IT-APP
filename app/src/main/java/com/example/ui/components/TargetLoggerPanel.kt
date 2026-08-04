@@ -75,7 +75,10 @@ import androidx.core.content.ContextCompat
 import com.example.data.TargetSignal
 import com.example.data.VerificationOutcome
 import com.example.data.field.BreadcrumbTrack
+import com.example.data.field.ExcavationLogEntry
 import com.example.data.field.FieldNavigation
+import com.example.data.field.PendingSyncEntry
+import com.example.data.field.SurveyBoundary
 import com.example.data.field.VoiceNoteRecorder
 import com.example.data.field.createVoiceNoteFile
 import com.example.data.field.deleteVoiceNoteFile
@@ -104,6 +107,9 @@ fun TargetLoggerPanel(
     currentSweepY: Float,
     breadcrumbTracks: List<BreadcrumbTrack>,
     isBreadcrumbRecording: Boolean,
+    excavationLogs: List<ExcavationLogEntry> = emptyList(),
+    surveyBoundaries: List<SurveyBoundary> = emptyList(),
+    pendingSyncEntries: List<PendingSyncEntry> = emptyList(),
     gpsEnabled: Boolean,
     deviceLatitude: Double?,
     deviceLongitude: Double?,
@@ -120,6 +126,14 @@ fun TargetLoggerPanel(
     onClearAll: () -> Unit,
     onBuildProjectExport: suspend () -> ProjectExportFiles,
     onRoutePlanned: (OptimizedFieldRoute?) -> Unit = {},
+    onSaveExcavationLog: (ExcavationLogEntry) -> Unit = {},
+    onDeleteExcavationLog: (ExcavationLogEntry) -> Unit = {},
+    onStartExcavationLog: (Long) -> ExcavationLogEntry? = { null },
+    onCreateBoundaryFromTrail: (BreadcrumbTrack) -> Unit = {},
+    onCreateBoundaryAroundGps: () -> Unit = {},
+    onDeleteSurveyBoundary: (SurveyBoundary) -> Unit = {},
+    onMarkSyncSent: (Long) -> Unit = {},
+    onClearSyncQueue: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -374,6 +388,24 @@ fun TargetLoggerPanel(
             }
         }
 
+        SurveyBoundaryCard(
+            boundaries = surveyBoundaries,
+            breadcrumbTracks = breadcrumbTracks,
+            hasGpsFix = deviceLatitude != null && deviceLongitude != null,
+            onCreateFromTrail = onCreateBoundaryFromTrail,
+            onCreateAroundGps = {
+                if (deviceLatitude == null || deviceLongitude == null) onEnableGps()
+                onCreateBoundaryAroundGps()
+            },
+            onDelete = onDeleteSurveyBoundary,
+        )
+
+        OfflineSyncQueueCard(
+            entries = pendingSyncEntries,
+            onMarkSent = onMarkSyncSent,
+            onClear = onClearSyncQueue,
+        )
+
         navigationTarget?.let { target ->
             FieldNavigationCard(
                 target = target,
@@ -446,11 +478,15 @@ fun TargetLoggerPanel(
     editingSignal?.let { signal ->
         EditSignalDialog(
             signal = signal,
+            excavationLogs = excavationLogs.filter { it.targetId == signal.id },
             onDismiss = { editingSignal = null },
             onSave = {
                 onUpdateSignal(it)
                 editingSignal = null
             },
+            onSaveExcavationLog = onSaveExcavationLog,
+            onDeleteExcavationLog = onDeleteExcavationLog,
+            onStartExcavationLog = { onStartExcavationLog(signal.id) },
         )
     }
 
@@ -779,8 +815,12 @@ private fun SignalCard(
 @Composable
 private fun EditSignalDialog(
     signal: TargetSignal,
+    excavationLogs: List<ExcavationLogEntry> = emptyList(),
     onDismiss: () -> Unit,
     onSave: (TargetSignal) -> Unit,
+    onSaveExcavationLog: (ExcavationLogEntry) -> Unit = {},
+    onDeleteExcavationLog: (ExcavationLogEntry) -> Unit = {},
+    onStartExcavationLog: () -> ExcavationLogEntry? = { null },
 ) {
     val context = LocalContext.current
     var photoUris by remember(signal.id) { mutableStateOf(signal.photoUris) }
@@ -1048,6 +1088,12 @@ private fun EditSignalDialog(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
+                ExcavationLogSection(
+                    logs = excavationLogs,
+                    onStart = onStartExcavationLog,
+                    onSave = onSaveExcavationLog,
+                    onDelete = onDeleteExcavationLog,
+                )
             }
         },
         confirmButton = {
@@ -1079,6 +1125,285 @@ private fun EditSignalDialog(
             ) { Text("Cancel") }
         },
     )
+}
+
+@Composable
+private fun ExcavationLogSection(
+    logs: List<ExcavationLogEntry>,
+    onStart: () -> ExcavationLogEntry?,
+    onSave: (ExcavationLogEntry) -> Unit,
+    onDelete: (ExcavationLogEntry) -> Unit,
+) {
+    var editingLog by remember { mutableStateOf<ExcavationLogEntry?>(null) }
+    var soilNotes by remember { mutableStateOf("") }
+    var findsDescription by remember { mutableStateOf("") }
+    var depthText by remember { mutableStateOf("") }
+    var findsCountText by remember { mutableStateOf("0") }
+
+    fun openEditor(entry: ExcavationLogEntry) {
+        editingLog = entry
+        soilNotes = entry.soilNotes
+        findsDescription = entry.findsDescription
+        depthText = entry.depthCentimeters?.toString().orEmpty()
+        findsCountText = entry.findsCount.toString()
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Excavation log", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Record depth, soil, and finds for this target. Open digs survive app restarts offline.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (logs.isEmpty()) {
+            Text(
+                "No dig logs yet for this target.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            logs.forEach { entry ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            if (entry.isComplete) "Completed dig" else "Open dig",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            buildString {
+                                entry.depthCentimeters?.let { append("${it} cm · ") }
+                                if (entry.findsCount > 0) append("${entry.findsCount} find(s)")
+                                else if (entry.soilNotes.isNotBlank()) append(entry.soilNotes.take(40))
+                                else append("No notes yet")
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    TextButton(onClick = { openEditor(entry) }) { Text("Edit") }
+                    TextButton(onClick = { onDelete(entry) }) { Text("Delete") }
+                }
+            }
+        }
+        OutlinedButton(
+            onClick = {
+                val started = onStart()
+                if (started != null) openEditor(started)
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp).testTag("start_excavation_log_button"),
+        ) {
+            Text("Start dig log")
+        }
+        editingLog?.let { entry ->
+            OutlinedTextField(
+                value = depthText,
+                onValueChange = { depthText = it.filter { ch -> ch.isDigit() }.take(4) },
+                label = { Text("Depth (cm)") },
+                modifier = Modifier.fillMaxWidth().testTag("excavation_depth_field"),
+            )
+            OutlinedTextField(
+                value = soilNotes,
+                onValueChange = { soilNotes = it.take(400) },
+                label = { Text("Soil notes") },
+                minLines = 2,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = findsDescription,
+                onValueChange = { findsDescription = it.take(400) },
+                label = { Text("Finds description") },
+                minLines = 2,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = findsCountText,
+                onValueChange = { findsCountText = it.filter { ch -> ch.isDigit() }.take(3) },
+                label = { Text("Find count") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = {
+                        val now = System.currentTimeMillis()
+                        val updated = entry.copy(
+                            depthCentimeters = depthText.toIntOrNull(),
+                            soilNotes = soilNotes.trim(),
+                            findsDescription = findsDescription.trim(),
+                            findsCount = findsCountText.toIntOrNull()?.coerceAtLeast(0) ?: 0,
+                            updatedAtMillis = now,
+                        )
+                        onSave(updated)
+                        editingLog = null
+                    },
+                    modifier = Modifier.weight(1f).height(48.dp).testTag("save_excavation_log_button"),
+                ) { Text("Save dig") }
+                OutlinedButton(
+                    onClick = {
+                        val now = System.currentTimeMillis()
+                        val completed = entry.copy(
+                            depthCentimeters = depthText.toIntOrNull(),
+                            soilNotes = soilNotes.trim(),
+                            findsDescription = findsDescription.trim(),
+                            findsCount = findsCountText.toIntOrNull()?.coerceAtLeast(0) ?: 0,
+                            completedAtMillis = now,
+                            updatedAtMillis = now,
+                        )
+                        onSave(completed)
+                        editingLog = null
+                    },
+                    modifier = Modifier.weight(1f).height(48.dp).testTag("complete_excavation_log_button"),
+                ) { Text("Complete dig") }
+            }
+            TextButton(onClick = { editingLog = null }) { Text("Close dig editor") }
+        }
+    }
+}
+
+@Composable
+private fun SurveyBoundaryCard(
+    boundaries: List<SurveyBoundary>,
+    breadcrumbTracks: List<BreadcrumbTrack>,
+    hasGpsFix: Boolean,
+    onCreateFromTrail: (BreadcrumbTrack) -> Unit,
+    onCreateAroundGps: () -> Unit,
+    onDelete: (SurveyBoundary) -> Unit,
+) {
+    val trailWithEnoughPoints = breadcrumbTracks.firstOrNull { it.points.size >= 3 }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        modifier = Modifier.fillMaxWidth().testTag("survey_boundary_card"),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text("Survey boundary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "Keep field work inside a permitted search area. Create from a GPS trail (≥3 points) " +
+                    "or a 100 m box around your current fix.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (boundaries.isEmpty()) {
+                Text(
+                    "No boundaries on this project yet.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                boundaries.forEach { boundary ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(boundary.displayName, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${boundary.vertices.size} vertices",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { onDelete(boundary) }) { Text("Delete") }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { trailWithEnoughPoints?.let(onCreateFromTrail) },
+                    enabled = trailWithEnoughPoints != null,
+                    modifier = Modifier.weight(1f).height(48.dp).testTag("boundary_from_trail_button"),
+                ) { Text("From trail") }
+                OutlinedButton(
+                    onClick = onCreateAroundGps,
+                    enabled = hasGpsFix,
+                    modifier = Modifier.weight(1f).height(48.dp).testTag("boundary_from_gps_button"),
+                ) { Text("Around GPS") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfflineSyncQueueCard(
+    entries: List<PendingSyncEntry>,
+    onMarkSent: (Long) -> Unit,
+    onClear: () -> Unit,
+) {
+    var confirmClear by remember { mutableStateOf(false) }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+        modifier = Modifier.fillMaxWidth().testTag("offline_sync_queue_card"),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Text("Offline sync queue", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                if (entries.isEmpty()) {
+                    "Local field changes stay on-device. When a cloud endpoint is available (Phase 9), " +
+                        "queued upserts and deletes replay in order without duplicates."
+                } else {
+                    "${entries.size} change(s) waiting to sync. Oldest first; failed sends keep their attempt count."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            entries.take(5).forEach { entry ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "${entry.operation.name} · ${entry.entityType.name}",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Text(
+                            buildString {
+                                append(entry.entityId.take(12))
+                                if (entry.attemptCount > 0) append(" · attempts ${entry.attemptCount}")
+                                entry.lastError?.let { append(" · $it") }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    TextButton(
+                        onClick = { onMarkSent(entry.id) },
+                        modifier = Modifier.testTag("sync_mark_sent_${entry.id}"),
+                    ) { Text("Sent") }
+                }
+            }
+            if (entries.size > 5) {
+                Text(
+                    "+${entries.size - 5} more queued…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (entries.isNotEmpty()) {
+                OutlinedButton(
+                    onClick = { confirmClear = true },
+                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("clear_sync_queue_button"),
+                ) { Text("Clear queue") }
+            }
+        }
+    }
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Clear offline sync queue?") },
+            text = { Text("This drops ${entries.size} pending change(s) without delivering them.") },
+            confirmButton = {
+                TextButton(onClick = { confirmClear = false; onClear() }) { Text("Clear") }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },
+        )
+    }
 }
 
 @Composable

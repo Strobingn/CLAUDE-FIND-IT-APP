@@ -349,13 +349,13 @@ Exit criteria:
 ### Phase 5 — Field verification
 
 - Add breadcrumbs, compass navigation, AR guidance, voice notes, and directional photos. **Mostly implemented.** Breadcrumb tracks, compass/bearing navigation, voice notes, and photos exist; AR guidance remains device-bound future work.
-- Add target states, excavation logs, boundaries, route optimization, and offline sync queue. **Implemented; unit verified.** `TargetVisitStates` validates outcome transitions (checked targets can be corrected, never erased) and maps outcomes to reviewed-example verdicts; `ExcavationLogEntry`, `SurveyBoundary` (with polygon containment), `TargetRouteOptimizer` (nearest-neighbor + 2-opt), and `FieldSyncQueue` (coalescing upserts, delete-wins, ordered replay, no silent drops) ship with Room persistence (`excavation_logs`, `survey_boundaries`, `pending_sync`, database v14).
+- Add target states, excavation logs, boundaries, route optimization, and offline sync queue. **Implemented; unit verified; production UI wired (GROKV5).** `TargetVisitStates` validates outcome transitions (checked targets can be corrected, never erased) and maps outcomes to reviewed-example verdicts; `ExcavationLogEntry`, `SurveyBoundary` (with polygon containment), `TargetRouteOptimizer` (nearest-neighbor + 2-opt), and `FieldSyncQueue` (coalescing upserts, delete-wins, ordered replay, no silent drops) ship with Room persistence (`excavation_logs`, `survey_boundaries`, `pending_sync`, database v14). HillshadeViewModel observes and persists digs/boundaries and enqueues every field mutation; Finds tab exposes dig logs, boundary create/delete, and the offline sync queue; Tools tab shows live status cards for each.
 
 Exit criteria:
 
-- A complete field visit can be recorded without connectivity.
-- Every observation remains tied to its project and target.
-- Synchronization does not duplicate or lose data.
+- A complete field visit can be recorded without connectivity. **Met** for digs, notes, photos, trails, outcomes, boundaries, and queued sync.
+- Every observation remains tied to its project and target. **Met** (`terrainKey` + `targetId` on digs; boundaries scoped by terrain).
+- Synchronization does not duplicate or lose data. **Met** for the local queue; cloud delivery remains Phase 9.
 
 ### Phase 6 — Historic-map intelligence
 

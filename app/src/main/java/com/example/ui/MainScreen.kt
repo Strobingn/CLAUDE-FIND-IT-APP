@@ -828,6 +828,9 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
     val sweepY by viewModel.sweepY.collectAsStateWithLifecycle()
     val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
     val isBreadcrumbRecording by viewModel.isBreadcrumbRecording.collectAsStateWithLifecycle()
+    val excavationLogs by viewModel.excavationLogs.collectAsStateWithLifecycle()
+    val surveyBoundaries by viewModel.surveyBoundaries.collectAsStateWithLifecycle()
+    val pendingSyncEntries by viewModel.pendingSyncEntries.collectAsStateWithLifecycle()
     val gpsEnabled by viewModel.gpsEnabled.collectAsStateWithLifecycle()
     val deviceLatitude by viewModel.deviceLatitude.collectAsStateWithLifecycle()
     val deviceLongitude by viewModel.deviceLongitude.collectAsStateWithLifecycle()
@@ -843,6 +846,9 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         currentSweepY = sweepY,
         breadcrumbTracks = breadcrumbTracks,
         isBreadcrumbRecording = isBreadcrumbRecording,
+        excavationLogs = excavationLogs,
+        surveyBoundaries = surveyBoundaries,
+        pendingSyncEntries = pendingSyncEntries,
         gpsEnabled = gpsEnabled,
         deviceLatitude = deviceLatitude,
         deviceLongitude = deviceLongitude,
@@ -873,6 +879,14 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         onClearAll = viewModel::clearLoggedSignals,
         onBuildProjectExport = viewModel::buildProjectExportFiles,
         onRoutePlanned = viewModel::setPlannedRoute,
+        onSaveExcavationLog = viewModel::saveExcavationLog,
+        onDeleteExcavationLog = viewModel::deleteExcavationLog,
+        onStartExcavationLog = viewModel::startExcavationLog,
+        onCreateBoundaryFromTrail = { track -> viewModel.createSurveyBoundaryFromTrail(track) },
+        onCreateBoundaryAroundGps = { viewModel.createSurveyBoundaryAroundGps() },
+        onDeleteSurveyBoundary = viewModel::deleteSurveyBoundary,
+        onMarkSyncSent = viewModel::markPendingSyncSent,
+        onClearSyncQueue = viewModel::clearPendingSyncQueue,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }
