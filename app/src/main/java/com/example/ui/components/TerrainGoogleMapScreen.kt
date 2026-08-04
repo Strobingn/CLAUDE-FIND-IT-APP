@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.EditLocationAlt
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MyLocation
@@ -88,6 +89,8 @@ import com.example.data.HistoricMapOverlayRepository
 import com.example.data.historicmap.HistoricMapAgreementScorer
 import com.example.data.historicmap.MapFeatureAgreement
 import com.example.data.field.BreadcrumbTrack
+import com.example.data.field.SweepCoverageGrid
+import com.example.data.field.SweepCoverageTracker
 import com.example.data.survey.SurveyFeature
 import com.example.data.survey.SurveyGeometryType
 import com.example.geospatial.GeoSpatialLibrary
@@ -106,6 +109,7 @@ import com.google.android.gms.maps.model.PolygonOptions
 import com.google.android.gms.maps.model.Polyline
 import com.google.android.gms.maps.model.PolylineOptions
 import java.io.File
+import java.util.Locale
 import java.security.MessageDigest
 import kotlin.math.cos
 import kotlinx.coroutines.Dispatchers
@@ -167,6 +171,53 @@ fun TerrainGoogleMapScreen(
             runCatching { HistoricMapAgreementScorer.buildReliefEvidence(grid) }.getOrNull()
         }
     }
+    // Search coverage: ground swept so far, derived from GPS breadcrumb tracks and rendered
+    // as a translucent layer under the terrain overlay.
+    var showCoverage by rememberSaveable(terrainKey) { mutableStateOf(false) }
+    var coverageOverlay by remember { mutableStateOf<GroundOverlay?>(null) }
+    val sweepCoverage by produceState<SweepCoverageGrid?>(
+        null,
+        showCoverage,
+        breadcrumbTracks,
+        metadata.bounds,
+    ) {
+        val bounds = metadata.bounds
+        if (!showCoverage || bounds == null || breadcrumbTracks.isEmpty()) {
+            value = null
+            return@produceState
+        }
+        value = withContext(Dispatchers.Default) {
+            runCatching {
+                SweepCoverageTracker.build(
+                    tracks = breadcrumbTracks,
+                    minLatitude = bounds.minLat,
+                    maxLatitude = bounds.maxLat,
+                    minLongitude = bounds.minLon,
+                    maxLongitude = bounds.maxLon,
+                )
+            }.getOrNull()
+        }
+    }
+    LaunchedEffect(googleMap, sweepCoverage) {
+        coverageOverlay?.remove()
+        coverageOverlay = null
+        val map = googleMap ?: return@LaunchedEffect
+        val coverage = sweepCoverage ?: return@LaunchedEffect
+        val bitmap = withContext(Dispatchers.Default) { renderSweepCoverageBitmap(coverage) }
+        coverageOverlay = map.addGroundOverlay(
+            GroundOverlayOptions()
+                .image(BitmapDescriptorFactory.fromBitmap(bitmap))
+                .positionFromBounds(
+                    LatLngBounds(
+                        LatLng(coverage.minLatitude, coverage.minLongitude),
+                        LatLng(coverage.maxLatitude, coverage.maxLongitude),
+                    ),
+                )
+                .transparency(0.2f)
+                .zIndex(2f),
+        )
+    }
+
     val activeHistoricMap = historicMaps.firstOrNull { it.id == activeHistoricMapId }
     val activeHistoricBitmap = activeHistoricMap?.let { historicBitmaps[it.id] }
     val historicAgreement by produceState<MapFeatureAgreement?>(
@@ -286,6 +337,7 @@ fun TerrainGoogleMapScreen(
             overlay?.remove()
             surveyMapObjects.forEach(::removeMapObject)
             breadcrumbPolylines.forEach { it.remove() }
+            coverageOverlay?.remove()
             historicOverlayObjects.values.forEach { it.remove() }
             googleMap = null
         }
@@ -554,6 +606,29 @@ fun TerrainGoogleMapScreen(
                     modifier = Modifier.testTag("find_lidar_tiles_in_view"),
                 ) {
                     Icon(Icons.Default.Search, contentDescription = "Find LiDAR tiles in this view")
+                }
+            }
+            SmallFloatingActionButton(onClick = { showCoverage = !showCoverage }) {
+                Icon(
+                    Icons.Default.GridOn,
+                    contentDescription = if (showCoverage) "Hide search coverage" else "Show search coverage",
+                    tint = if (showCoverage) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                )
+            }
+            sweepCoverage?.let { coverage ->
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                ) {
+                    Text(
+                        "Swept ${(coverage.coverageRatio * 100f).toInt()}% · " + sweptAreaText(coverage),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                    )
                 }
             }
             if (!historicPanelExpanded) {
@@ -1319,3 +1394,27 @@ private fun decodeSampledBitmap(file: File, maxDimension: Int): Bitmap? {
     val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
     return BitmapFactory.decodeFile(file.absolutePath, options)
 }
+
+
+/** Translucent green for swept cells; transparent elsewhere. Rendered north-up. */
+private fun renderSweepCoverageBitmap(coverage: SweepCoverageGrid): Bitmap {
+    val sweptColor = 0x5934C759.toInt()
+    val pixels = IntArray(coverage.width * coverage.height)
+    for (row in 0 until coverage.height) {
+        // Coverage row 0 is the southern edge; bitmap row 0 is north.
+        val sourceRow = coverage.height - 1 - row
+        for (column in 0 until coverage.width) {
+            if (coverage.covered[sourceRow * coverage.width + column]) {
+                pixels[row * coverage.width + column] = sweptColor
+            }
+        }
+    }
+    return Bitmap.createBitmap(pixels, coverage.width, coverage.height, Bitmap.Config.ARGB_8888)
+}
+
+private fun sweptAreaText(coverage: SweepCoverageGrid): String =
+    if (coverage.coveredAreaSquareMeters >= 10_000f) {
+        String.format(Locale.US, "%.1f ha", coverage.coveredAreaSquareMeters / 10_000f)
+    } else {
+        "${coverage.coveredAreaSquareMeters.toInt()} m²"
+    }
