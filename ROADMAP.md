@@ -373,11 +373,11 @@ Exit criteria:
 
 ### Phase 7 — Machine-learning ranking
 
-- Define a reviewed-example schema.
-- Build Hudson Valley cellar-hole and road datasets.
-- Train an XGBoost or comparable explainable candidate ranker.
-- Use spatially separated training and evaluation areas.
-- Add hard-negative mining, model versioning, calibration, rollback, and explanations.
+- Define a reviewed-example schema. **Complete** (see Sprint 3): `ReviewedCandidateExample` and its append-only store.
+- Build Hudson Valley cellar-hole and road datasets. **Field-data dependent; not codeable yet.** Accumulates through the Phase 5 field-verification flow into the reviewed-example store.
+- Train an XGBoost or comparable explainable candidate ranker. **Engine implemented; unit verified.** `RankerTrainer` fits an L2-regularized logistic ranker (the explainable comparator) from feature vectors extracted by `CandidateFeatures`; training is deterministic and reproducible per version.
+- Use spatially separated training and evaluation areas. **Implemented; unit verified.** `SpatialFoldSplitter` assigns folds by ~1 km spatial blocks (grid blocks when coordinates are missing), never at random, so near-duplicates cannot leak across train/eval.
+- Add hard-negative mining, model versioning, calibration, rollback, and explanations. **Implemented; unit verified.** `HardNegativeMiner` surfaces the highest-scoring rejected examples; `ExplainableRanker` carries Platt calibration and per-feature contributions that sum to the raw score; `ModelRegistry` activates versions explicitly and rolls back, so production ranking never changes silently.
 
 Exit criteria:
 
