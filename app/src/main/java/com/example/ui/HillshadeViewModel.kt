@@ -16,6 +16,7 @@ import com.example.data.basemap.OfflineBasemapRegion
 import com.example.data.basemap.OfflineBasemapStatus
 import com.example.data.field.BreadcrumbPoint
 import com.example.data.field.BreadcrumbTrack
+import com.example.data.field.OptimizedFieldRoute
 import com.example.data.LazDatasetStore
 import com.example.data.LazTerrainDiskCache
 import com.example.data.LazTerrainMemoryCache
@@ -214,6 +215,11 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private var surveyLayerJob: Job? = null
     private val _breadcrumbTracks = MutableStateFlow<List<BreadcrumbTrack>>(emptyList())
     val breadcrumbTracks: StateFlow<List<BreadcrumbTrack>> = _breadcrumbTracks.asStateFlow()
+    private val _plannedRoute = MutableStateFlow<OptimizedFieldRoute?>(null)
+    val plannedRoute: StateFlow<OptimizedFieldRoute?> = _plannedRoute.asStateFlow()
+    fun setPlannedRoute(route: OptimizedFieldRoute?) {
+        _plannedRoute.value = route
+    }
     private val _isBreadcrumbRecording = MutableStateFlow(false)
     val isBreadcrumbRecording: StateFlow<Boolean> = _isBreadcrumbRecording.asStateFlow()
     private var breadcrumbTrackJob: Job? = null

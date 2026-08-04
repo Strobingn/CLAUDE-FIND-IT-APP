@@ -738,6 +738,7 @@ private fun GoogleMapTab(
     val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
     val surveyLayers by viewModel.surveyLayers.collectAsStateWithLifecycle()
     val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
+    val plannedRoute by viewModel.plannedRoute.collectAsStateWithLifecycle()
     TerrainGoogleMapScreen(
         terrainBitmap = bitmap,
         grid = grid,
@@ -746,6 +747,9 @@ private fun GoogleMapTab(
         surveyFeatures = surveyLayers.flatMap { it.features },
         breadcrumbTracks = breadcrumbTracks,
         onFindLidarTiles = onFindLidarTiles,
+        routeWaypoints = plannedRoute?.waypoints ?: emptyList(),
+        routeTotalMeters = plannedRoute?.totalDistanceMeters?.toFloat() ?: 0f,
+        onClearRoute = { viewModel.setPlannedRoute(null) },
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }
@@ -822,6 +826,7 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         onUpdateSignal = viewModel::updateLoggedSignal,
         onClearAll = viewModel::clearLoggedSignals,
         onBuildProjectExport = viewModel::buildProjectExportFiles,
+        onRoutePlanned = viewModel::setPlannedRoute,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }

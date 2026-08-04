@@ -90,6 +90,7 @@ import com.example.data.HistoricMapOverlayRepository
 import com.example.data.historicmap.HistoricMapAgreementScorer
 import com.example.data.historicmap.MapFeatureAgreement
 import com.example.data.field.BreadcrumbTrack
+import com.example.data.field.FieldWaypoint
 import com.example.data.field.SweepCoverageGrid
 import com.example.data.field.SweepCoverageTracker
 import com.example.data.survey.SurveyFeature
@@ -127,6 +128,9 @@ fun TerrainGoogleMapScreen(
     breadcrumbTracks: List<BreadcrumbTrack> = emptyList(),
     /** Supplied when the host can act on a search box; omitting it hides the search control. */
     onFindLidarTiles: ((GeoSpatialLibrary.GeographicBounds) -> Unit)? = null,
+    routeWaypoints: List<FieldWaypoint> = emptyList(),
+    routeTotalMeters: Float = 0f,
+    onClearRoute: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -179,6 +183,7 @@ fun TerrainGoogleMapScreen(
         mutableFloatStateOf(SweepCoverageTracker.DEFAULT_SWEEP_WIDTH_METERS)
     }
     var coverageOverlay by remember { mutableStateOf<GroundOverlay?>(null) }
+    var routePolyline by remember { mutableStateOf<Polyline?>(null) }
     val sweepCoverage by produceState<SweepCoverageGrid?>(
         null,
         showCoverage,
@@ -221,6 +226,19 @@ fun TerrainGoogleMapScreen(
                 )
                 .transparency(0.2f)
                 .zIndex(2f),
+        )
+    }
+    LaunchedEffect(googleMap, routeWaypoints) {
+        routePolyline?.remove()
+        routePolyline = null
+        val map = googleMap ?: return@LaunchedEffect
+        if (routeWaypoints.size < 2) return@LaunchedEffect
+        routePolyline = map.addPolyline(
+            PolylineOptions()
+                .addAll(routeWaypoints.map { LatLng(it.latitude, it.longitude) })
+                .color(0xFFFFB300.toInt())
+                .width(7f)
+                .zIndex(5f),
         )
     }
 
@@ -344,6 +362,7 @@ fun TerrainGoogleMapScreen(
             surveyMapObjects.forEach(::removeMapObject)
             breadcrumbPolylines.forEach { it.remove() }
             coverageOverlay?.remove()
+            routePolyline?.remove()
             historicOverlayObjects.values.forEach { it.remove() }
             googleMap = null
         }
@@ -657,6 +676,27 @@ fun TerrainGoogleMapScreen(
                                 )
                             }
                         }
+                    }
+                }
+            }
+            if (routeWaypoints.size >= 2) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                    ),
+                    modifier = Modifier.widthIn(max = 240.dp),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            "Route active",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "${routeWaypoints.size} stops · ${routeDistanceText(routeTotalMeters)} total",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        TextButton(onClick = onClearRoute) { Text("Clear") }
                     }
                 }
             }
@@ -1446,4 +1486,11 @@ private fun sweptAreaText(coverage: SweepCoverageGrid): String =
         String.format(Locale.US, "%.1f ha", coverage.coveredAreaSquareMeters / 10_000f)
     } else {
         "${coverage.coveredAreaSquareMeters.toInt()} m²"
+    }
+
+private fun routeDistanceText(totalMeters: Float): String =
+    if (totalMeters >= 1000f) {
+        String.format(Locale.US, "%.2f km", totalMeters / 1000f)
+    } else {
+        "${totalMeters.toInt()} m"
     }

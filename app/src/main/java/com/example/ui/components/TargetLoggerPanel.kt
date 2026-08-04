@@ -119,6 +119,7 @@ fun TargetLoggerPanel(
     onUpdateSignal: (TargetSignal) -> Unit,
     onClearAll: () -> Unit,
     onBuildProjectExport: suspend () -> ProjectExportFiles,
+    onRoutePlanned: (OptimizedFieldRoute?) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -150,6 +151,7 @@ fun TargetLoggerPanel(
             plannedRoute = withContext(Dispatchers.Default) {
                 TargetRouteOptimizer.optimize(waypoints, deviceLatitude, deviceLongitude)
             }
+            onRoutePlanned(plannedRoute)
         }
     }
 
@@ -327,7 +329,10 @@ fun TargetLoggerPanel(
                 route = route,
                 signals = loggedSignals,
                 onNavigate = { navigationTarget = it },
-                onDismiss = { plannedRoute = null },
+                onDismiss = {
+                    plannedRoute = null
+                    onRoutePlanned(null)
+                },
             )
         }
 
