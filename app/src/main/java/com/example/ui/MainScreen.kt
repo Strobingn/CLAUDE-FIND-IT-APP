@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.Flag
@@ -118,6 +119,7 @@ private val tabs = listOf(
     AppTab("Compare", "Layer comparison", Icons.Default.Compare),
     AppTab("Finds", "Field finds", Icons.Default.Flag),
     AppTab("Import", "Terrain library", Icons.Default.UploadFile),
+    AppTab("Tools", "Field tools", Icons.Default.Build),
 )
 
 /**
@@ -221,18 +223,21 @@ fun MainScreen(viewModel: HillshadeViewModel, modifier: Modifier = Modifier) {
             1 -> GoogleMapTab(viewModel, padding) { bounds ->
                 // The picker lives on the Import tab, so hand the box over and follow it there.
                 LidarSearchRequest.request(bounds)
-                selectedTab.intValue = tabs.lastIndex
+                selectedTab.intValue = 6
             }
             2 -> LidarAreaTab(padding) { bounds ->
                 LidarSearchRequest.request(bounds)
-                selectedTab.intValue = tabs.lastIndex
+                selectedTab.intValue = 6
             }
             3 -> GeminiTab(viewModel, padding)
             4 -> CompareTab(viewModel, padding)
             5 -> FindsTab(viewModel, padding)
-            else -> ImportTab(viewModel, padding) {
+            6 -> ImportTab(viewModel, padding) {
                 selectedTab.intValue = 0
                 terrainFocusMode.value = false
+            }
+            else -> ToolsTab(viewModel, padding) { tab ->
+                selectedTab.intValue = tab
             }
         }
     }
