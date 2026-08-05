@@ -1,6 +1,7 @@
 package com.example.data.export
 
 import com.example.data.TargetSignal
+import com.example.data.field.OptimizedFieldRoute
 import java.util.Locale
 
 fun buildCsv(signals: List<TargetSignal>): String = buildString {
@@ -48,6 +49,32 @@ fun buildGpx(signals: List<TargetSignal>): String = buildString {
         append("  </wpt>\n")
     }
     append("</gpx>\n")
+}
+
+/**
+ * GPX export of an optimized walking plan: every stop as a waypoint, plus an <rte> whose
+ * rtept order matches the walking order, so handheld GPS units and QGIS can follow it.
+ */
+fun buildGpxRoute(route: OptimizedFieldRoute): String = buildString {
+    appendLine("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+    appendLine("<gpx version=\"1.1\" creator=\"Find It\" xmlns=\"http://www.topografix.com/GPX/1/1\">")
+    route.waypoints.forEachIndexed { index, waypoint ->
+        append("  <wpt lat=\"").append(formatDecimal(waypoint.latitude, 7)).append("\" lon=\"")
+            .append(formatDecimal(waypoint.longitude, 7)).appendLine("\">")
+        append("    <name>").append(xmlEscape("${index + 1}. ${waypoint.displayName}")).appendLine("</name>")
+        appendLine("  </wpt>")
+    }
+    appendLine("  <rte>")
+    append("    <name>Find It planned route (")
+        .append(formatDecimal(route.totalDistanceMeters / 1000.0, 2)).appendLine(" km)</name>")
+    route.waypoints.forEach { waypoint ->
+        append("    <rtept lat=\"").append(formatDecimal(waypoint.latitude, 7)).append("\" lon=\"")
+            .append(formatDecimal(waypoint.longitude, 7)).appendLine("\">")
+        append("      <name>").append(xmlEscape(waypoint.displayName)).appendLine("</name>")
+        appendLine("    </rtept>")
+    }
+    appendLine("  </rte>")
+    appendLine("</gpx>")
 }
 
 fun buildKml(signals: List<TargetSignal>): String = buildString {

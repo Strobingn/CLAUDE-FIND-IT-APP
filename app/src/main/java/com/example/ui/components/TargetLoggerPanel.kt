@@ -96,6 +96,7 @@ import com.example.geospatial.trueToMagneticBearingDegrees
 import com.example.data.export.buildCsv
 import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
+import com.example.data.export.buildGpxRoute
 import com.example.data.export.buildKml
 import com.example.data.export.buildKmz
 import com.example.data.export.buildShapefileZip
@@ -1652,6 +1653,20 @@ private fun PlannedRouteCard(
     onDismiss: () -> Unit,
 ) {
     val signalsById = remember(signals) { signals.associateBy { it.id.toString() } }
+    val context = LocalContext.current
+    var routeExportStatus by remember { mutableStateOf<String?>(null) }
+    val routeExporter = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/gpx+xml"),
+    ) { uri ->
+        routeExportStatus = when {
+            uri == null -> "Route export canceled"
+            else -> runCatching {
+                context.contentResolver.openOutputStream(uri)?.use {
+                    it.write(buildGpxRoute(route).toByteArray(Charsets.UTF_8))
+                } ?: error("Could not open the selected destination")
+            }.fold({ "Route GPX saved" }, { "Route export failed: ${it.localizedMessage}" })
+        }
+    }
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         modifier = Modifier.fillMaxWidth(),
@@ -1664,7 +1679,14 @@ private fun PlannedRouteCard(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f),
                 )
+                TextButton(
+                    onClick = { routeExporter.launch("find-it-route.gpx") },
+                    modifier = Modifier.testTag("route_export_gpx_button"),
+                ) { Text("Export GPX") }
                 TextButton(onClick = onDismiss) { Text("Clear") }
+            }
+            routeExportStatus?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
             Text(
                 "Shortest walking order across ${route.waypoints.size} stops · " +

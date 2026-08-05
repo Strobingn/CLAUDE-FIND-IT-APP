@@ -47,6 +47,8 @@ import com.example.data.DetectionSource
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
 import com.example.data.TargetSignal
+import com.example.analysis.DigDepthEstimate
+import com.example.analysis.DigDepthEstimator
 import com.example.data.field.NavigationTarget
 import com.example.data.local.SavedTarget
 import com.example.data.local.buildAnalyzedDatasetEntity
@@ -518,6 +520,9 @@ fun AiAnalysisWorkspace(
                         items(historicTargets.sortedByDescending { it.score }, key = { "${it.type}-${it.xPercent}-${it.yPercent}" }) { target ->
                             TargetDetailCard(
                                 target = target,
+                                depthEstimate = aiState.localResult?.layers?.let {
+                                    DigDepthEstimator.estimate(target, it)
+                                },
                                 onNavigate = GeoSpatialLibrary.gridToGeographic(
                                     target.xPercent,
                                     target.yPercent,
@@ -655,6 +660,7 @@ private fun TargetDetailCard(
     target: MetalDetectingTarget,
     onLog: () -> Unit,
     onNavigate: (() -> Unit)? = null,
+    depthEstimate: DigDepthEstimate? = null,
 ) {
     val logged = rememberSaveable(target.type, target.xPercent, target.yPercent) { mutableStateOf(false) }
     Surface(
@@ -708,6 +714,13 @@ private fun TargetDetailCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (depthEstimate != null) {
+                Text(
+                    "Est. dig depth: ${depthEstimate.label} (${depthEstimate.basis})",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (target.layerEvidence.isNotEmpty()) {
                 Text(
                     "Layer agreement",
