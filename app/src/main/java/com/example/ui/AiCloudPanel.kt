@@ -26,6 +26,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,10 +45,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ai.FieldAiFeature
+import com.example.ai.FieldAiSessionPack
 import com.example.ai.GeminiApiClient
 import com.example.ai.OpenAiApiClient
 import com.example.ai.TerrainAiProvider
@@ -74,6 +78,8 @@ fun AiCloudPanel(
     metadata: GeoSpatialMetadata,
     terrainKey: String,
     assistantViewModel: AiTerrainViewModel,
+    fieldSessionPack: FieldAiSessionPack? = null,
+    onApplyLighting: (azimuth: Float, altitude: Float) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     val state by assistantViewModel.state.collectAsStateWithLifecycle()
@@ -106,6 +112,28 @@ fun AiCloudPanel(
             }
             append("Analyze only the visible rendered surface. Treat suggested dig locations as field-check priorities, not proof of a buried object.")
         }
+    }
+
+    val baseFieldPack = remember(
+        fieldSessionPack,
+        terrainSummary,
+        terrainContext,
+        grid.width,
+        grid.height,
+        grid.cellSizeMeters,
+        state.localResult,
+    ) {
+        fieldSessionPack ?: FieldAiSessionPack(
+            terrainSummary = terrainSummary,
+            terrainContext = terrainContext,
+            sunAzimuth = 315f,
+            sunAltitude = 35f,
+            gridWidth = grid.width,
+            gridHeight = grid.height,
+            cellSizeMeters = grid.cellSizeMeters,
+            localResult = state.localResult,
+            freeformNotes = "",
+        )
     }
 
     LazyColumn(
@@ -244,6 +272,85 @@ fun AiCloudPanel(
                                 ) { Text("Remove", style = MaterialTheme.typography.labelSmall) }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        item {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("ai_field_pack"),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Text(
+                    "AI field pack",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FieldAiFeature.entries.forEach { feature ->
+                        AssistChip(
+                            onClick = {
+                                val pack = if (
+                                    feature == FieldAiFeature.DAY_DEBRIEF && draft.isNotBlank()
+                                ) {
+                                    baseFieldPack.copy(freeformNotes = draft)
+                                } else {
+                                    baseFieldPack
+                                }
+                                if (feature.prefersViewportImage && imageReady) {
+                                    attachImage = true
+                                }
+                                assistantViewModel.runFieldAiFeature(
+                                    feature = feature,
+                                    pack = pack,
+                                    viewport = viewport,
+                                    attachViewportImage = imageReady && (attachImage || feature.prefersViewportImage),
+                                    terrainKey = terrainKey,
+                                )
+                            },
+                            label = {
+                                Text(feature.shortLabel, style = MaterialTheme.typography.labelSmall)
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    modifier = Modifier.height(16.dp),
+                                )
+                            },
+                            enabled = !state.isSending && state.activeProvider != null,
+                            modifier = Modifier
+                                .height(CompactButtonHeight)
+                                .testTag("ai_feature_${feature.name}"),
+                        )
+                    }
+                }
+                val pendingAz = state.pendingLightingAzimuth
+                val pendingAlt = state.pendingLightingAltitude
+                if (pendingAz != null && pendingAlt != null) {
+                    FilledTonalButton(
+                        onClick = {
+                            onApplyLighting(pendingAz, pendingAlt)
+                            assistantViewModel.clearPendingLighting()
+                        },
+                        enabled = !state.isSending,
+                        modifier = Modifier
+                            .height(CompactButtonHeight)
+                            .testTag("ai_apply_lighting"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text(
+                            "Apply lighting recommendation",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
                     }
                 }
             }

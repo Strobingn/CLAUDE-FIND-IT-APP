@@ -57,10 +57,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.ai.AiTargetClassifier
+import com.example.ai.FieldAiCopilot
+import com.example.ai.FieldAiFeature
+import com.example.ai.FieldAiSessionPack
 import com.example.ai.GeminiApiClient
 import com.example.ai.GeminiConversationTurn
 import com.example.ai.GeminiTerrainImageEncoder
-import com.example.ai.AiTargetClassifier
 import com.example.ai.OpenAiApiClient
 import com.example.ai.TerrainAiGateway
 import com.example.ai.TerrainAiProvider
@@ -184,6 +187,12 @@ data class AiTerrainState(
     val rankedCandidates: List<RankedCandidate>? = null,
     val rankerMessage: String? = null,
     val isTrainingRanker: Boolean = false,
+    /** Hillshade azimuth from LIGHTING_ADVISOR; consumed by the terrain UI then cleared. */
+    val pendingLightingAzimuth: Float? = null,
+    /** Hillshade altitude from LIGHTING_ADVISOR; consumed by the terrain UI then cleared. */
+    val pendingLightingAltitude: Float? = null,
+    /** Title of the last Field AI feature that completed successfully. */
+    val lastFieldFeature: String? = null,
 )
 
 class AiTerrainViewModel(application: Application) : AndroidViewModel(application) {
@@ -610,6 +619,141 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                         _state.value.cloudMapTargets
                     },
                     cloudTerrainKey = if (cloudTargets.isNotEmpty()) terrainKey else _state.value.cloudTerrainKey,
+                ).withProviderStatus()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                _state.value = _state.value.copy(
+                    isSending = false,
+                    cloudError = error.localizedMessage ?: "Cloud AI request failed",
+                    cloudStage = "Cloud AI request stopped",
+                ).withProviderStatus()
+            }
+        }
+    }
+
+    fun clearPendingLighting() {
+        _state.value = _state.value.copy(
+            pendingLightingAzimuth = null,
+            pendingLightingAltitude = null,
+        )
+    }
+
+    /**
+     * Runs one of the ten Field AI specialist features through [TerrainAiGateway]
+     * (OpenAI primary / Gemini fallback). Lighting recommendations are exposed via
+     * [AiTerrainState.pendingLightingAzimuth] / [AiTerrainState.pendingLightingAltitude].
+     */
+    fun runFieldAiFeature(
+        feature: FieldAiFeature,
+        pack: FieldAiSessionPack,
+        viewport: TerrainVisionSnapshot,
+        attachViewportImage: Boolean,
+        terrainKey: String? = null,
+    ) {
+        if (_state.value.isSending) return
+        val preference = _state.value.providerPreference
+        if (TerrainAiGateway.preferredProvider(appContext) == null) {
+            _state.value = _state.value.copy(
+                cloudError = "Add an OpenAI key for the primary provider or a Gemini key for fallback. Offline analysis still works without a key.",
+            )
+            return
+        }
+
+        val wantsImage = attachViewportImage && feature.prefersViewportImage
+        val canAttachImage = wantsImage &&
+            viewport.bitmap?.let { !it.isRecycled && it.width > 0 && it.height > 0 } == true
+        val imageFallbackNote = if (wantsImage && !canAttachImage) {
+            " (viewport image unavailable — text-only)"
+        } else {
+            ""
+        }
+
+        val userPrompt = FieldAiCopilot.buildUserPrompt(feature, pack)
+        val displayText = buildString {
+            append(feature.title)
+            append('\n')
+            append(userPrompt.take(4000))
+        }
+        val userMessage = AiMessage(
+            id = ids.getAndIncrement(),
+            role = AiMessageRole.USER,
+            text = displayText,
+            usedViewportImage = canAttachImage,
+        )
+        val withUser = _state.value.messages + userMessage
+        _state.value = _state.value.copy(
+            messages = withUser,
+            isSending = true,
+            cloudError = null,
+            cloudStage = if (canAttachImage) {
+                "Preparing ${feature.title} with viewport image…"
+            } else {
+                "Running ${feature.title}$imageFallbackNote…"
+            },
+        )
+
+        viewModelScope.launch {
+            try {
+                val image = if (canAttachImage) {
+                    withContext(Dispatchers.Default) { GeminiTerrainImageEncoder.encode(viewport) }
+                } else {
+                    null
+                }
+                // Prefer text-only when encode fails rather than hard-failing the feature.
+                val usedImage = image != null
+                val systemContext = buildString {
+                    append(pack.terrainContext)
+                    append("\n\n")
+                    append(FieldAiCopilot.buildSystemAddendum(feature))
+                }
+                val answer = gateway.generate(
+                    conversation = withUser.map {
+                        GeminiConversationTurn(
+                            role = if (it.role == AiMessageRole.MODEL) "model" else "user",
+                            text = it.text,
+                        )
+                    },
+                    systemContext = systemContext,
+                    image = image,
+                    requestedProvider = preference,
+                    onProviderStage = { stage ->
+                        _state.value = _state.value.copy(cloudStage = stage)
+                    },
+                )
+                val cloudTargets = if (usedImage) {
+                    parseCloudMapTargets(answer.text, viewport.bounds)
+                } else {
+                    emptyList()
+                }
+                val fallbackNote = answer.fallbackReason?.let {
+                    "\n\nFallback used because OpenAI returned: $it"
+                }.orEmpty()
+                val lighting = if (feature == FieldAiFeature.LIGHTING_ADVISOR) {
+                    FieldAiCopilot.parseLightingRecommendation(answer.text)
+                } else {
+                    null
+                }
+                _state.value = _state.value.copy(
+                    messages = _state.value.messages + AiMessage(
+                        id = ids.getAndIncrement(),
+                        role = AiMessageRole.MODEL,
+                        text = removeCloudMapTargetTags(answer.text) + fallbackNote,
+                        provider = answer.provider,
+                        usedViewportImage = usedImage,
+                    ),
+                    isSending = false,
+                    cloudError = null,
+                    cloudStage = "Completed ${feature.title} with ${answer.provider.label}",
+                    cloudMapTargets = if (cloudTargets.isNotEmpty()) {
+                        cloudTargets
+                    } else {
+                        _state.value.cloudMapTargets
+                    },
+                    cloudTerrainKey = if (cloudTargets.isNotEmpty()) terrainKey else _state.value.cloudTerrainKey,
+                    pendingLightingAzimuth = lighting?.azimuth ?: _state.value.pendingLightingAzimuth,
+                    pendingLightingAltitude = lighting?.altitude ?: _state.value.pendingLightingAltitude,
+                    lastFieldFeature = feature.title,
                 ).withProviderStatus()
             } catch (cancelled: CancellationException) {
                 throw cancelled

@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.analysis.MetalDetectingTarget
 import androidx.compose.ui.text.font.FontFamily
+import com.example.ai.FieldAiSessionPack
 import com.example.analysis.LayerVerdict
 import com.example.analysis.MetalDetectingTargetRefiner
 import com.example.analysis.TerrainDerivedLayer
@@ -79,11 +80,50 @@ fun AiAnalysisWorkspace(
     val refinementProgress by viewModel.terrainRefinementProgress.collectAsStateWithLifecycle()
     val canRefine by viewModel.canRefineTerrain.collectAsStateWithLifecycle()
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
+    val excavationLogs by viewModel.excavationLogs.collectAsStateWithLifecycle()
+    val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
+    val sunAzimuth by viewModel.sunAzimuth.collectAsStateWithLifecycle()
+    val sunAltitude by viewModel.sunAltitude.collectAsStateWithLifecycle()
+    val deviceLatitude by viewModel.deviceLatitude.collectAsStateWithLifecycle()
+    val deviceLongitude by viewModel.deviceLongitude.collectAsStateWithLifecycle()
     val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
     val gridSpacing by viewModel.gridSpacing.collectAsStateWithLifecycle()
     val featureTypeCalibration by viewModel.featureTypeCalibration.collectAsStateWithLifecycle()
     val visualizationMode by viewModel.visualizationMode.collectAsStateWithLifecycle()
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
+
+    val fieldPack = remember(
+        summary,
+        metadata.crs,
+        metadata.siteName,
+        sunAzimuth,
+        sunAltitude,
+        grid.width,
+        grid.height,
+        grid.cellSizeMeters,
+        deviceLatitude,
+        deviceLongitude,
+        signals,
+        excavationLogs,
+        breadcrumbTracks,
+        aiState.localResult,
+    ) {
+        FieldAiSessionPack(
+            terrainSummary = summary,
+            terrainContext = "CRS=${metadata.crs}; site=${metadata.siteName}",
+            sunAzimuth = sunAzimuth,
+            sunAltitude = sunAltitude,
+            gridWidth = grid.width,
+            gridHeight = grid.height,
+            cellSizeMeters = grid.cellSizeMeters,
+            deviceLatitude = deviceLatitude,
+            deviceLongitude = deviceLongitude,
+            signals = signals,
+            excavationLogs = excavationLogs,
+            breadcrumbTracks = breadcrumbTracks,
+            localResult = aiState.localResult,
+        )
+    }
 
     val visibleBounds = remember { mutableStateOf(NormalizedRasterBounds.Full) }
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
@@ -589,6 +629,11 @@ fun AiAnalysisWorkspace(
             metadata = metadata,
             terrainKey = terrainKey,
             assistantViewModel = assistantViewModel,
+            fieldSessionPack = fieldPack,
+            onApplyLighting = { az, alt ->
+                viewModel.updateSunAzimuth(az)
+                viewModel.updateSunAltitude(alt)
+            },
             // weight(1f), not fillMaxSize(): this Column isn't scrollable, and the header +
             // map above already claim their own height, so a fillMaxSize() panel here asked
             // for the full column height on top of that and pushed its own internal chat
