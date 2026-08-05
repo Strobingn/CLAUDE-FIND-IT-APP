@@ -133,7 +133,11 @@ fun SavedLidarLibrarySection(
                             if (!paintedEarly) {
                                 paintedEarly = true
                                 onTerrainLoaded(preview.terrain, source)
-                                progressText = "Terrain visible — finishing GPU mesh…"
+                                progressText = if (preview.isPreview) {
+                                    "Sparse preview visible — exact terrain decoding…"
+                                } else {
+                                    "Terrain visible — finishing GPU mesh…"
+                                }
                             }
                         }
                     },
@@ -147,8 +151,23 @@ fun SavedLidarLibrarySection(
                 }
                 isOpening = false
                 progressText = null
-                message = "Opened ${dataset.displayName} · ${outcome.terrain.grid.width}×${outcome.terrain.grid.height}"
+                message = buildString {
+                    append("Opened ${dataset.displayName} · ${outcome.terrain.grid.width}×${outcome.terrain.grid.height}")
+                    if (outcome.isPreview) append(" (preview; exact still loading)")
+                }
                 isError = false
+                val exactJob = outcome.exactOutcome
+                if (exactJob != null) {
+                    scope.launch {
+                        val exact = runCatching { exactJob.await() }.getOrNull() ?: return@launch
+                        withContext(Dispatchers.Main.immediate) {
+                            TerrainPerformanceSession.publish(exact.gpuScene)
+                            onTerrainLoaded(exact.terrain, source)
+                            message = "Exact terrain ready · ${exact.terrain.grid.width}×${exact.terrain.grid.height}"
+                            isError = false
+                        }
+                    }
+                }
             } catch (_: CancellationException) {
                 isOpening = false
                 progressText = null

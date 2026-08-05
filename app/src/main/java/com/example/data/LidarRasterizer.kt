@@ -125,9 +125,13 @@ internal class LidarRasterizer(
             (width.toDouble() * height.toDouble() * TARGET_SAMPLES_PER_CELL).coerceAtLeast(1.0),
         )
         sampleStride = ceil(estimatedPointsInFocus / usefulSampleBudget).toInt().coerceAtLeast(1)
-        // Footprint coverage needs denser sampling than elevation statistics, but processing every
-        // return caused multi-minute waits on ordinary 100–200 MiB LAZ files.
-        coverageStride = sampleStride.coerceAtMost(MAX_COVERAGE_STRIDE)
+        // Overview: every return at least marks coverage so first paint has no skip-holes.
+        // Focused refine keeps a capped coverage stride for speed on huge crops.
+        coverageStride = if (isOverview) {
+            1
+        } else {
+            sampleStride.coerceAtMost(MAX_COVERAGE_STRIDE)
+        }
         // Only bail early on absurd multi-hundred-million-point tiles after a dense scan budget.
         maxDecodedPoints = if (isOverview) {
             minOf(
@@ -317,6 +321,13 @@ internal class LidarRasterizer(
         }
 
         val totalCells = width * height
+        // Overview first view: draw the continuous filled surface (no skip-holes).
+        // Focused refine keeps the coverage mask so empty margins stay transparent.
+        val validData = if (isOverview) {
+            BooleanArray(totalCells) { bareEarth[it].isFinite() }
+        } else {
+            coverageMask
+        }
         val groundSamplesPerCell = if (populatedCells > 0) {
             val groundSamples = if (appliedMode == GroundSurfaceMode.SOURCE_CLASSIFIED) {
                 groundPointsBinned
@@ -403,7 +414,7 @@ internal class LidarRasterizer(
         }
 
         return DemGenerator.LasLoadResult(
-            grid = ElevationGrid(width, height, bareEarth, canopy, cellSize, coverageMask),
+            grid = ElevationGrid(width, height, bareEarth, canopy, cellSize, validData),
             totalPointsRead = pointsDecoded.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
             groundPointsUsed = if (appliedMode == GroundSurfaceMode.SOURCE_CLASSIFIED) {
                 groundPointsBinned
@@ -425,14 +436,15 @@ internal class LidarRasterizer(
         private const val MIN_SHORT_SIDE = 48
         private const val MIN_CLASSIFIED_POINTS = 100
         private const val MIN_CLASSIFIED_CELLS = 12
-        private const val TARGET_SAMPLES_PER_CELL = 8.0
-        private const val MAX_COVERAGE_STRIDE = 8
+        private const val TARGET_SAMPLES_PER_CELL = 12.0
+        /** Tighter than before so overview footprints fill continuously on first paint. */
+        private const val MAX_COVERAGE_STRIDE = 4
         private const val MAX_BINNED_POINTS = 8_000_000.0
         /** Decoded returns per elevation sample budget for full-footprint opens. */
-        private const val OVERVIEW_SCAN_MULTIPLIER = 12.0
-        private const val OVERVIEW_MIN_RETURNS_PER_CELL = 16L
+        private const val OVERVIEW_SCAN_MULTIPLIER = 16.0
+        private const val OVERVIEW_MIN_RETURNS_PER_CELL = 20L
         private const val MIN_OVERVIEW_DECODE = 200_000L
-        private const val OVERVIEW_CELL_FILL_TARGET = 0.85
+        private const val OVERVIEW_CELL_FILL_TARGET = 0.92
     }
 }
 
@@ -474,10 +486,10 @@ internal fun buildCoverageMask(counts: IntArray, width: Int, height: Int): Boole
     val populated = counts.count { it > 0 }
     if (populated == 0) return BooleanArray(counts.size)
 
-    // Bridge ordinary raster-bin gaps, but keep large holes and space outside irregular flight
-    // footprints transparent. Radius adapts to decoded point density and remains tightly bounded.
+    // Bridge ordinary raster-bin gaps from strided sampling, but keep true empty flight
+    // margins transparent. Wider radius than before so first overview is not Swiss cheese.
     val averageSpacing = sqrt(counts.size.toDouble() / populated)
-    val radius = (ceil(averageSpacing * 2.0).toInt()).coerceIn(2, 8)
+    val radius = (ceil(averageSpacing * 2.5).toInt()).coerceIn(2, 20)
     val distance = IntArray(counts.size) { Int.MAX_VALUE }
     val queue = IntArray(counts.size)
     var head = 0

@@ -489,22 +489,40 @@ fun NysLazTilePicker(
                     rasterResolution = 1_024,
                     smoothingRadius = 0,
                 )
+                val source = TerrainImportSource(
+                    uri = Uri.fromFile(file).toString(),
+                    displayName = displayName,
+                    options = options,
+                )
                 val outcome = decodeCoordinator.decode(
                     file = file,
                     displayName = displayName,
                     options = options,
+                    onPreview = { preview ->
+                        scope.launch {
+                            TerrainPerformanceSession.publish(preview.gpuScene)
+                            onCustomTerrainLoaded(preview.terrain, source)
+                            status = if (preview.isPreview) {
+                                "Dense terrain decoding… (filling holes)"
+                            } else {
+                                "Terrain visible — finishing detail…"
+                            }
+                        }
+                    },
                     onStage = { stage -> scope.launch { status = stage } },
                 )
                 TerrainPerformanceSession.publish(outcome.gpuScene)
-                onCustomTerrainLoaded(
-                    outcome.terrain,
-                    TerrainImportSource(
-                        uri = Uri.fromFile(file).toString(),
-                        displayName = displayName,
-                        options = options,
-                    ),
-                )
+                onCustomTerrainLoaded(outcome.terrain, source)
                 status = "Opened $displayName using ASPRS ground class 2 with class 8 fallback."
+                val exactJob = outcome.exactOutcome
+                if (exactJob != null) {
+                    scope.launch {
+                        val exact = runCatching { exactJob.await() }.getOrNull() ?: return@launch
+                        TerrainPerformanceSession.publish(exact.gpuScene)
+                        onCustomTerrainLoaded(exact.terrain, source)
+                        status = "Exact terrain ready · $displayName"
+                    }
+                }
             } catch (_: CancellationException) {
                 status = null
             } catch (t: Throwable) {

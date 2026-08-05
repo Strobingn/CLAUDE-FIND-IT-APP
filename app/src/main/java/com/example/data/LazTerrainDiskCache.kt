@@ -248,12 +248,22 @@ class LazTerrainCache(
         return Lookup(null, Hit.MISS)
     }
 
-    fun put(file: File, options: LidarImportOptions, result: DemGenerator.TerrainLoadResult) {
+    /** Immediate memory put only — never blocks on disk I/O. */
+    fun putMemory(file: File, options: LidarImportOptions, result: DemGenerator.TerrainLoadResult) {
         memory.put(file, options, result)
+    }
+
+    /** Queued durable write; generation-gated so clear/remove drops stale writers. */
+    fun putDisk(file: File, options: LidarImportOptions, result: DemGenerator.TerrainLoadResult) {
         val generation = diskWriteGeneration.get()
         diskWriteScope.launch {
             if (generation == diskWriteGeneration.get()) disk.put(file, options, result)
         }
+    }
+
+    fun put(file: File, options: LidarImportOptions, result: DemGenerator.TerrainLoadResult) {
+        putMemory(file, options, result)
+        putDisk(file, options, result)
     }
 
     fun remove(file: File) {

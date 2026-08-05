@@ -143,6 +143,20 @@ fun CustomFileLoader(
         message = "Import cancelled. Partial downloads were removed."
     }
 
+    fun openMessage(
+        displayName: String,
+        terrain: DemGenerator.TerrainLoadResult,
+        cacheLabel: String,
+        downloadedNow: Boolean,
+    ): String {
+        val size = "${terrain.grid.width}×${terrain.grid.height}"
+        return if (downloadedNow) {
+            "Saved $displayName and opened it at $size using $cacheLabel."
+        } else {
+            "Opened $displayName at $size using $cacheLabel."
+        }
+    }
+
     fun decodeStoredDataset(file: File, displayName: String, downloadedNow: Boolean = false) {
         workJob?.cancel()
         val options = importOptions()
@@ -166,14 +180,17 @@ fun CustomFileLoader(
                     displayName = displayName,
                     options = options,
                     onPreview = { preview ->
-                        // Hillshade can paint as soon as the elevation grid is ready; GPU mesh may
-                        // still be finishing at full tile density.
+                        // Hillshade can paint as soon as the elevation grid is ready.
                         withContext(Dispatchers.Main.immediate) {
                             TerrainPerformanceSession.publish(preview.gpuScene)
                             if (!paintedEarly) {
                                 paintedEarly = true
                                 onCustomTerrainLoaded(preview.terrain, source)
-                                progressText = "Terrain visible — finishing GPU mesh…"
+                                progressText = if (preview.isPreview) {
+                                    "Sparse preview visible — exact terrain decoding…"
+                                } else {
+                                    "Terrain visible — finishing GPU mesh…"
+                                }
                             }
                         }
                     },
@@ -183,29 +200,35 @@ fun CustomFileLoader(
                 )
                 TerrainPerformanceSession.publish(outcome.gpuScene)
                 cacheSizeBytes = terrainCache.diskSizeBytes()
-                val cacheLabel = when (outcome.cacheHit) {
-                    LazTerrainCache.Hit.MEMORY -> "memory cache"
-                    LazTerrainCache.Hit.DISK -> "disk cache"
-                    LazTerrainCache.Hit.MISS -> "streamed point-cloud decode"
+                val cacheLabel = when {
+                    outcome.isPreview -> "full-res sparse preview"
+                    outcome.cacheHit == LazTerrainCache.Hit.MEMORY -> "memory cache"
+                    outcome.cacheHit == LazTerrainCache.Hit.DISK -> "disk cache"
+                    else -> "streamed point-cloud decode"
                 }
                 if (!paintedEarly) {
                     showResult(
                         result = outcome.terrain,
                         name = displayName,
                         source = source,
-                        successMessage = if (downloadedNow) {
-                            "Saved $displayName and opened it at ${outcome.terrain.grid.width}×${outcome.terrain.grid.height} using $cacheLabel."
-                        } else {
-                            "Opened $displayName at ${outcome.terrain.grid.width}×${outcome.terrain.grid.height} using $cacheLabel."
-                        },
+                        successMessage = openMessage(displayName, outcome.terrain, cacheLabel, downloadedNow),
                     )
                 } else {
                     resetWorkState()
                     isError = false
-                    message = if (downloadedNow) {
-                        "Saved $displayName and opened it at ${outcome.terrain.grid.width}×${outcome.terrain.grid.height} using $cacheLabel."
-                    } else {
-                        "Opened $displayName at ${outcome.terrain.grid.width}×${outcome.terrain.grid.height} using $cacheLabel."
+                    message = openMessage(displayName, outcome.terrain, cacheLabel, downloadedNow)
+                }
+                // Upgrade sparse preview → exact product without blocking first paint.
+                val exactJob = outcome.exactOutcome
+                if (exactJob != null) {
+                    scope.launch {
+                        val exact = runCatching { exactJob.await() }.getOrNull() ?: return@launch
+                        withContext(Dispatchers.Main.immediate) {
+                            TerrainPerformanceSession.publish(exact.gpuScene)
+                            onCustomTerrainLoaded(exact.terrain, source)
+                            message = "Exact terrain ready · ${exact.terrain.grid.width}×${exact.terrain.grid.height}"
+                            isError = false
+                        }
                     }
                 }
             } catch (_: CancellationException) {
