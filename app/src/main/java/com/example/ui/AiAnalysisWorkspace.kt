@@ -49,6 +49,8 @@ import com.example.data.NormalizedRasterBounds
 import com.example.data.TargetSignal
 import com.example.analysis.DigDepthEstimate
 import com.example.analysis.DigDepthEstimator
+import com.example.analysis.HuntZone
+import com.example.analysis.HuntZoneClusterer
 import com.example.data.field.NavigationTarget
 import com.example.data.local.SavedTarget
 import com.example.data.local.buildAnalyzedDatasetEntity
@@ -92,6 +94,7 @@ fun AiAnalysisWorkspace(
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
     val centerMarkerMode = rememberSaveable { mutableStateOf(false) }
     val showTargetDetails = rememberSaveable { mutableStateOf(false) }
+    val showHuntZones = rememberSaveable { mutableStateOf(false) }
     val showHistoricTargets = rememberSaveable { mutableStateOf(AI_HISTORIC_TARGETS_DEFAULT_VISIBLE) }
     val showCloudTargets = rememberSaveable { mutableStateOf(true) }
     val showDatasetComparison = rememberSaveable { mutableStateOf(false) }
@@ -142,6 +145,13 @@ fun AiAnalysisWorkspace(
         val result = aiState.localResult ?: return@remember emptyList()
         val feedbackPoints = VerifiedFeedback.derive(signals, result.datasetKey)
         MetalDetectingTargetRefiner.refine(result, feedbackPoints, featureTypeCalibration)
+    }
+    val huntZones = remember(historicTargets, aiState.localResult) {
+        val resultLayers = aiState.localResult?.layers ?: return@remember emptyList()
+        HuntZoneClusterer.cluster(historicTargets, resultLayers)
+    }
+    val targetZoneIds = remember(huntZones) {
+        huntZones.flatMap { zone -> zone.targets.map { it to zone.id } }.toMap()
     }
     // Falls back to the database snapshot when the derived-layer cache is gone. The cache lives in
     // the cache directory, which Android may purge at any time; without this the ranked targets
@@ -453,6 +463,18 @@ fun AiAnalysisWorkspace(
                             )
                         }
                     }
+                    if (huntZones.size > 1) {
+                        OutlinedButton(
+                            onClick = { showHuntZones.value = !showHuntZones.value },
+                            modifier = Modifier.height(CompactButtonHeight).testTag("ai_toggle_hunt_zones_button"),
+                            contentPadding = CompactButtonPadding,
+                        ) {
+                            Text(
+                                if (showHuntZones.value) "Hide zones" else "Zones (${huntZones.size})",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
                     if (visibleCloudTargets.isNotEmpty()) {
                         OutlinedButton(
                             onClick = { showCloudTargets.value = !showCloudTargets.value },
@@ -509,6 +531,37 @@ fun AiAnalysisWorkspace(
                     }
                 }
 
+                if (showHuntZones.value && huntZones.isNotEmpty()) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 180.dp)
+                            .testTag("ai_hunt_zone_list"),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        items(huntZones, key = { it.id }) { zone ->
+                            HuntZoneCard(
+                                zone = zone,
+                                onNavigate = GeoSpatialLibrary.gridToGeographic(
+                                    zone.centerXPercent,
+                                    zone.centerYPercent,
+                                    metadata,
+                                )?.let { (lat, lon) ->
+                                    {
+                                        viewModel.setNavigationTarget(
+                                            NavigationTarget(
+                                                label = "Zone ${zone.id} · ${zone.dominantType.label}",
+                                                latitude = lat,
+                                                longitude = lon,
+                                            ),
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+
                 if (showTargetDetails.value && historicTargets.isNotEmpty()) {
                     LazyColumn(
                         modifier = Modifier
@@ -520,6 +573,7 @@ fun AiAnalysisWorkspace(
                         items(historicTargets.sortedByDescending { it.score }, key = { "${it.type}-${it.xPercent}-${it.yPercent}" }) { target ->
                             TargetDetailCard(
                                 target = target,
+                                zoneId = targetZoneIds[target],
                                 depthEstimate = aiState.localResult?.layers?.let {
                                     DigDepthEstimator.estimate(target, it)
                                 },
@@ -656,11 +710,54 @@ internal fun stableCloudTargetId(terrainKey: String, target: CloudMapTarget): Lo
 }
 
 @Composable
+private fun HuntZoneCard(
+    zone: HuntZone,
+    onNavigate: (() -> Unit)? = null,
+) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "Zone ${zone.id} · " + zone.targetCount + (if (zone.targetCount == 1) " target" else " targets"),
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                if (onNavigate != null) {
+                    OutlinedButton(
+                        onClick = onNavigate,
+                        modifier = Modifier.height(CompactButtonHeight),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text("Nav", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+            Text(
+                "${zone.dominantType.label} site · best ${(zone.bestScore * 100f).toInt()}% · spans ${zone.spanMeters.toInt()} m",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                zone.targets.joinToString(" · ") { "${it.type.label} ${(it.score * 100f).toInt()}%" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
 private fun TargetDetailCard(
     target: MetalDetectingTarget,
     onLog: () -> Unit,
     onNavigate: (() -> Unit)? = null,
     depthEstimate: DigDepthEstimate? = null,
+    zoneId: Int? = null,
 ) {
     val logged = rememberSaveable(target.type, target.xPercent, target.yPercent) { mutableStateOf(false) }
     Surface(
@@ -676,6 +773,13 @@ private fun TargetDetailCard(
                     style = MaterialTheme.typography.labelLarge,
                     modifier = Modifier.weight(1f),
                 )
+                if (zoneId != null) {
+                    Text(
+                        "Zone $zoneId",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                    )
+                }
                 if (target.verifiedNearby) {
                     Text(
                         "Field-verified nearby",
