@@ -125,9 +125,13 @@ internal class LidarRasterizer(
             (width.toDouble() * height.toDouble() * TARGET_SAMPLES_PER_CELL).coerceAtLeast(1.0),
         )
         sampleStride = ceil(estimatedPointsInFocus / usefulSampleBudget).toInt().coerceAtLeast(1)
-        // Footprint coverage needs denser sampling than elevation statistics, but processing every
-        // return caused multi-minute waits on ordinary 100–200 MiB LAZ files.
-        coverageStride = sampleStride.coerceAtMost(MAX_COVERAGE_STRIDE)
+        // Overview: every return at least marks coverage so first paint has no skip-holes.
+        // Focused refine keeps a capped coverage stride for speed on huge crops.
+        coverageStride = if (isOverview) {
+            1
+        } else {
+            sampleStride.coerceAtMost(MAX_COVERAGE_STRIDE)
+        }
         // Only bail early on absurd multi-hundred-million-point tiles after a dense scan budget.
         maxDecodedPoints = if (isOverview) {
             minOf(
@@ -317,6 +321,13 @@ internal class LidarRasterizer(
         }
 
         val totalCells = width * height
+        // Overview first view: draw the continuous filled surface (no skip-holes).
+        // Focused refine keeps the coverage mask so empty margins stay transparent.
+        val validData = if (isOverview) {
+            BooleanArray(totalCells) { bareEarth[it].isFinite() }
+        } else {
+            coverageMask
+        }
         val groundSamplesPerCell = if (populatedCells > 0) {
             val groundSamples = if (appliedMode == GroundSurfaceMode.SOURCE_CLASSIFIED) {
                 groundPointsBinned
@@ -403,7 +414,7 @@ internal class LidarRasterizer(
         }
 
         return DemGenerator.LasLoadResult(
-            grid = ElevationGrid(width, height, bareEarth, canopy, cellSize, coverageMask),
+            grid = ElevationGrid(width, height, bareEarth, canopy, cellSize, validData),
             totalPointsRead = pointsDecoded.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
             groundPointsUsed = if (appliedMode == GroundSurfaceMode.SOURCE_CLASSIFIED) {
                 groundPointsBinned
