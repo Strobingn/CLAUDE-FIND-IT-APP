@@ -82,7 +82,12 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import android.media.AudioManager
+import android.media.ToneGenerator
+import androidx.compose.runtime.DisposableEffect
 import com.example.analysis.HomesiteProbabilityMap
+import com.example.data.field.FieldNavigation
+import com.example.data.field.ProximityAlerter
 import com.example.analysis.TerrainCellInspector
 import com.example.analysis.TerrainViewshedAnalyzer
 import com.example.analysis.TerrainElevationProfiler
@@ -325,6 +330,30 @@ private fun TerrainTab(
     var homesiteOverlayEnabled by rememberSaveable { mutableStateOf(false) }
     val homesiteCells = remember { mutableStateOf<FloatArray?>(null) }
     val homesiteStatus = remember { mutableStateOf<String?>(null) }
+    val navigationTarget by viewModel.navigationTarget.collectAsStateWithLifecycle()
+    val deviceLatitude by viewModel.deviceLatitude.collectAsStateWithLifecycle()
+    val deviceLongitude by viewModel.deviceLongitude.collectAsStateWithLifecycle()
+    val navigationSolution = remember(navigationTarget, deviceLatitude, deviceLongitude) {
+        val target = navigationTarget ?: return@remember null
+        val lat = deviceLatitude ?: return@remember null
+        val lon = deviceLongitude ?: return@remember null
+        FieldNavigation.solve(lat, lon, target.latitude, target.longitude)
+    }
+    // Arrival ping: one tone on entering 15 m, re-arms only after leaving past 30 m.
+    val proximityAlerter = remember { ProximityAlerter() }
+    val toneGenerator = remember {
+        runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 90) }.getOrNull()
+    }
+    DisposableEffect(Unit) {
+        onDispose { toneGenerator?.release() }
+    }
+    LaunchedEffect(navigationTarget) { proximityAlerter.reset() }
+    LaunchedEffect(navigationSolution) {
+        val distance = navigationSolution?.distanceMeters ?: return@LaunchedEffect
+        if (proximityAlerter.offer(distance.toFloat())) {
+            toneGenerator?.startTone(ToneGenerator.TONE_PROP_ACK, 500)
+        }
+    }
     val viewshedComputing = remember { mutableStateOf(false) }
     var isSelectingProfile by rememberSaveable { mutableStateOf(false) }
     var profileStartPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
@@ -712,6 +741,52 @@ private fun TerrainTab(
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.SemiBold,
             )
+        }
+
+        navigationTarget?.let { target ->
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                tonalElevation = 4.dp,
+                shadowElevation = 6.dp,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 82.dp)
+                    .widthIn(max = 340.dp)
+                    .testTag("target_navigation_hud"),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        "Navigating: ${target.label}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        navigationSolution?.let {
+                            "${MeasurementFormat.length(it.distanceMeters.toFloat())} · " +
+                                "${FieldNavigation.compassDirection(it.targetBearingDegrees)} " +
+                                "${it.targetBearingDegrees.toInt()}°"
+                        } ?: "Waiting for GPS fix - turn on GPS below",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    if (proximityAlerter.isInside) {
+                        Text(
+                            "Within arrival range - start swinging",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    TextButton(
+                        onClick = { viewModel.setNavigationTarget(null) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) { Text("Clear", style = MaterialTheme.typography.labelSmall) }
+                }
+            }
         }
 
         if (homesiteOverlayEnabled) {

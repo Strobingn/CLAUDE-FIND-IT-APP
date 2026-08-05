@@ -19,6 +19,7 @@ import com.example.data.basemap.OfflineBasemapRegion
 import com.example.data.basemap.OfflineBasemapStatus
 import com.example.data.AppTerrainStorage
 import com.example.data.field.BoundaryVertex
+import com.example.data.field.NavigationTarget
 import com.example.data.field.BreadcrumbPoint
 import com.example.data.field.BreadcrumbTrack
 import com.example.data.field.ExcavationLogEntry
@@ -247,6 +248,14 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     val breadcrumbTracks: StateFlow<List<BreadcrumbTrack>> = _breadcrumbTracks.asStateFlow()
     private val _plannedRoute = MutableStateFlow<OptimizedFieldRoute?>(null)
     val plannedRoute: StateFlow<OptimizedFieldRoute?> = _plannedRoute.asStateFlow()
+
+    /** AI target the user is walking to; shown as a live HUD on the Terrain tab. */
+    private val _navigationTarget = MutableStateFlow<NavigationTarget?>(null)
+    val navigationTarget: StateFlow<NavigationTarget?> = _navigationTarget.asStateFlow()
+
+    fun setNavigationTarget(target: NavigationTarget?) {
+        _navigationTarget.value = target
+    }
     fun setPlannedRoute(route: OptimizedFieldRoute?) {
         _plannedRoute.value = route
     }

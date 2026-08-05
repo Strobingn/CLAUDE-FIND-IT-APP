@@ -47,6 +47,7 @@ import com.example.data.DetectionSource
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
 import com.example.data.TargetSignal
+import com.example.data.field.NavigationTarget
 import com.example.data.local.SavedTarget
 import com.example.data.local.buildAnalyzedDatasetEntity
 import com.example.data.local.parseTargets
@@ -517,6 +518,21 @@ fun AiAnalysisWorkspace(
                         items(historicTargets.sortedByDescending { it.score }, key = { "${it.type}-${it.xPercent}-${it.yPercent}" }) { target ->
                             TargetDetailCard(
                                 target = target,
+                                onNavigate = GeoSpatialLibrary.gridToGeographic(
+                                    target.xPercent,
+                                    target.yPercent,
+                                    metadata,
+                                )?.let { (lat, lon) ->
+                                    {
+                                        viewModel.setNavigationTarget(
+                                            NavigationTarget(
+                                                label = "${target.type.label} · ${(target.score * 100f).toInt()}%",
+                                                latitude = lat,
+                                                longitude = lon,
+                                            ),
+                                        )
+                                    }
+                                },
                                 onLog = {
                                     saveMarker(
                                         target.xPercent,
@@ -635,7 +651,11 @@ internal fun stableCloudTargetId(terrainKey: String, target: CloudMapTarget): Lo
 }
 
 @Composable
-private fun TargetDetailCard(target: MetalDetectingTarget, onLog: () -> Unit) {
+private fun TargetDetailCard(
+    target: MetalDetectingTarget,
+    onLog: () -> Unit,
+    onNavigate: (() -> Unit)? = null,
+) {
     val logged = rememberSaveable(target.type, target.xPercent, target.yPercent) { mutableStateOf(false) }
     Surface(
         shape = RoundedCornerShape(10.dp),
@@ -656,6 +676,15 @@ private fun TargetDetailCard(target: MetalDetectingTarget, onLog: () -> Unit) {
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
+                }
+                if (onNavigate != null) {
+                    OutlinedButton(
+                        onClick = onNavigate,
+                        modifier = Modifier.height(CompactButtonHeight),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text("Nav", style = MaterialTheme.typography.labelSmall)
+                    }
                 }
                 OutlinedButton(
                     onClick = {
