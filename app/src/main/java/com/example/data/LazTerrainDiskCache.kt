@@ -195,6 +195,12 @@ class LazTerrainDiskCache(
             append('|').append(sanitized.rasterResolution)
             append('|').append(sanitized.smoothingRadius)
             append('|').append(sanitized.focusBounds)
+            append('|').append(
+                sanitized.allowedClasses
+                    ?.sorted()
+                    ?.joinToString(",")
+                    .orEmpty(),
+            )
         }
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(key.toByteArray(Charsets.UTF_8))

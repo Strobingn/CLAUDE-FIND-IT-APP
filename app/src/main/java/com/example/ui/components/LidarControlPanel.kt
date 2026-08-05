@@ -34,13 +34,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 import kotlin.math.roundToInt
+import com.example.data.GroundSurfaceMode
+import com.example.data.PointClassPreset
 import com.example.geospatial.MeasurementFormat
 import com.example.geospatial.SolarPosition
 
 @Composable
 fun LidarControlPanel(
-    selectedSiteIndex: Int,
-    onSiteSelected: (Int) -> Unit,
     sunAzimuth: Float,
     onSunAzimuthChanged: (Float) -> Unit,
     sunAltitude: Float,
@@ -76,8 +76,17 @@ fun LidarControlPanel(
     basemapOpacity: Float = 0.6f,
     onBasemapOpacityChanged: (Float) -> Unit = {},
     basemapStatus: String? = null,
+    groundMode: GroundSurfaceMode = GroundSurfaceMode.SOURCE_CLASSIFIED,
+    onGroundModeChanged: (GroundSurfaceMode) -> Unit = {},
+    classPreset: PointClassPreset = PointClassPreset.ALL,
+    onClassPresetChanged: (PointClassPreset) -> Unit = {},
+    isReloadingSurface: Boolean = false,
+    surfaceReloadMessage: String? = null,
+    /** True when a LAZ/LiDAR source is open and dual-surface / class filter can re-decode. */
+    canChangeSurface: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    val surfaceControlsEnabled = canChangeSurface && !isReloadingSurface
     Column(
         modifier = modifier.testTag("lidar_control_panel"),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -89,17 +98,87 @@ fun LidarControlPanel(
             style = MaterialTheme.typography.bodyMedium,
         )
 
-        ControlCard("Terrain source") {
-            OptionGrid(
-                options = listOf(
-                    Option(0, "Homestead", "Cellar, well and wall"),
-                    Option(1, "Fort", "Ramparts and trench"),
-                    Option(2, "Villa", "Foundations and road"),
-                    Option(3, "Imported", "Load it from Import"),
-                ),
-                selected = selectedSiteIndex,
-                onSelected = onSiteSelected,
-                tagPrefix = "site_tab",
+        ControlCard("Surface source (dual surface)") {
+            Text(
+                "Choose how returns become the elevation surface. Re-decodes the open LiDAR; " +
+                    "this is terrain geometry, not metal detection.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = groundMode == GroundSurfaceMode.SOURCE_CLASSIFIED,
+                    onClick = { onGroundModeChanged(GroundSurfaceMode.SOURCE_CLASSIFIED) },
+                    enabled = surfaceControlsEnabled,
+                    label = { Text("Classified ground") },
+                    modifier = Modifier.testTag("surface_mode_classified"),
+                )
+                FilterChip(
+                    selected = groundMode == GroundSurfaceMode.AUTO_LOWEST,
+                    onClick = { onGroundModeChanged(GroundSurfaceMode.AUTO_LOWEST) },
+                    enabled = surfaceControlsEnabled,
+                    label = { Text("Auto lowest") },
+                    modifier = Modifier.testTag("surface_mode_auto"),
+                )
+                FilterChip(
+                    selected = groundMode == GroundSurfaceMode.SURFACE_MODEL,
+                    onClick = { onGroundModeChanged(GroundSurfaceMode.SURFACE_MODEL) },
+                    enabled = surfaceControlsEnabled,
+                    label = { Text("Highest-return DSM") },
+                    modifier = Modifier.testTag("surface_mode_dsm"),
+                )
+            }
+            if (!canChangeSurface) {
+                Text(
+                    "Open a LAZ/LAS source to change dual surface mode.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (isReloadingSurface) {
+                Text(
+                    "Reloading surface…",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+
+        ControlCard("Class filter") {
+            Text(
+                "Filters ASPRS classes in the next re-decode. LiDAR is not metal.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                PointClassPreset.entries.forEach { preset ->
+                    FilterChip(
+                        selected = classPreset == preset,
+                        onClick = { onClassPresetChanged(preset) },
+                        enabled = surfaceControlsEnabled,
+                        label = { Text(preset.label) },
+                        modifier = Modifier.testTag("class_filter_${preset.name}"),
+                    )
+                }
+            }
+        }
+
+        surfaceReloadMessage?.let { message ->
+            Text(
+                message,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.testTag("surface_reload_message"),
             )
         }
 

@@ -66,6 +66,7 @@ import com.example.data.TerrainPerformanceSession
 import com.example.data.local.AppDatabase
 import com.example.data.local.toDomain
 import com.example.data.local.toEntity
+import com.example.data.mosaic.MosaicOpenUx
 import com.example.data.mosaic.MosaicProject
 import com.example.data.mosaic.MosaicProjectResume
 import com.example.data.mosaic.MosaicProjectState
@@ -1234,35 +1235,39 @@ fun NysLazTilePicker(
                 Text("Saved multi-tile projects", style = MaterialTheme.typography.titleMedium)
                 savedMosaicProjects.forEach { project ->
                     val availableSourceCount = project.tiles.count { storedProjectFile(it) != null }
-                    val canResume = MosaicProjectResume.canResume(project, availableSourceCount)
+                    val openCard = MosaicOpenUx.cardFor(
+                        project = project,
+                        readyTileCount = availableSourceCount,
+                        totalTiles = project.tiles.size,
+                    )
                     OutlinedButton(
                         onClick = { startOrResumeMosaicProject(project) },
-                        enabled = downloadJob?.isActive != true,
-                        modifier = Modifier.fillMaxWidth().height(
-                            if (project.areaSelectionDescription.isNullOrBlank()) 76.dp else 96.dp,
-                        ),
+                        enabled = downloadJob?.isActive != true && openCard.isPrimaryActionEnabled,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(
+                                if (openCard.detailLines.size <= 1) 76.dp else 108.dp,
+                            )
+                            .testTag("mosaic_open_card_${project.id}"),
                     ) {
                         Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                            Text(project.displayName, maxLines = 1)
+                            Text(openCard.title, maxLines = 1)
                             Text(
-                                "${availableSourceCount}/${project.tiles.size} source tile${if (project.tiles.size == 1) "" else "s"} ready · " +
-                                    if (canResume) "tap to resume" else "tap to reopen",
+                                openCard.statusLine,
                                 style = MaterialTheme.typography.bodySmall,
                             )
-                            if (canResume && !project.recoveryMessage.isNullOrBlank()) {
+                            openCard.detailLines.take(2).forEach { line ->
                                 Text(
-                                    project.recoveryMessage,
+                                    line,
                                     style = MaterialTheme.typography.bodySmall,
                                     maxLines = 1,
                                 )
                             }
-                            if (!project.areaSelectionDescription.isNullOrBlank()) {
-                                Text(
-                                    project.areaSelectionDescription,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                )
-                            }
+                            Text(
+                                openCard.actionLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
                         }
                     }
                     TextButton(

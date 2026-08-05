@@ -80,7 +80,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.example.data.LogSignalResult
+import com.example.data.SurfaceZSample
 import com.example.data.TargetSignal
 import com.example.data.VerificationOutcome
 import com.example.data.field.BoundaryVertex
@@ -101,6 +101,7 @@ import com.example.geospatial.trueToMagneticBearingDegrees
 import com.example.data.export.buildCsv
 import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
+import com.example.data.export.buildGpxRoute
 import com.example.data.export.buildKml
 import com.example.data.export.buildKmz
 import com.example.data.export.buildShapefileZip
@@ -153,10 +154,8 @@ fun TargetLoggerPanel(
     onDeleteSurveyBoundary: (SurveyBoundary) -> Unit = {},
     onMarkSyncSent: (Long) -> Unit = {},
     onClearSyncQueue: () -> Unit = {},
-    /** Ordered signal ids from AI NAV_TARGET tags (shared AiTerrainViewModel). */
-    pendingNavTargetIds: List<Long> = emptyList(),
-    /** Clears pending NAV_TARGET (and other structured tags) after navigation starts. */
-    onConsumeNavTargets: () -> Unit = {},
+    /** Relative bare-earth surface context under a find — never dig/metal depth. */
+    surfaceZForSignal: (TargetSignal) -> SurfaceZSample? = { null },
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -791,6 +790,11 @@ fun TargetLoggerPanel(
         EditSignalDialog(
             signal = signal,
             excavationLogs = excavationLogs.filter { it.targetId == signal.id },
+            surfaceZSample = if (signal.latitude != null || signal.gpsLatitude != null) {
+                surfaceZForSignal(signal)
+            } else {
+                null
+            },
             onDismiss = { editingSignal = null },
             onSave = {
                 onUpdateSignal(it)
@@ -1192,6 +1196,7 @@ private fun SignalCard(
 private fun EditSignalDialog(
     signal: TargetSignal,
     excavationLogs: List<ExcavationLogEntry> = emptyList(),
+    surfaceZSample: SurfaceZSample? = null,
     onDismiss: () -> Unit,
     onSave: (TargetSignal) -> Unit,
     onSaveExcavationLog: (ExcavationLogEntry) -> Unit = {},
@@ -1319,6 +1324,51 @@ private fun EditSignalDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("${signal.metalType.label} at grid ${signal.gridX.toInt()}, ${signal.gridY.toInt()}")
+                surfaceZSample?.let { sample ->
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("find_surface_z_card"),
+                    ) {
+                        Column(
+                            Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                "Surface Z (relative)",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            val delta = sample.relativeToLocalMeanMeters
+                            val deltaLabel = when {
+                                !sample.cellValid -> "No valid bare-earth cell here"
+                                delta >= 0f -> String.format(Locale.US, "+%.2f m vs local mean", delta)
+                                else -> String.format(Locale.US, "%.2f m vs local mean", delta)
+                            }
+                            Text(deltaLabel, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Local slope: ${sample.localSlopeBucket}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                            sample.surfaceElevationMeters?.let { elev ->
+                                Text(
+                                    String.format(Locale.US, "Surface elev ≈ %.1f m (if georeferenced)", elev),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                            }
+                            Text(
+                                sample.disclaimer,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = notes,
                     onValueChange = { notes = it.take(500) },
@@ -1948,6 +1998,20 @@ private fun PlannedRouteCard(
     onDismiss: () -> Unit,
 ) {
     val signalsById = remember(signals) { signals.associateBy { it.id.toString() } }
+    val context = LocalContext.current
+    var routeExportStatus by remember { mutableStateOf<String?>(null) }
+    val routeExporter = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/gpx+xml"),
+    ) { uri ->
+        routeExportStatus = when {
+            uri == null -> "Route export canceled"
+            else -> runCatching {
+                context.contentResolver.openOutputStream(uri)?.use {
+                    it.write(buildGpxRoute(route).toByteArray(Charsets.UTF_8))
+                } ?: error("Could not open the selected destination")
+            }.fold({ "Route GPX saved" }, { "Route export failed: ${it.localizedMessage}" })
+        }
+    }
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
         modifier = Modifier.fillMaxWidth(),
@@ -1960,7 +2024,14 @@ private fun PlannedRouteCard(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f),
                 )
+                TextButton(
+                    onClick = { routeExporter.launch("find-it-route.gpx") },
+                    modifier = Modifier.testTag("route_export_gpx_button"),
+                ) { Text("Export GPX") }
                 TextButton(onClick = onDismiss) { Text("Clear") }
+            }
+            routeExportStatus?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
             Text(
                 "Shortest walking order across ${route.waypoints.size} stops · " +

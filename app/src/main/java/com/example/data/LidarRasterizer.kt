@@ -55,8 +55,11 @@ internal class LidarRasterizer(
 ) {
     private val options = options.sanitized()
     private val isOverview = this.options.focusBounds == null
-    /** Classification / ground-class tracking is only needed for source-classified ground mode. */
-    private val tracksSourceClasses = this.options.groundMode == GroundSurfaceMode.SOURCE_CLASSIFIED
+    /** Optional ASPRS class allow-list; null means no extra class filter. */
+    private val allowedClasses: Set<Int>? = this.options.allowedClasses
+    /** Classification / ground-class tracking for source-classified mode or explicit class filters. */
+    private val tracksSourceClasses =
+        this.options.groundMode == GroundSurfaceMode.SOURCE_CLASSIFIED || allowedClasses != null
     private val sourceRangeX = (maxX - minX).takeIf { it.isFinite() && it > 0.0 } ?: 1.0
     private val sourceRangeY = (maxY - minY).takeIf { it.isFinite() && it > 0.0 } ?: 1.0
     private val focus = this.options.focusBounds
@@ -185,6 +188,14 @@ internal class LidarRasterizer(
         val wasSampleReturn = sampleCountdown == 0
         advance()
         if (!z.isFinite()) return true
+        val normalizedClass = classification.coerceIn(0, 255)
+        // Explicit class filter: skip elevation/coverage for non-matching returns entirely.
+        if (allowedClasses != null && normalizedClass !in allowedClasses) {
+            if (tracksSourceClasses) {
+                classHistogram[normalizedClass]++
+            }
+            return true
+        }
         val index = cellIndex(x, y) ?: return true
 
         coverageCount[index]++
@@ -212,7 +223,6 @@ internal class LidarRasterizer(
         // Skip classification work when the requested surface does not use ASPRS ground classes.
         // On multi-hundred-million-point tiles this avoids histogram + class tests for every sample.
         if (tracksSourceClasses) {
-            val normalizedClass = classification.coerceIn(0, 255)
             classHistogram[normalizedClass]++
             // Class 2 is Ground. Class 8 was historically Model Key-Point; modern files use the key-point flag.
             val isSourceGround = normalizedClass == 2 || normalizedClass == 8 ||

@@ -64,6 +64,8 @@ data class LidarImportOptions(
     val smoothingRadius: Int = 0,
     /** Optional normalized viewport to re-rasterize from the original point cloud. */
     val focusBounds: NormalizedRasterBounds? = null,
+    /** When non-null and non-empty, only these ASPRS classes contribute to elevation binning. */
+    val allowedClasses: Set<Int>? = null,
 ) {
     fun sanitized(): LidarImportOptions {
         val sanitizedFocus = focusBounds?.sanitized()
@@ -73,10 +75,13 @@ data class LidarImportOptions(
         } else {
             MAX_REFINED_RESOLUTION
         }
+        // Empty set is treated as "no filter" so UI "clear" never leaves a silent full-block.
+        val classes = allowedClasses?.takeIf { it.isNotEmpty() }
         return copy(
             rasterResolution = rasterResolution.coerceIn(MIN_RASTER_RESOLUTION, maxResolution),
             smoothingRadius = smoothingRadius.coerceIn(0, 4),
             focusBounds = sanitizedFocus,
+            allowedClasses = classes,
         )
     }
 

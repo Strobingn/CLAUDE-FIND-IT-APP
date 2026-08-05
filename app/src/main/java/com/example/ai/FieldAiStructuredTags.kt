@@ -1,9 +1,12 @@
 package com.example.ai
 
+import com.example.data.MetalType
+import com.example.data.VerificationOutcome
+
 /**
  * Parsers for optional machine lines emitted by pack-3 Field AI features
  * ([NAV_TARGET], [VIZ_MODE], [METAL_TYPE], [OUTCOME], [STATUS], [NOTES]).
- * Style matches [FieldAiCopilot.parseLightingRecommendation] (case-insensitive, flexible spacing).
+ * Style matches Field AI copilot lighting recommendations (case-insensitive, flexible spacing).
  */
 object FieldAiStructuredTags {
 
@@ -70,5 +73,70 @@ object FieldAiStructuredTags {
             ?.trim()
             .orEmpty()
         return cleaned.takeIf { it.isNotBlank() }
+    }
+}
+
+/** Structured find-catalog suggestions parsed from free-form AI text. */
+data class FieldAiFindSuggestions(
+    val metalTypeLabel: String?,
+    val outcomeLabel: String?,
+    val statusLabel: String?,
+    val notes: String?,
+)
+
+/** Collect METAL_TYPE / OUTCOME / STATUS / NOTES tags from [text]. */
+fun parseFindSuggestions(text: String): FieldAiFindSuggestions = FieldAiFindSuggestions(
+    metalTypeLabel = FieldAiStructuredTags.parseMetalTypeSuggestion(text),
+    outcomeLabel = FieldAiStructuredTags.parseOutcomeSuggestion(text),
+    statusLabel = FieldAiStructuredTags.parseStatusSuggestion(text),
+    notes = FieldAiStructuredTags.parseNotesSuggestion(text),
+)
+
+/** Map free-text metal suggestion to [MetalType] when possible; null if unknown. */
+fun resolveMetalType(label: String): MetalType? {
+    val trimmed = label.trim()
+    if (trimmed.isEmpty()) return null
+
+    MetalType.entries.firstOrNull { it.label.equals(trimmed, ignoreCase = true) }?.let { return it }
+
+    val normalized = trimmed.lowercase()
+    return when {
+        normalized.contains("gold") -> MetalType.GOLD
+        normalized.contains("silver") -> MetalType.SILVER
+        normalized.contains("bronze") || normalized.contains("copper") -> MetalType.BRONZE
+        normalized.contains("iron") ||
+            normalized.contains("nail") ||
+            normalized.contains("spike") -> MetalType.IRON
+        normalized.contains("ai target") ||
+            normalized.contains("magnetic") ||
+            normalized.contains("anomaly") -> MetalType.MAGNETIC_ANOMALY
+        normalized.contains("manual") -> MetalType.MANUAL_MARKER
+        else -> null
+    }
+}
+
+/** Map free-text outcome to [VerificationOutcome] when possible; null if unknown. */
+fun resolveOutcome(label: String): VerificationOutcome? {
+    val trimmed = label.trim()
+    if (trimmed.isEmpty()) return null
+
+    VerificationOutcome.entries
+        .firstOrNull { it.label.equals(trimmed, ignoreCase = true) }
+        ?.let { return it }
+
+    val normalized = trimmed.lowercase()
+    return when {
+        normalized.contains("false positive") ||
+            normalized.contains("rejected") ||
+            normalized.contains("reject") -> VerificationOutcome.REJECTED_FALSE_POSITIVE
+        normalized.contains("inconclusive") ||
+            normalized.contains("uncertain") -> VerificationOutcome.INCONCLUSIVE
+        normalized.contains("confirmed") ||
+            normalized.contains("real feature") ||
+            normalized == "confirm" ||
+            normalized.startsWith("confirm ") -> VerificationOutcome.CONFIRMED_FEATURE
+        normalized.contains("unverified") ||
+            normalized.contains("not yet") -> VerificationOutcome.UNVERIFIED
+        else -> null
     }
 }

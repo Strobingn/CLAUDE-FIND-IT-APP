@@ -2,7 +2,7 @@
 
 **Status:** Active  
 **Repository:** <https://github.com/Strobingn/Find-It-App>  
-**Last reviewed:** 2026-08-03
+**Last reviewed:** 2026-08-05
 
 ## Product objective
 
@@ -649,8 +649,26 @@ A feature is complete only when:
 - It provides measurable field or research value.
 - Its status is updated in this roadmap.
 
+## Site Package Pack (KIMIV6, 2026-08)
+
+Ten fully wired product features on branch `KIMIV6`. See [docs/FEATURES_SITE_PACKAGE_PACK.md](docs/FEATURES_SITE_PACKAGE_PACK.md).
+
+| # | Feature | Status |
+|---|---------|--------|
+| 1 | Dual surface (ground / auto-lowest / first-return DSM) | **Done** |
+| 2 | Clip refine to survey boundary | **Done** |
+| 3 | Relative surface Z under georeferenced find | **Done** |
+| 4 | ASPRS class filter presets | **Done** |
+| 5 | Multi-tile mosaic open UX | **Done** |
+| 6 | Clipped LAS 1.2 surface-sample write | **Done** |
+| 7 | Site package export (zip) | **Done** |
+| 8 | Styled field PDF (via project / site package) | **Done** |
+| 9 | Boundary proximity GPS alert | **Done** |
+| 10 | Confirm-write AI metal/outcome tags | **Done** |
+
 ## Decision log
 
+- **2026-08-05:** Site Package Pack ships dual-surface re-decode, boundary clip refine, relative Z-under-find, class filters, mosaic open UX, clipped LAS, site package zip, field PDF enhancements, boundary GPS alerts, and AI confirm-write — never auto-write finds; LiDAR still never claims metal or dig depth.
 - **2026-07-26:** Historic human-activity detection remains the central product objective.
 - **2026-07-26:** Performance work must preserve working features and analytical accuracy.
 - **2026-07-26:** Tile-to-area selection must be reachable across terrain-import workflows.
