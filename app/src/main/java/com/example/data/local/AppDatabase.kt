@@ -21,7 +21,7 @@ import androidx.room.migration.Migration
         HistoricMapEntity::class,
         HistoricMapFeatureEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -287,6 +287,13 @@ abstract class AppDatabase : RoomDatabase() {
                 )
             }
         }
+        private val migration15To16 = object : Migration(15, 16) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE target_signals ADD COLUMN starred INTEGER NOT NULL DEFAULT 0",
+                )
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -309,6 +316,7 @@ abstract class AppDatabase : RoomDatabase() {
                     migration12To13,
                     migration13To14,
                     migration14To15,
+                    migration15To16,
                 )
                 .build()
                 .also { instance = it }

@@ -35,6 +35,7 @@ import com.example.data.LazTerrainMemoryCache
 import com.example.data.LazSpatialIndex
 import com.example.data.LazTerrainReader
 import com.example.data.LidarImportOptions
+import com.example.data.LogSignalResult
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
 import com.example.data.TerrainDecodeCoordinator
@@ -302,6 +303,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     // Zoom threshold for auto-rendering
     private val AUTO_RENDER_ZOOM_THRESHOLD = 2.5f
     private val MAX_MARKER_GPS_AGE_MILLIS = 60_000L
+    /** Warn before logging another marker within this distance of an existing find. */
+    private val PROXIMITY_WARN_METERS = 8.0
 
     init {
         observeSurveyLayers(_activeTerrainKey.value)
@@ -1311,19 +1314,50 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _currentLon.value = coordinate?.second
     }
 
-    fun logCurrentSignal() {
+    fun logCurrentSignal(forceDespiteProximity: Boolean = false): LogSignalResult {
         val markerTime = System.currentTimeMillis()
         val hasFreshDeviceFix = _deviceLocationRecordedAtMillis.value?.let { fixTime ->
             markerTime - fixTime in 0L..MAX_MARKER_GPS_AGE_MILLIS
         } == true
+        val lat = _currentLat.value
+        val lon = _currentLon.value
+        val nearby = if (lat != null && lon != null) {
+            _loggedSignals.value
+                .mapNotNull { existing ->
+                    val eLat = existing.latitude ?: return@mapNotNull null
+                    val eLon = existing.longitude ?: return@mapNotNull null
+                    val d = com.example.data.field.FieldNavigation.distanceMeters(lat, lon, eLat, eLon)
+                    if (d <= PROXIMITY_WARN_METERS) existing to d else null
+                }
+                .minByOrNull { it.second }
+        } else {
+            null
+        }
+        if (nearby != null && !forceDespiteProximity) {
+            return LogSignalResult(
+                signal = TargetSignal(
+                    gridX = _sweepX.value,
+                    gridY = _sweepY.value,
+                    metalType = MetalType.MANUAL_MARKER,
+                    signalStrength = 0f,
+                    latitude = lat,
+                    longitude = lon,
+                    source = DetectionSource.MANUAL,
+                    timestamp = markerTime,
+                    terrainKey = _activeTerrainKey.value,
+                ),
+                nearbyFind = nearby.first,
+                nearbyDistanceMeters = nearby.second,
+            )
+        }
         val signal = TargetSignal(
             gridX = _sweepX.value,
             gridY = _sweepY.value,
             metalType = MetalType.MANUAL_MARKER,
             signalStrength = 0f,
             depthCm = null,
-            latitude = _currentLat.value,
-            longitude = _currentLon.value,
+            latitude = lat,
+            longitude = lon,
             gpsLatitude = _deviceLatitude.value.takeIf { hasFreshDeviceFix },
             gpsLongitude = _deviceLongitude.value.takeIf { hasFreshDeviceFix },
             gpsAccuracyMeters = _deviceLocationAccuracyMeters.value
@@ -1341,6 +1375,24 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 payload = "terrain=${signal.terrainKey};status=${signal.status}",
             )
         }
+        return LogSignalResult(signal = signal)
+    }
+
+    fun toggleStarred(signal: TargetSignal) {
+        updateLoggedSignal(signal.copy(starred = !signal.starred))
+    }
+
+    /** Nearest georeferenced find to the current device GPS, if any. */
+    fun nearestFindFromDevice(): Pair<TargetSignal, Double>? {
+        val lat = _deviceLatitude.value ?: return null
+        val lon = _deviceLongitude.value ?: return null
+        return _loggedSignals.value
+            .mapNotNull { signal ->
+                val sLat = signal.latitude ?: return@mapNotNull null
+                val sLon = signal.longitude ?: return@mapNotNull null
+                signal to com.example.data.field.FieldNavigation.distanceMeters(lat, lon, sLat, sLon)
+            }
+            .minByOrNull { it.second }
     }
 
     fun updateLoggedSignal(signal: TargetSignal) {

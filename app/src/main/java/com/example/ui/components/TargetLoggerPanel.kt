@@ -42,6 +42,8 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -78,6 +80,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.data.LogSignalResult
 import com.example.data.TargetSignal
 import com.example.data.VerificationOutcome
 import com.example.data.field.BoundaryVertex
@@ -132,9 +135,11 @@ fun TargetLoggerPanel(
     onStartBreadcrumb: () -> Unit,
     onPauseBreadcrumb: () -> Unit,
     onClearBreadcrumbs: () -> Unit,
-    onLogSignal: () -> Unit,
+    /** Logs current sweep; pass force=true after user confirms a proximity warning. */
+    onLogSignal: (forceDespiteProximity: Boolean) -> LogSignalResult,
     onDeleteSignal: (TargetSignal) -> Unit,
     onUpdateSignal: (TargetSignal) -> Unit,
+    onToggleStarred: (TargetSignal) -> Unit = {},
     onClearAll: () -> Unit,
     onBuildProjectExport: suspend () -> ProjectExportFiles,
     onBuildQgisBundle: suspend () -> ByteArray? = { null },
@@ -169,7 +174,19 @@ fun TargetLoggerPanel(
     var pendingProjectBytes by remember { mutableStateOf(ByteArray(0)) }
     var navigationTarget by remember { mutableStateOf<TargetSignal?>(null) }
     var plannedRoute by remember { mutableStateOf<OptimizedFieldRoute?>(null) }
+    var pendingProximity by remember { mutableStateOf<LogSignalResult?>(null) }
+    var logMessage by remember { mutableStateOf<String?>(null) }
     val routeStopCount = loggedSignals.count { it.latitude != null && it.longitude != null }
+
+    fun attemptLog(force: Boolean = false) {
+        val result = onLogSignal(force)
+        if (result.nearbyFind != null && !force) {
+            pendingProximity = result
+            return
+        }
+        pendingProximity = null
+        logMessage = "Logged ${result.signal.metalType.label}"
+    }
     val planRoute: () -> Unit = {
         scope.launch {
             val waypoints = loggedSignals.mapNotNull { signal ->
@@ -368,12 +385,19 @@ fun TargetLoggerPanel(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Button(
-                    onClick = onLogSignal,
+                    onClick = { attemptLog(force = false) },
                     modifier = Modifier.fillMaxWidth().height(52.dp).testTag("log_signal_button"),
                 ) {
                     Icon(Icons.Default.AddLocationAlt, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("Log current position")
+                }
+                logMessage?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
                 OutlinedButton(
                     onClick = { showProjectExport = true },
@@ -500,13 +524,48 @@ fun TargetLoggerPanel(
 
         var outcomeFilter by remember { mutableStateOf<VerificationOutcome?>(null) }
         var typeFilter by remember { mutableStateOf<String?>(null) }
+        var starredOnly by remember { mutableStateOf(false) }
+        var sortMode by remember { mutableStateOf(FindSortMode.STARRED_FIRST) }
         val typeOptions = remember(loggedSignals) {
             loggedSignals.map { it.metalType.label }.distinct().sorted()
         }
-        val filteredSignals = remember(loggedSignals, outcomeFilter, typeFilter) {
-            loggedSignals.filter { signal ->
+        val filteredSignals = remember(
+            loggedSignals,
+            outcomeFilter,
+            typeFilter,
+            starredOnly,
+            sortMode,
+            deviceLatitude,
+            deviceLongitude,
+        ) {
+            val filtered = loggedSignals.filter { signal ->
                 (outcomeFilter == null || signal.outcome == outcomeFilter) &&
-                    (typeFilter == null || signal.metalType.label == typeFilter)
+                    (typeFilter == null || signal.metalType.label == typeFilter) &&
+                    (!starredOnly || signal.starred)
+            }
+            when (sortMode) {
+                FindSortMode.STARRED_FIRST -> filtered.sortedWith(
+                    compareByDescending<TargetSignal> { it.starred }
+                        .thenByDescending { it.timestamp },
+                )
+                FindSortMode.NEWEST -> filtered.sortedByDescending { it.timestamp }
+                FindSortMode.NEAREST -> {
+                    val lat = deviceLatitude
+                    val lon = deviceLongitude
+                    if (lat == null || lon == null) {
+                        filtered.sortedByDescending { it.timestamp }
+                    } else {
+                        filtered.sortedBy { signal ->
+                            val sLat = signal.latitude
+                            val sLon = signal.longitude
+                            if (sLat == null || sLon == null) {
+                                Double.MAX_VALUE
+                            } else {
+                                FieldNavigation.distanceMeters(lat, lon, sLat, sLon)
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -517,6 +576,19 @@ fun TargetLoggerPanel(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 FilterChip(
+                    selected = starredOnly,
+                    onClick = { starredOnly = !starredOnly },
+                    label = { Text("Starred only") },
+                    leadingIcon = {
+                        Icon(
+                            if (starredOnly) Icons.Default.Star else Icons.Default.StarBorder,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    },
+                    modifier = Modifier.testTag("filter_starred_only"),
+                )
+                FilterChip(
                     selected = outcomeFilter == null,
                     onClick = { outcomeFilter = null },
                     label = { Text("All outcomes") },
@@ -526,6 +598,24 @@ fun TargetLoggerPanel(
                         selected = outcomeFilter == outcome,
                         onClick = { outcomeFilter = if (outcomeFilter == outcome) null else outcome },
                         label = { Text(outcome.label) },
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    "Sort",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.align(Alignment.CenterVertically),
+                )
+                FindSortMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = sortMode == mode,
+                        onClick = { sortMode = mode },
+                        label = { Text(mode.label) },
+                        modifier = Modifier.testTag("sort_${mode.name}"),
                     )
                 }
             }
@@ -599,6 +689,7 @@ fun TargetLoggerPanel(
                             onDeleteSignal(signal)
                         },
                         onNavigate = { navigationTarget = signal },
+                        onToggleStarred = { onToggleStarred(signal) },
                         digLogCount = excavationLogs.count { it.targetId == signal.id },
                         onOpenDigLogs = { digLogSignal = signal },
                         onShare = {
@@ -621,6 +712,38 @@ fun TargetLoggerPanel(
                 }
             }
         }
+    }
+
+    pendingProximity?.let { pending ->
+        val nearby = pending.nearbyFind
+        val distance = pending.nearbyDistanceMeters
+        AlertDialog(
+            onDismissRequest = { pendingProximity = null },
+            title = { Text("Nearby find") },
+            text = {
+                Text(
+                    if (nearby != null && distance != null) {
+                        "Another find (${nearby.metalType.label}) is only " +
+                            "${MeasurementFormat.length(distance)} away. Log this position anyway?"
+                    } else {
+                        "Another find is nearby. Log this position anyway?"
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { attemptLog(force = true) },
+                    modifier = Modifier.testTag("proximity_log_anyway"),
+                ) {
+                    Text("Log anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingProximity = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 
     editingSignal?.let { signal ->
@@ -892,12 +1015,19 @@ private fun FieldNavigationCard(
 private fun formatNavigationDistance(meters: Double): String =
     "${MeasurementFormat.length(meters)} away"
 
+private enum class FindSortMode(val label: String) {
+    STARRED_FIRST("Starred first"),
+    NEWEST("Newest"),
+    NEAREST("Nearest"),
+}
+
 @Composable
 private fun SignalCard(
     signal: TargetSignal,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onNavigate: () -> Unit,
+    onToggleStarred: () -> Unit = {},
     digLogCount: Int = 0,
     onOpenDigLogs: () -> Unit = {},
     onShare: () -> Unit = {},
@@ -917,7 +1047,18 @@ private fun SignalCard(
             )
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(signal.metalType.label, fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(signal.metalType.label, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f, fill = false))
+                    if (signal.starred) {
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = "Starred",
+                            tint = Color(0xFFFFC107),
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
                 val depth = signal.depthCm?.let { "$it cm" } ?: "depth unknown"
                 Text(
                     "Grid ${signal.gridX.toInt()}, ${signal.gridY.toInt()} · $depth · ${signal.signalStrength.toInt()}%",
@@ -972,6 +1113,16 @@ private fun SignalCard(
                         color = MaterialTheme.colorScheme.secondary,
                     )
                 }
+            }
+            IconButton(
+                onClick = onToggleStarred,
+                modifier = Modifier.size(48.dp).testTag("toggle_star_find"),
+            ) {
+                Icon(
+                    if (signal.starred) Icons.Default.Star else Icons.Default.StarBorder,
+                    contentDescription = if (signal.starred) "Unstar find" else "Star find",
+                    tint = if (signal.starred) Color(0xFFFFC107) else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             IconButton(onClick = onEdit, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Default.Edit, contentDescription = "Edit find")

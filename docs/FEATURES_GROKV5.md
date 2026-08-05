@@ -16,3 +16,5 @@ Field-focused additions for Find-It. Tracked on branch `GROKV5` only until merge
 | 10 | **Find type filter** — chips by metal/feature type label | Done |
 
 Also: refine-job cancellation + explicit `putMemory`/`putDisk` cache API (performance).
+
+See also pack 2: [FEATURES_PACK2.md](FEATURES_PACK2.md) (starred finds, proximity warning, nearest-find HUD, sort modes, copyable coordinates).

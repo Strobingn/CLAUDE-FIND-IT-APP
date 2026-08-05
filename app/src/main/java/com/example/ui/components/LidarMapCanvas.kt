@@ -12,13 +12,21 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -45,13 +53,16 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.Locale
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ai.TerrainVisionSession
 import com.example.analysis.TerrainViewshed
@@ -657,7 +668,20 @@ fun LidarMapCanvas(
             }
 
             if (showCoordinateHud) {
-                Column(
+                val clipboard = LocalClipboardManager.current
+                var copiedFlash by remember { mutableStateOf(false) }
+                LaunchedEffect(copiedFlash) {
+                    if (copiedFlash) {
+                        kotlinx.coroutines.delay(1400)
+                        copiedFlash = false
+                    }
+                }
+                val decimalText = if (currentLat != null && currentLon != null) {
+                    String.format(Locale.US, "%.6f, %.6f", currentLat, currentLon)
+                } else {
+                    "grid ${sweepX.toInt()}, ${sweepY.toInt()}"
+                }
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
@@ -665,34 +689,65 @@ fun LidarMapCanvas(
                         .clip(RoundedCornerShape(8.dp))
                         .background(Color(0xE60D0E12))
                         .border(0.5.dp, Color(0xFF2C2E35), RoundedCornerShape(8.dp))
-                        .padding(8.dp),
+                        .clickable {
+                            clipboard.setText(AnnotatedString(decimalText))
+                            copiedFlash = true
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                        .testTag("coordinate_hud"),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (currentLat != null && currentLon != null) {
-                        val utm = runCatching { GeoSpatialLibrary.geographicToUtm(currentLat, currentLon) }.getOrNull()
-                        Text(
-                            text = "${GeoSpatialLibrary.formatDms(currentLat, true)}  ·  ${GeoSpatialLibrary.formatDms(currentLon, false)}",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        if (utm != null) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        if (currentLat != null && currentLon != null) {
+                            val utm = runCatching {
+                                GeoSpatialLibrary.geographicToUtm(currentLat, currentLon)
+                            }.getOrNull()
                             Text(
-                                text = "UTM ${utm.zone}${utm.hemisphere}  E ${"%.1f".format(utm.easting)} m  N ${"%.1f".format(utm.northing)} m",
-                                color = Color(0xFF64B5F6),
-                                fontSize = 10.sp,
+                                text = "${GeoSpatialLibrary.formatDms(currentLat, true)}  ·  ${GeoSpatialLibrary.formatDms(currentLon, false)}",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                text = decimalText,
+                                color = Color(0xFFB0BEC5),
+                                fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
                             )
+                            if (utm != null) {
+                                Text(
+                                    text = "UTM ${utm.zone}${utm.hemisphere}  E ${"%.1f".format(utm.easting)} m  N ${"%.1f".format(utm.northing)} m",
+                                    color = Color(0xFF64B5F6),
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = "Local grid ${sweepX.toInt()}, ${sweepY.toInt()} · Geographic CRS unavailable",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                            )
                         }
-                    } else {
-                        Text(
-                            text = "Local grid ${sweepX.toInt()}, ${sweepY.toInt()} · Geographic CRS unavailable",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                        )
+                        if (copiedFlash) {
+                            Text(
+                                text = "Copied",
+                                color = Color(0xFF81C784),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
                     }
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Default.ContentCopy,
+                        contentDescription = "Copy coordinates",
+                        tint = Color(0xFF90A4AE),
+                        modifier = Modifier.size(18.dp),
+                    )
                 }
             }
             if (showBasemap && basemapImageBitmap != null) {
