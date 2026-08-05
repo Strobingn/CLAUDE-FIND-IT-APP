@@ -201,6 +201,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private var renderJob: Job? = null
     private var siteGenerationJob: Job? = null
     private var renderGeneration = 0L
+    private var refineJob: Job? = null
+    private var refineGeneration = 0L
     /** Identity of the last hillshade params that produced [_hillshadeBitmap]. */
     private var lastHillshadeCacheKey: HillshadeCacheKey? = null
     private var lastPreviewMaxSide: Int = Int.MAX_VALUE
@@ -1000,7 +1002,6 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun refineTerrain(viewport: NormalizedRasterBounds, rasterResolution: Int = 1_024) {
         val source = terrainSource ?: return
-        if (_isRefiningTerrain.value) return
         val requestedViewport = viewport.sanitized()
         if (currentSourceBounds == NormalizedRasterBounds.Full && isEffectivelyWholeTerrain(requestedViewport)) {
             // The overview is already a raster of the entire original point cloud. Reopening a
@@ -1025,6 +1026,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             ?.path
             ?.let(::File)
             ?.takeIf(File::isFile)
+        // Cancel any in-flight refine so a newer zoom/refine request wins (stale-work prevention).
+        val generation = ++refineGeneration
+        refineJob?.cancel()
         _isRefiningTerrain.value = true
         _terrainRefinementProgress.value = TerrainRefinementProgress(
             fraction = 0.03f,
@@ -1032,7 +1036,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         )
         _terrainDetailMessage.value =
             "Opening ${options.rasterResolution} px source detail for this viewport…"
-        viewModelScope.launch(Dispatchers.IO) {
+        refineJob = viewModelScope.launch(Dispatchers.IO) {
             var decodedNow = false
             var loadedFromCache = false
             val result = runCatching {
@@ -1119,7 +1123,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
             }.getOrNull()
+            if (generation != refineGeneration) return@launch
             withContext(Dispatchers.Main.immediate) {
+                if (generation != refineGeneration) return@withContext
                 if (result == null) {
                     _terrainRefinementProgress.value = TerrainRefinementProgress(
                         fraction = 1f,
@@ -1147,7 +1153,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                     _isRefiningTerrain.value = false
                 }
             }
-            if (decodedNow && result != null && sourceFile != null) {
+            if (decodedNow && result != null && sourceFile != null && generation == refineGeneration) {
                 // The image is already visible. Persist the result afterward so disk I/O does not
                 // extend the user-visible Refine wait.
                 runCatching { refinementDiskCache.put(sourceFile, options, result) }
@@ -1182,6 +1188,76 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _sunAzimuth.value = ((value % 360f) + 360f) % 360f
         scheduleRender()
     }
+
+    /**
+     * Field lighting presets for hillshade inspection.
+     * NW (315°) and SE (135°) emphasize opposite sides of earthworks; Overhead flattens shadows.
+     */
+    fun applyLightingPreset(preset: LightingPreset) {
+        when (preset) {
+            LightingPreset.NORTHWEST -> {
+                _sunAzimuth.value = 315f
+                _sunAltitude.value = 35f
+            }
+            LightingPreset.SOUTHEAST -> {
+                _sunAzimuth.value = 135f
+                _sunAltitude.value = 35f
+            }
+            LightingPreset.OVERHEAD -> {
+                _sunAzimuth.value = 180f
+                _sunAltitude.value = 75f
+            }
+        }
+        scheduleRender(immediate = true)
+    }
+
+    /** High-contrast field night palette (palette index 2). */
+    fun setFieldNightContrast(enabled: Boolean) {
+        _paletteType.value = if (enabled) 2 else 1
+        scheduleRender(immediate = true)
+    }
+
+    fun listRecentProjects(): List<com.example.data.RecentTerrainProject> =
+        terrainSessionStore.listRecent()
+
+    fun saveViewportBookmark(name: String = "Bookmark") {
+        val prefs = getApplication<Application>().getSharedPreferences("viewport_bookmarks", 0)
+        val key = _activeTerrainKey.value
+        prefs.edit()
+            .putFloat("$key.zoom", _viewportZoom.value)
+            .putFloat("$key.panX", _viewportPanX.value)
+            .putFloat("$key.panY", _viewportPanY.value)
+            .putString("$key.name", name)
+            .apply()
+    }
+
+    fun restoreViewportBookmark(): Boolean {
+        val prefs = getApplication<Application>().getSharedPreferences("viewport_bookmarks", 0)
+        val key = _activeTerrainKey.value
+        if (!prefs.contains("$key.zoom")) return false
+        _viewportZoom.value = prefs.getFloat("$key.zoom", 1f)
+        _viewportPanX.value = prefs.getFloat("$key.panX", 0f)
+        _viewportPanY.value = prefs.getFloat("$key.panY", 0f)
+        _viewportRestoreToken.value = _viewportRestoreToken.value + 1
+        return true
+    }
+
+    /** Centers the sweep crosshair on the average grid position of georeferenced finds. */
+    fun frameFinds(): Boolean {
+        val points = _loggedSignals.value.mapNotNull { signal ->
+            if (signal.latitude != null && signal.longitude != null) {
+                signal.gridX to signal.gridY
+            } else {
+                null
+            }
+        }
+        if (points.isEmpty()) return false
+        val cx = points.map { it.first }.average().toFloat()
+        val cy = points.map { it.second }.average().toFloat()
+        setSweepPosition(cx, cy)
+        return true
+    }
+
     fun updateSunAltitude(value: Float) { _sunAltitude.value = value.coerceIn(5f, 85f); scheduleRender() }
     fun updateVegetationFilter(value: Float) { _vegetationFilter.value = value.coerceIn(0f, 1f); scheduleRender() }
     fun updatePalette(value: Int) { _paletteType.value = value.coerceIn(0, 2); scheduleRender() }
@@ -1854,6 +1930,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         renderJob?.cancel()
+        refineJob?.cancel()
         locationJob?.cancel()
         compassHeadingJob?.cancel()
         basemapJob?.cancel()
@@ -1866,6 +1943,12 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         saveSettingsJob?.cancel()
         super.onCleared()
     }
+}
+
+enum class LightingPreset {
+    NORTHWEST,
+    SOUTHEAST,
+    OVERHEAD,
 }
 
 /** Memo key for skipping redundant hillshade work when sliders settle on the same values. */

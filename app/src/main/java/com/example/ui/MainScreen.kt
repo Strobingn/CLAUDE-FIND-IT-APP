@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ShowChart
+import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CenterFocusStrong
@@ -597,6 +598,24 @@ private fun TerrainTab(
                 ) { viewModel.updateVisualizationMode(0) }
                 TerrainQuickAction("Light -", Icons.AutoMirrored.Filled.RotateLeft) { viewModel.rotateSunAzimuth(-45f) }
                 TerrainQuickAction("Light +", Icons.AutoMirrored.Filled.RotateRight) { viewModel.rotateSunAzimuth(45f) }
+                TerrainQuickAction("NW light", Icons.Default.WbSunny) {
+                    viewModel.applyLightingPreset(LightingPreset.NORTHWEST)
+                }
+                TerrainQuickAction("SE light", Icons.Default.WbSunny) {
+                    viewModel.applyLightingPreset(LightingPreset.SOUTHEAST)
+                }
+                TerrainQuickAction("Overhead", Icons.Default.WbSunny) {
+                    viewModel.applyLightingPreset(LightingPreset.OVERHEAD)
+                }
+                TerrainQuickAction(
+                    if (palette == 2) "Night on" else "Night",
+                    Icons.Default.Tune,
+                    active = palette == 2,
+                ) { viewModel.setFieldNightContrast(palette != 2) }
+                TerrainQuickAction("Mark GPS", Icons.Default.AddLocationAlt) { viewModel.logCurrentSignal() }
+                TerrainQuickAction("Frame finds", Icons.Default.Flag) { viewModel.frameFinds() }
+                TerrainQuickAction("Save view", Icons.Default.Save) { viewModel.saveViewportBookmark() }
+                TerrainQuickAction("Load view", Icons.Default.CenterFocusStrong) { viewModel.restoreViewportBookmark() }
                 TerrainQuickAction("Fit", Icons.Default.CenterFocusStrong) { localViewportResetKey.intValue++ }
                 TerrainQuickAction(
                     if (isExportingScreenshot) "Saving…" else "Screenshot",

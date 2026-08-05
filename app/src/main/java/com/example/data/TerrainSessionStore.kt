@@ -16,6 +16,15 @@ data class LastOpenedTerrain(
     val file: File get() = File(absolutePath)
 }
 
+data class RecentTerrainProject(
+    val absolutePath: String,
+    val displayName: String,
+    val openedAtMillis: Long,
+) {
+    val file: File get() = File(absolutePath)
+    val exists: Boolean get() = file.isFile
+}
+
 class TerrainSessionStore(context: Context) {
     private val prefs = context.applicationContext
         .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -29,6 +38,7 @@ class TerrainSessionStore(context: Context) {
             .putInt(KEY_RESOLUTION, source.options.rasterResolution)
             .putInt(KEY_SMOOTHING, source.options.smoothingRadius)
             .apply()
+        pushRecent(path, source.displayName)
     }
 
     fun saveFile(file: File, displayName: String, options: LidarImportOptions) {
@@ -39,6 +49,49 @@ class TerrainSessionStore(context: Context) {
             .putInt(KEY_RESOLUTION, options.rasterResolution)
             .putInt(KEY_SMOOTHING, options.smoothingRadius)
             .apply()
+        pushRecent(file.absolutePath, displayName)
+    }
+
+    /** Most-recent-first projects that still exist on disk (max [MAX_RECENT]). */
+    fun listRecent(): List<RecentTerrainProject> {
+        val raw = prefs.getString(KEY_RECENT, null).orEmpty()
+        if (raw.isBlank()) {
+            // Seed from last-opened when history is empty.
+            load()?.let { last ->
+                return listOf(
+                    RecentTerrainProject(last.absolutePath, last.displayName, System.currentTimeMillis()),
+                )
+            }
+            return emptyList()
+        }
+        return raw.split('\n')
+            .mapNotNull { line ->
+                val parts = line.split('\t')
+                if (parts.size < 3) return@mapNotNull null
+                val path = parts[0]
+                val name = parts[1]
+                val opened = parts[2].toLongOrNull() ?: return@mapNotNull null
+                RecentTerrainProject(path, name, opened).takeIf { it.exists }
+            }
+            .distinctBy { it.absolutePath }
+            .take(MAX_RECENT)
+    }
+
+    private fun pushRecent(path: String, displayName: String) {
+        val now = System.currentTimeMillis()
+        val previous = prefs.getString(KEY_RECENT, null).orEmpty()
+            .split('\n')
+            .mapNotNull { line ->
+                val parts = line.split('\t')
+                if (parts.size < 3) return@mapNotNull null
+                val p = parts[0]
+                if (p == path) return@mapNotNull null
+                val opened = parts[2].toLongOrNull() ?: return@mapNotNull null
+                RecentTerrainProject(p, parts[1], opened)
+            }
+        val next = (listOf(RecentTerrainProject(path, displayName, now)) + previous).take(MAX_RECENT)
+        val encoded = next.joinToString("\n") { "${it.absolutePath}\t${it.displayName}\t${it.openedAtMillis}" }
+        prefs.edit().putString(KEY_RECENT, encoded).apply()
     }
 
     fun load(): LastOpenedTerrain? {
@@ -92,6 +145,8 @@ class TerrainSessionStore(context: Context) {
         const val KEY_GROUND_MODE = "last_ground_mode"
         const val KEY_RESOLUTION = "last_resolution"
         const val KEY_SMOOTHING = "last_smoothing"
+        const val KEY_RECENT = "recent_projects_v1"
+        const val MAX_RECENT = 8
     }
 }
 

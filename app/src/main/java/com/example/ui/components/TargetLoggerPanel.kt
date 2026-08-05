@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -409,6 +411,13 @@ fun TargetLoggerPanel(
         }
 
         val recordedBreadcrumbPoints = breadcrumbTracks.sumOf { it.points.size }
+        val trailDistanceMeters = remember(breadcrumbTracks) {
+            breadcrumbTracks.sumOf { track ->
+                track.points.zipWithNext { a, b ->
+                    FieldNavigation.distanceMeters(a.latitude, a.longitude, b.latitude, b.longitude)
+                }.sum()
+            }
+        }
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
             modifier = Modifier.fillMaxWidth(),
@@ -418,7 +427,11 @@ fun TargetLoggerPanel(
                 Text(
                     when {
                         isBreadcrumbRecording -> "Recording ${recordedBreadcrumbPoints} GPS fix${if (recordedBreadcrumbPoints == 1) "" else "es"}. Trails are saved with this terrain project."
-                        recordedBreadcrumbPoints > 0 -> "$recordedBreadcrumbPoints saved GPS fix${if (recordedBreadcrumbPoints == 1) "" else "es"} across ${breadcrumbTracks.size} trail${if (breadcrumbTracks.size == 1) "" else "s"}."
+                        recordedBreadcrumbPoints > 0 -> {
+                            val dist = MeasurementFormat.length(trailDistanceMeters.toFloat())
+                            "$recordedBreadcrumbPoints GPS fix${if (recordedBreadcrumbPoints == 1) "" else "es"} · " +
+                                "${breadcrumbTracks.size} trail${if (breadcrumbTracks.size == 1) "" else "s"} · $dist walked"
+                        }
                         else -> "Record a project-scoped path for offline field checking. GPS jitter is filtered automatically."
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -485,6 +498,58 @@ fun TargetLoggerPanel(
             )
         }
 
+        var outcomeFilter by remember { mutableStateOf<VerificationOutcome?>(null) }
+        var typeFilter by remember { mutableStateOf<String?>(null) }
+        val typeOptions = remember(loggedSignals) {
+            loggedSignals.map { it.metalType.label }.distinct().sorted()
+        }
+        val filteredSignals = remember(loggedSignals, outcomeFilter, typeFilter) {
+            loggedSignals.filter { signal ->
+                (outcomeFilter == null || signal.outcome == outcomeFilter) &&
+                    (typeFilter == null || signal.metalType.label == typeFilter)
+            }
+        }
+
+        if (loggedSignals.isNotEmpty()) {
+            Text("Filter finds", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                FilterChip(
+                    selected = outcomeFilter == null,
+                    onClick = { outcomeFilter = null },
+                    label = { Text("All outcomes") },
+                )
+                VerificationOutcome.entries.forEach { outcome ->
+                    FilterChip(
+                        selected = outcomeFilter == outcome,
+                        onClick = { outcomeFilter = if (outcomeFilter == outcome) null else outcome },
+                        label = { Text(outcome.label) },
+                    )
+                }
+            }
+            if (typeOptions.size > 1) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FilterChip(
+                        selected = typeFilter == null,
+                        onClick = { typeFilter = null },
+                        label = { Text("All types") },
+                    )
+                    typeOptions.forEach { label ->
+                        FilterChip(
+                            selected = typeFilter == label,
+                            onClick = { typeFilter = if (typeFilter == label) null else label },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+            }
+        }
+
         if (loggedSignals.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
@@ -495,6 +560,13 @@ fun TargetLoggerPanel(
                 )
             }
         } else {
+            if (filteredSignals.isEmpty()) {
+                Text(
+                    "No finds match the current filters.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = { confirmClear = true },
@@ -518,7 +590,7 @@ fun TargetLoggerPanel(
                 modifier = Modifier.fillMaxWidth().weight(1f).testTag("logged_signals_list"),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(loggedSignals, key = { it.id }) { signal ->
+                items(filteredSignals, key = { it.id }) { signal ->
                     SignalCard(
                         signal = signal,
                         onEdit = { editingSignal = signal },
@@ -529,6 +601,22 @@ fun TargetLoggerPanel(
                         onNavigate = { navigationTarget = signal },
                         digLogCount = excavationLogs.count { it.targetId == signal.id },
                         onOpenDigLogs = { digLogSignal = signal },
+                        onShare = {
+                            val lat = signal.latitude
+                            val lon = signal.longitude
+                            val text = if (lat != null && lon != null) {
+                                "${signal.metalType.label}\n${String.format(Locale.US, "%.6f, %.6f", lat, lon)}\n" +
+                                    "Grid ${signal.gridX.toInt()}, ${signal.gridY.toInt()}"
+                            } else {
+                                "${signal.metalType.label}\nLocal grid ${signal.gridX.toInt()}, ${signal.gridY.toInt()}\n(no geographic coordinates)"
+                            }
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, text)
+                                putExtra(Intent.EXTRA_SUBJECT, "Find-It target")
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share coordinates"))
+                        },
                     )
                 }
             }
@@ -812,6 +900,7 @@ private fun SignalCard(
     onNavigate: () -> Unit,
     digLogCount: Int = 0,
     onOpenDigLogs: () -> Unit = {},
+    onShare: () -> Unit = {},
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
@@ -896,6 +985,9 @@ private fun SignalCard(
             }
             IconButton(onClick = onOpenDigLogs, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Default.Construction, contentDescription = "Dig logs")
+            }
+            IconButton(onClick = onShare, modifier = Modifier.size(48.dp).testTag("share_find_coords")) {
+                Icon(Icons.Default.Share, contentDescription = "Share coordinates")
             }
             IconButton(onClick = onDelete, modifier = Modifier.size(48.dp)) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete find")

@@ -113,7 +113,9 @@ class TerrainDecodeCoordinator(
                 val decoded = decodeFile(file, displayName, sanitized)
                     ?: error("Could not decode ${file.name}")
                 currentCoroutineContext().ensureActive()
-                cache.put(file, sanitized, decoded)
+                // Memory first so reopen is instant; disk write is generation-gated off-thread.
+                cache.putMemory(file, sanitized, decoded)
+                cache.putDisk(file, sanitized, decoded)
                 LazSpatialIndex.ensureBuiltAsync(file)
 
                 currentCoroutineContext().ensureActive()
@@ -127,16 +129,14 @@ class TerrainDecodeCoordinator(
                             isPreview = false,
                         ),
                     )
+                    // One standard-tile final mesh (upgrade from fast-tile intermediate).
+                    val scene = buildGpuScene(decoded.grid, fastTiles = false)
+                    TerrainDecodeOutcome(decoded, LazTerrainCache.Hit.MISS, scene)
                 } else {
                     onStage("Preparing detailed GPU terrain…")
+                    val scene = buildGpuScene(decoded.grid, fastTiles = false)
+                    TerrainDecodeOutcome(decoded, LazTerrainCache.Hit.MISS, scene)
                 }
-                // Final return: one standard-tile GPU scene (no second build if onPreview was null).
-                val scene = if (onPreview != null) {
-                    buildGpuScene(decoded.grid, fastTiles = false)
-                } else {
-                    buildGpuScene(decoded.grid, fastTiles = false)
-                }
-                TerrainDecodeOutcome(decoded, LazTerrainCache.Hit.MISS, scene)
             }
         } finally {
             if (!lock.isLocked) locks.remove(fullKey, lock)
@@ -151,7 +151,8 @@ class TerrainDecodeCoordinator(
     ): Deferred<TerrainDecodeOutcome?> = maintenanceScope.async {
         try {
             val decoded = decodeFile(file, displayName, options) ?: return@async null
-            cache.put(file, options, decoded)
+            cache.putMemory(file, options, decoded)
+            cache.putDisk(file, options, decoded)
             val scene = buildGpuScene(decoded.grid, fastTiles = false)
             TerrainDecodeOutcome(
                 terrain = decoded,
@@ -269,8 +270,12 @@ class TerrainDecodeCoordinator(
     companion object {
         internal const val GPU_PREVIEW_MAX_DIMENSION = 1_024
         internal const val GPU_PREVIEW_TILE_SIZE = 128
-        /** Larger tiles = fewer GPU batches for intermediate first-paint publish. */
-        internal const val GPU_FAST_TILE_SIZE = 256
+        /**
+         * Larger tiles = fewer GPU batches for intermediate first-paint publish.
+         * Spatial tiles use inclusive ends → about (tileSize+1)² vertices; 256 blew past the
+         * ushort 65,535 limit and crashed LAS/LAZ open with bare "Failed requirement".
+         */
+        internal const val GPU_FAST_TILE_SIZE = 192
     }
 }
 
