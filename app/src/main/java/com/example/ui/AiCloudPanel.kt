@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ai.FieldAiFeature
 import com.example.ai.FieldAiSessionPack
+import com.example.ai.FieldOfflineAssist
 import com.example.ai.GeminiApiClient
 import com.example.ai.OpenAiApiClient
 import com.example.ai.TerrainAiProvider
@@ -96,6 +97,8 @@ fun AiCloudPanel(
     fieldSessionPack: FieldAiSessionPack? = null,
     onApplyLighting: (azimuth: Float, altitude: Float) -> Unit = { _, _ -> },
     onApplyVizMode: (Int) -> Unit = {},
+    /** User-confirmed NAV_TARGET ids; Finds tab / TargetLoggerPanel consume via shared VM state. */
+    onApplyNavTargets: (List<Long>) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -400,6 +403,70 @@ fun AiCloudPanel(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val pack = baseFieldPack
+                            val draft = FieldOfflineAssist.returnTripDraft(
+                                signals = pack.signals,
+                                excavationLogs = pack.excavationLogs,
+                                deviceLat = pack.deviceLatitude,
+                                deviceLon = pack.deviceLongitude,
+                            )
+                            assistantViewModel.postOfflineAssist(
+                                title = "Offline return-trip",
+                                body = draft,
+                                terrainKey = terrainKey,
+                            )
+                        },
+                        enabled = !state.isSending,
+                        modifier = Modifier
+                            .height(CompactButtonHeight)
+                            .testTag("ai_offline_return_trip"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text("Offline return-trip", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val pack = baseFieldPack
+                            val candidates = pack.localResult?.candidates
+                                ?: state.localResult?.candidates
+                                ?: emptyList()
+                            val (text, gaps) = FieldOfflineAssist.coverageGapTargets(
+                                candidates = candidates,
+                                breadcrumbTracks = pack.breadcrumbTracks,
+                                signals = pack.signals,
+                            )
+                            val mapTargets = gaps.map { gap ->
+                                CloudMapTarget(
+                                    xPercent = gap.xPercent,
+                                    yPercent = gap.yPercent,
+                                    label = gap.label,
+                                    confidence = gap.confidence,
+                                )
+                            }
+                            assistantViewModel.postOfflineAssist(
+                                title = "Offline coverage gaps",
+                                body = text,
+                                mapTargets = mapTargets,
+                                terrainKey = terrainKey,
+                            )
+                        },
+                        enabled = !state.isSending,
+                        modifier = Modifier
+                            .height(CompactButtonHeight)
+                            .testTag("ai_offline_coverage_gaps"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text("Offline gaps", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
                 val pendingAz = state.pendingLightingAzimuth
                 val pendingAlt = state.pendingLightingAltitude
                 if (pendingAz != null && pendingAlt != null) {
@@ -434,6 +501,27 @@ fun AiCloudPanel(
                     ) {
                         Text(
                             "Apply viz mode ($mode)",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+                if (state.pendingNavTargetIds.isNotEmpty()) {
+                    val navIds = state.pendingNavTargetIds
+                    FilledTonalButton(
+                        onClick = {
+                            // Confirm apply: callback for local hooks; keep ids on state so the
+                            // Finds tab (shared AiTerrainViewModel) can set navigationTarget and
+                            // clear via onConsumeNavTargets. Clearing here would drop the handoff.
+                            onApplyNavTargets(navIds)
+                        },
+                        enabled = !state.isSending,
+                        modifier = Modifier
+                            .height(CompactButtonHeight)
+                            .testTag("ai_apply_nav"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text(
+                            "Navigate AI stops (${navIds.size})",
                             style = MaterialTheme.typography.labelSmall,
                         )
                     }

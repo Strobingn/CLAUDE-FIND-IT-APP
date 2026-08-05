@@ -27,28 +27,21 @@ See [docs/FEATURES_AI_PACK3.md](docs/FEATURES_AI_PACK3.md)
 | 9 | Partner handoff brief | Done |
 | 10 | Risk & ethics coach | Done |
 
-### Supporting UX (from “next 10”) — partial Done
-| # | Feature | Status |
-|---|---------|--------|
-| 17 | AI pack filter All / Pack 1 / Pack 3 | Done |
-| 13 | Share last AI reply | Done |
-| 14 | Apply `VIZ_MODE=` from AI | Done |
-| 16 | Dismiss card for metal/outcome/status suggestions | Done (confirm write = later) |
-
----
-
-## Next 10 product features (remaining)
+### Product pack (Next 10) — Done
+See [docs/FEATURES_PRODUCT_PACK.md](docs/FEATURES_PRODUCT_PACK.md)
 
 | # | Feature | Track | Status |
 |---|---------|--------|--------|
-| 11 | Ground quality scorecard on open LAZ | LAZ | Todo |
-| 12 | CRS / units / density banner | LAZ | Todo |
-| 15 | Apply `NAV_TARGET id=` to navigate | AI → Finds | Todo |
-| 18 | Offline local draft for return-trip | AI offline | Todo |
-| 19 | Coverage gap map targets from trail density | Field | Todo |
-| 20 | Ethics disclaimer sticky on dig actions | Field | Todo |
-
-(Items 13, 14, 16, 17 shipped above.)
+| 11 | Ground quality scorecard on open LAZ | LAZ | Done |
+| 12 | CRS / units / density banner | LAZ | Done |
+| 13 | Share last AI reply | AI UX | Done |
+| 14 | Apply `VIZ_MODE=` from AI | AI UX | Done |
+| 15 | Apply `NAV_TARGET id=` to navigate | AI → Finds | Done |
+| 16 | Dismiss card for metal/outcome/status suggestions | AI UX | Done (confirm write = later) |
+| 17 | AI pack filter All / Pack 1 / Pack 3 | AI UX | Done |
+| 18 | Offline local draft for return-trip | AI offline | Done |
+| 19 | Coverage gap map targets from trail density | Field | Done |
+| 20 | Ethics disclaimer sticky on dig actions | Field | Done |
 
 ---
 

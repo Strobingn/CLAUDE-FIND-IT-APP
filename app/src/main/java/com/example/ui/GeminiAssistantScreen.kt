@@ -664,6 +664,48 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /**
+     * Posts an offline (no network) assist result into the conversation.
+     * Optional [mapTargets] replace [AiTerrainState.cloudMapTargets] when non-empty.
+     * Parses `NAV_TARGET id=` lines into [AiTerrainState.pendingNavTargetIds].
+     */
+    fun postOfflineAssist(
+        title: String,
+        body: String,
+        mapTargets: List<CloudMapTarget> = emptyList(),
+        terrainKey: String? = null,
+    ) {
+        val userMessage = AiMessage(
+            id = ids.getAndIncrement(),
+            role = AiMessageRole.USER,
+            text = title,
+        )
+        val modelMessage = AiMessage(
+            id = ids.getAndIncrement(),
+            role = AiMessageRole.MODEL,
+            text = body,
+            provider = null,
+        )
+        val navTargetIds = FieldAiCopilot.parseNavTargetIds(body)
+        _state.value = _state.value.copy(
+            messages = _state.value.messages + userMessage + modelMessage,
+            cloudError = null,
+            cloudStage = "Offline assist ready",
+            cloudMapTargets = if (mapTargets.isNotEmpty()) mapTargets else _state.value.cloudMapTargets,
+            cloudTerrainKey = if (mapTargets.isNotEmpty()) {
+                terrainKey ?: _state.value.cloudTerrainKey
+            } else {
+                _state.value.cloudTerrainKey
+            },
+            pendingNavTargetIds = if (navTargetIds.isNotEmpty()) {
+                navTargetIds
+            } else {
+                _state.value.pendingNavTargetIds
+            },
+            lastFieldFeature = title,
+        ).withProviderStatus()
+    }
+
+    /**
      * Runs one of the twenty Field AI specialist features through [TerrainAiGateway]
      * (OpenAI primary / Gemini fallback). Structured tags are stored on state for UI apply:
      * lighting ([AiTerrainState.pendingLightingAzimuth] / [AiTerrainState.pendingLightingAltitude]),

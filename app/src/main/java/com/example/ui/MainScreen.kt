@@ -83,6 +83,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.R
 import com.example.analysis.HomesiteProbabilityMap
 import com.example.analysis.TerrainCellInspector
@@ -269,6 +270,7 @@ private fun TerrainTab(
     val surveyLayers by viewModel.surveyLayers.collectAsStateWithLifecycle()
     val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
     val elevationGrid by viewModel.elevationGrid.collectAsStateWithLifecycle()
+    val terrainQuality by viewModel.terrainQuality.collectAsStateWithLifecycle()
     val azimuth by viewModel.sunAzimuth.collectAsStateWithLifecycle()
     val altitude by viewModel.sunAltitude.collectAsStateWithLifecycle()
     val vegetation by viewModel.vegetationFilter.collectAsStateWithLifecycle()
@@ -829,26 +831,36 @@ private fun TerrainTab(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .navigationBarsPadding()
-                .padding(start = 10.dp, end = 10.dp, bottom = 8.dp),
+                .padding(start = 10.dp, end = 10.dp, bottom = 8.dp)
+                .testTag("terrain_quality_banner"),
         ) {
             val widthMeters = (elevationGrid.width - 1).coerceAtLeast(1) * elevationGrid.cellSizeMeters
             val heightMeters = (elevationGrid.height - 1).coerceAtLeast(1) * elevationGrid.cellSizeMeters
-            Text(
-                String.format(
-                    Locale.US,
-                    "%d×%d · %s×%s · %s/cell · %s",
-                    elevationGrid.width,
-                    elevationGrid.height,
-                    MeasurementFormat.length(widthMeters),
-                    MeasurementFormat.length(heightMeters),
-                    MeasurementFormat.resolution(elevationGrid.cellSizeMeters),
-                    if (showControls.value) "tools open" else "pinch / drag",
-                ),
-                modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.SemiBold,
-            )
+            Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp)) {
+                Text(
+                    String.format(
+                        Locale.US,
+                        "%d×%d · %s×%s · %s/cell · %s",
+                        elevationGrid.width,
+                        elevationGrid.height,
+                        MeasurementFormat.length(widthMeters),
+                        MeasurementFormat.length(heightMeters),
+                        MeasurementFormat.resolution(elevationGrid.cellSizeMeters),
+                        if (showControls.value) "tools open" else "pinch / drag",
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                terrainQuality?.let { quality ->
+                    Text(
+                        quality.bannerLine(),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
 
         if (homesiteOverlayEnabled) {
@@ -1019,6 +1031,9 @@ private fun CompareTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
 
 @Composable
 private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
+    // Same key as AiAnalysisWorkspace so NAV_TARGET apply crosses AI → Finds.
+    val assistantViewModel: AiTerrainViewModel = viewModel(key = "ai_analysis_workspace")
+    val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
     val signals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val sweepX by viewModel.sweepX.collectAsStateWithLifecycle()
     val sweepY by viewModel.sweepY.collectAsStateWithLifecycle()
@@ -1086,6 +1101,8 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         onDeleteSurveyBoundary = viewModel::deleteSurveyBoundary,
         onMarkSyncSent = viewModel::markPendingSyncSent,
         onClearSyncQueue = viewModel::clearPendingSyncQueue,
+        pendingNavTargetIds = aiState.pendingNavTargetIds,
+        onConsumeNavTargets = { assistantViewModel.clearPendingStructuredActions() },
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }

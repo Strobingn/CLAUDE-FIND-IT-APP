@@ -661,6 +661,9 @@ fun AiAnalysisWorkspace(
             onApplyVizMode = { mode ->
                 viewModel.updateVisualizationMode(mode)
             },
+            // NAV_TARGET ids stay on assistant state; FindsTab shares this VM key and
+            // TargetLoggerPanel sets navigationTarget then clearPendingStructuredActions().
+            onApplyNavTargets = { /* handoff via shared pendingNavTargetIds */ },
             // weight(1f), not fillMaxSize(): this Column isn't scrollable, and the header +
             // map above already claim their own height, so a fillMaxSize() panel here asked
             // for the full column height on top of that and pushed its own internal chat

@@ -686,19 +686,21 @@ See [docs/FEATURES_AI_PACK.md](docs/FEATURES_AI_PACK.md).
 UI: AI tab → **AI field pack** filters **All / Pack 1 / Pack 3** (20 chips).  
 See [docs/FEATURES_AI_PACK3.md](docs/FEATURES_AI_PACK3.md).
 
-### Next 10 product features (partial)
+### Next 10 product features — shipped (10)
 
 | # | Feature | Status |
 |---|---------|--------|
-| 1 | Ground quality scorecard on open LAZ | Todo |
-| 2 | CRS / units / density banner | Todo |
+| 1 | Ground quality scorecard on open LAZ | **Done** |
+| 2 | CRS / units / density banner | **Done** |
 | 3 | Share last AI reply (share sheet) | **Done** |
 | 4 | Apply `VIZ_MODE=` from AI | **Done** |
-| 5 | Apply `NAV_TARGET id=` to navigate | Todo |
+| 5 | Apply `NAV_TARGET id=` to navigate | **Done** |
 | 6 | Confirm/dismiss `METAL_TYPE` / `OUTCOME` suggestions | **Done** (dismiss; confirm-write later) |
 | 7 | AI field pack filter: Pack 1 / Pack 3 / All | **Done** |
-| 8 | Offline local draft for return-trip (no cloud) | Todo |
-| 9 | Coverage gap map targets from trail density | Todo |
-| 10 | Ethics disclaimer sticky on dig actions | Todo |
+| 8 | Offline local draft for return-trip (no cloud) | **Done** |
+| 9 | Coverage gap map targets from trail density | **Done** |
+| 10 | Ethics disclaimer sticky on dig actions | **Done** |
+
+See [docs/FEATURES_PRODUCT_PACK.md](docs/FEATURES_PRODUCT_PACK.md).
 
 **Process:** always prefer **parallel agents** for independent coding domains on this app (no shared-file collisions).

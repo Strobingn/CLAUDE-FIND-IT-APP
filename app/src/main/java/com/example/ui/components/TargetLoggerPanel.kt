@@ -153,6 +153,10 @@ fun TargetLoggerPanel(
     onDeleteSurveyBoundary: (SurveyBoundary) -> Unit = {},
     onMarkSyncSent: (Long) -> Unit = {},
     onClearSyncQueue: () -> Unit = {},
+    /** Ordered signal ids from AI NAV_TARGET tags (shared AiTerrainViewModel). */
+    pendingNavTargetIds: List<Long> = emptyList(),
+    /** Clears pending NAV_TARGET (and other structured tags) after navigation starts. */
+    onConsumeNavTargets: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -207,6 +211,15 @@ fun TargetLoggerPanel(
     LaunchedEffect(loggedSignals) {
         navigationTarget?.let { active ->
             if (loggedSignals.none { it.id == active.id }) navigationTarget = null
+        }
+    }
+    // Apply first AI NAV_TARGET that matches a geo-located find; consume so it is not re-applied.
+    LaunchedEffect(pendingNavTargetIds, loggedSignals) {
+        val firstId = pendingNavTargetIds.firstOrNull() ?: return@LaunchedEffect
+        val match = loggedSignals.firstOrNull { it.id == firstId }
+        if (match != null && match.latitude != null && match.longitude != null) {
+            navigationTarget = match
+            onConsumeNavTargets()
         }
     }
     DisposableEffect(Unit) {
@@ -384,6 +397,34 @@ fun TargetLoggerPanel(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("ethics_dig_disclaimer"),
+                ) {
+                    Text(
+                        "Ethics: only detect on land you have permission to search. " +
+                            "LiDAR does not prove buried metal or ownership. " +
+                            "Verify laws and access before digging.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    )
+                }
+                if (pendingNavTargetIds.isNotEmpty()) {
+                    val matched = loggedSignals.any { it.id == pendingNavTargetIds.first() && it.latitude != null }
+                    if (!matched) {
+                        Text(
+                            "AI navigation pending: ${pendingNavTargetIds.size} stop(s) — " +
+                                "no matching geo-located find yet for id ${pendingNavTargetIds.first()}.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.testTag("ai_nav_pending_unmatched"),
+                        )
+                    }
+                }
                 Button(
                     onClick = { attemptLog(force = false) },
                     modifier = Modifier.fillMaxWidth().height(52.dp).testTag("log_signal_button"),
@@ -1490,6 +1531,18 @@ private fun ExcavationLogSection(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Surface(
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                "Ethics: only dig where you have permission. LiDAR is not ownership or metal proof.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
         if (logs.isEmpty()) {
             Text(
                 "No dig logs yet for this target.",
@@ -2069,6 +2122,18 @@ private fun ExcavationLogsDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.verticalScroll(rememberScrollState()),
             ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        "Ethics: only dig where you have permission. LiDAR is not ownership or metal proof.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                }
                 if (logs.isEmpty() && !showForm) {
                     Text(
                         "No dig logs yet. Record each check or excavation so the full visit " +
