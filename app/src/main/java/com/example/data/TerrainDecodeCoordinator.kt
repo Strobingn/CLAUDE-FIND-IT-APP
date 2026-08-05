@@ -247,6 +247,8 @@ class TerrainDecodeCoordinator(
          * Larger tiles = fewer GPU batches for intermediate first-paint publish.
          * Spatial tiles use inclusive ends → about (tileSize+1)² vertices; 256 blew past the
          * ushort 65,535 limit and crashed LAS/LAZ open with bare "Failed requirement".
+         * Spatial tiles use inclusive ends → (tileSize+1)² vertices; 256 was one over the
+         * ushort limit and crashed LAS/LAZ open with bare "Failed requirement".
          */
         internal const val GPU_FAST_TILE_SIZE = 192
     }
