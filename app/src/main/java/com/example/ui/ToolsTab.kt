@@ -15,14 +15,18 @@ import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.WbSunny
+import androidx.compose.material.icons.filled.WbTwilight
 import androidx.compose.ui.platform.LocalContext
 import com.example.data.download.LazDownloadQueue
+import com.example.data.field.FieldSessionStatsCalculator
+import com.example.geospatial.DaylightPlanner
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -41,7 +45,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.field.FindSiteClusterer
+import java.util.Calendar
 import java.util.Locale
+import java.util.TimeZone
 
 /**
  * Home for the field-workflow features that otherwise only surface deep inside another tab:
@@ -63,7 +69,27 @@ fun ToolsTab(
     val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
     val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
 
+    val deviceLat by viewModel.deviceLatitude.collectAsStateWithLifecycle()
+    val deviceLon by viewModel.deviceLongitude.collectAsStateWithLifecycle()
     val sites = remember(loggedSignals) { FindSiteClusterer.cluster(loggedSignals) }
+    val sessionStats = remember(loggedSignals, breadcrumbTracks) {
+        FieldSessionStatsCalculator.compute(loggedSignals, breadcrumbTracks)
+    }
+    // Site center when georeferenced, live GPS fix otherwise; null hides the times gracefully.
+    val daylightToday = remember(metadata, deviceLat, deviceLon) {
+        val latLon = metadata.bounds?.let {
+            ((it.minLat + it.maxLat) / 2.0) to ((it.minLon + it.maxLon) / 2.0)
+        } ?: (deviceLat?.let { lat -> deviceLon?.let { lon -> lat to lon } })
+        latLon?.let { (lat, lon) ->
+            val now = Calendar.getInstance()
+            val offsetMinutes = TimeZone.getDefault().getOffset(now.timeInMillis) / 60_000
+            Triple(
+                DaylightPlanner.compute(lat, lon, now.get(Calendar.DAY_OF_YEAR)),
+                offsetMinutes,
+                metadata.bounds != null,
+            )
+        }
+    }
     val terrainReady = grid.width > 2 && grid.height > 2
     val recordedPoints = breadcrumbTracks.sumOf { it.points.size }
     val positionedFinds = loggedSignals.count { it.latitude != null && it.longitude != null }
@@ -167,6 +193,33 @@ fun ToolsTab(
         }
         item {
             ToolCard(
+                icon = Icons.Default.Insights,
+                title = "Field session stats",
+                status = if (sessionStats.totalFinds == 0 && sessionStats.distanceMeters < 1.0) {
+                    "Nothing logged yet"
+                } else {
+                    buildString {
+                        append("${sessionStats.totalFinds} find(s)")
+                        sessionStats.confirmRate?.let {
+                            append(" · ${(it * 100).toInt()}% confirmed")
+                        }
+                        append(" · ${routeDistanceText(sessionStats.distanceMeters)} walked")
+                        sessionStats.findsPerHour?.let { append(" · ${"%.1f".format(it)} finds/h") }
+                    }
+                },
+                statusActive = sessionStats.totalFinds > 0,
+                description = "Live dig-day scoreboard from your logged finds and GPS trails: " +
+                    "totals, confirm/reject split, distance covered, logging pace" +
+                    (sessionStats.topFindType?.let { ", and your most common find ($it)." } ?: "."),
+            ) {
+                TextButton(
+                    onClick = { onNavigateToTab(TAB_FINDS) },
+                    modifier = Modifier.testTag("tool_open_stats"),
+                ) { Text("Open targets") }
+            }
+        }
+        item {
+            ToolCard(
                 icon = Icons.Default.WbSunny,
                 title = "Real-sun lighting",
                 status = if (terrainReady && metadata.isGeoreferenced) {
@@ -182,6 +235,31 @@ fun ToolsTab(
                 TextButton(
                     onClick = { onNavigateToTab(TAB_TERRAIN) },
                     modifier = Modifier.testTag("tool_open_sun"),
+                ) { Text("Open terrain") }
+            }
+        }
+        item {
+            ToolCard(
+                icon = Icons.Default.WbTwilight,
+                title = "Daylight planner",
+                status = daylightToday?.let { (window, offset, _) ->
+                    if (window.isPolar) {
+                        "Polar day/night at this location"
+                    } else {
+                        val rise = DaylightPlanner.formatLocal(window.sunriseUtcMinutes!!, offset)
+                        val set = DaylightPlanner.formatLocal(window.sunsetUtcMinutes!!, offset)
+                        val hours = window.dayLengthMinutes!! / 60f
+                        "Up $rise · down $set · ${"%.1f".format(hours)} h of light"
+                    }
+                } ?: "Needs a georeferenced terrain or GPS fix",
+                statusActive = daylightToday != null,
+                description = "Sunrise, sunset, and total usable light for today at the site " +
+                    (if (daylightToday?.third == true) "center (from the terrain georeference). " else "position (from your GPS fix). ") +
+                    "NOAA solar math, fully offline — plan the hunt around the light, not the clock.",
+            ) {
+                TextButton(
+                    onClick = { onNavigateToTab(TAB_TERRAIN) },
+                    modifier = Modifier.testTag("tool_open_daylight"),
                 ) { Text("Open terrain") }
             }
         }
