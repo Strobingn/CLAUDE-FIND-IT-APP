@@ -1,5 +1,7 @@
 package com.example.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
@@ -18,13 +21,17 @@ import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Hub
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Terrain
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.WbTwilight
 import androidx.compose.ui.platform.LocalContext
 import com.example.data.download.LazDownloadQueue
+import com.example.data.field.BoundaryProximityLevel
 import com.example.data.field.FieldSessionStatsCalculator
 import com.example.geospatial.DaylightPlanner
 import androidx.compose.material3.Card
@@ -36,7 +43,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -48,6 +58,7 @@ import com.example.data.field.FindSiteClusterer
 import java.util.Calendar
 import java.util.Locale
 import java.util.TimeZone
+import kotlinx.coroutines.launch
 
 /**
  * Home for the field-workflow features that otherwise only surface deep inside another tab:
@@ -57,9 +68,10 @@ import java.util.TimeZone
 fun ToolsTab(
     viewModel: HillshadeViewModel,
     padding: PaddingValues,
-    onNavigateToTab: (Int) -> Unit,
+    onNavigate: (AppDestination) -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val loggedSignals by viewModel.loggedSignals.collectAsStateWithLifecycle()
     val plannedRoute by viewModel.plannedRoute.collectAsStateWithLifecycle()
     val breadcrumbTracks by viewModel.breadcrumbTracks.collectAsStateWithLifecycle()
@@ -68,12 +80,59 @@ fun ToolsTab(
     val pendingSyncCount by viewModel.pendingSyncCount.collectAsStateWithLifecycle()
     val grid by viewModel.elevationGrid.collectAsStateWithLifecycle()
     val metadata by viewModel.activeGeoMetadata.collectAsStateWithLifecycle()
+    val activeGroundMode by viewModel.activeGroundMode.collectAsStateWithLifecycle()
+    val activeClassPreset by viewModel.activeClassPreset.collectAsStateWithLifecycle()
+    val canRefine by viewModel.canRefineTerrain.collectAsStateWithLifecycle()
+    val isRefining by viewModel.isRefiningTerrain.collectAsStateWithLifecycle()
+    val isReloadingSurface by viewModel.isReloadingSurface.collectAsStateWithLifecycle()
+    val boundaryProximityAlert by viewModel.boundaryProximityAlert.collectAsStateWithLifecycle()
+    val lastExportMessage by viewModel.lastExportMessage.collectAsStateWithLifecycle()
 
     val deviceLat by viewModel.deviceLatitude.collectAsStateWithLifecycle()
     val deviceLon by viewModel.deviceLongitude.collectAsStateWithLifecycle()
     val sites = remember(loggedSignals) { FindSiteClusterer.cluster(loggedSignals) }
     val sessionStats = remember(loggedSignals, breadcrumbTracks) {
         FieldSessionStatsCalculator.compute(loggedSignals, breadcrumbTracks)
+    }
+
+    var pendingSitePackageBytes by remember { mutableStateOf(ByteArray(0)) }
+    var pendingClippedLasBytes by remember { mutableStateOf(ByteArray(0)) }
+    var isExportingSitePackage by remember { mutableStateOf(false) }
+    var sitePackageStatus by remember { mutableStateOf<String?>(null) }
+
+    val sitePackageLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        if (uri == null) {
+            isExportingSitePackage = false
+            sitePackageStatus = "Site package export canceled"
+            return@rememberLauncherForActivityResult
+        }
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(pendingSitePackageBytes) }
+                ?: error("Could not open the selected destination")
+        }.onSuccess {
+            sitePackageStatus = lastExportMessage ?: "Site package zip saved"
+        }.onFailure {
+            sitePackageStatus = "Site package failed: ${it.localizedMessage}"
+        }
+        isExportingSitePackage = false
+    }
+    val clippedLasLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream"),
+    ) { uri ->
+        if (uri == null) {
+            sitePackageStatus = "Clipped LAS export canceled"
+            return@rememberLauncherForActivityResult
+        }
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.use { it.write(pendingClippedLasBytes) }
+                ?: error("Could not open the selected destination")
+        }.onSuccess {
+            sitePackageStatus = "Clipped LAS surface sample saved"
+        }.onFailure {
+            sitePackageStatus = "Clipped LAS failed: ${it.localizedMessage}"
+        }
     }
     // Site center when georeferenced, live GPS fix otherwise; null hides the times gracefully.
     val daylightToday = remember(metadata, deviceLat, deviceLon) {
@@ -124,7 +183,7 @@ fun ToolsTab(
                     "Path: $lidarFolderPath. Open the Import tab to reopen, rename for future reuse, or delete.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_IMPORT) },
+                    onClick = { onNavigate(AppDestination.LIBRARY) },
                     modifier = Modifier.testTag("tool_open_saved_lidar"),
                 ) { Text("Open Import library") }
             }
@@ -143,7 +202,7 @@ fun ToolsTab(
                     "breadcrumb trails, with an adjustable sweep width (1–4 m) to match your coil.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_MAP) },
+                    onClick = { onNavigate(AppDestination.MAP) },
                     modifier = Modifier.testTag("tool_open_coverage"),
                 ) { Text("Open map") }
             }
@@ -160,7 +219,7 @@ fun ToolsTab(
                     "(nearest-neighbor + 2-opt) and draws it as a polyline on the map.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_FINDS) },
+                    onClick = { onNavigate(AppDestination.FIELD) },
                     modifier = Modifier.testTag("tool_open_route"),
                 ) { Text("Plan in targets") }
                 if (plannedRoute != null) {
@@ -186,7 +245,7 @@ fun ToolsTab(
                     "and the most common find types.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_FINDS) },
+                    onClick = { onNavigate(AppDestination.FIELD) },
                     modifier = Modifier.testTag("tool_open_sites"),
                 ) { Text("Open finds") }
             }
@@ -213,7 +272,7 @@ fun ToolsTab(
                     (sessionStats.topFindType?.let { ", and your most common find ($it)." } ?: "."),
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_FINDS) },
+                    onClick = { onNavigate(AppDestination.FIELD) },
                     modifier = Modifier.testTag("tool_open_stats"),
                 ) { Text("Open targets") }
             }
@@ -233,7 +292,7 @@ fun ToolsTab(
                     "before you're on site.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_TERRAIN) },
+                    onClick = { onNavigate(AppDestination.TERRAIN) },
                     modifier = Modifier.testTag("tool_open_sun"),
                 ) { Text("Open terrain") }
             }
@@ -258,7 +317,7 @@ fun ToolsTab(
                     "NOAA solar math, fully offline — plan the hunt around the light, not the clock.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_TERRAIN) },
+                    onClick = { onNavigate(AppDestination.TERRAIN) },
                     modifier = Modifier.testTag("tool_open_daylight"),
                 ) { Text("Open terrain") }
             }
@@ -278,7 +337,7 @@ fun ToolsTab(
                     "marked in blue.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_TERRAIN) },
+                    onClick = { onNavigate(AppDestination.TERRAIN) },
                     modifier = Modifier.testTag("tool_open_viewshed"),
                 ) { Text("Open terrain") }
             }
@@ -297,7 +356,7 @@ fun ToolsTab(
                     "Open a find on the Targets tab, then start a dig log. Survives offline restarts.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_FINDS) },
+                    onClick = { onNavigate(AppDestination.FIELD) },
                     modifier = Modifier.testTag("tool_open_excavation"),
                 ) { Text("Open targets") }
             }
@@ -316,7 +375,7 @@ fun ToolsTab(
                     "around your current fix. Used to keep field work inside permitted ground.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_FINDS) },
+                    onClick = { onNavigate(AppDestination.FIELD) },
                     modifier = Modifier.testTag("tool_open_boundaries"),
                 ) { Text("Open targets") }
             }
@@ -336,7 +395,7 @@ fun ToolsTab(
                     "is Phase 9; the queue is durable today.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_FINDS) },
+                    onClick = { onNavigate(AppDestination.FIELD) },
                     modifier = Modifier.testTag("tool_open_sync"),
                 ) { Text("Open targets") }
             }
@@ -352,9 +411,129 @@ fun ToolsTab(
                     "compare side-by-side. Fits persist to Room historic_maps.",
             ) {
                 TextButton(
-                    onClick = { onNavigateToTab(TAB_MAP) },
+                    onClick = { onNavigate(AppDestination.MAP) },
                     modifier = Modifier.testTag("tool_open_historic_georef"),
                 ) { Text("Open map") }
+            }
+        }
+        item {
+            ToolCard(
+                icon = Icons.Default.Layers,
+                title = "Dual surface / class filter",
+                status = "${activeGroundMode.name} · ${activeClassPreset.label}",
+                statusActive = canRefine,
+                description = "Classified ground vs auto-lowest vs highest-return DSM, plus ASPRS class " +
+                    "filter chips. Re-decodes the open LAZ — terrain geometry only, not metal.",
+            ) {
+                TextButton(
+                    onClick = { onNavigate(AppDestination.TERRAIN) },
+                    modifier = Modifier.testTag("tool_dual_surface"),
+                ) { Text("Open terrain controls") }
+            }
+        }
+        item {
+            ToolCard(
+                icon = Icons.Default.CropFree,
+                title = "Clip refine to boundary",
+                status = when {
+                    surveyBoundaries.isEmpty() -> "No survey boundary yet"
+                    isRefining -> "Refining…"
+                    else -> "${surveyBoundaries.size} boundary polygon(s)"
+                },
+                statusActive = surveyBoundaries.isNotEmpty() && canRefine,
+                description = "Re-rasterize the open LiDAR into the survey boundary footprint so detail " +
+                    "stays on permitted ground. Requires a georeferenced LAZ and a boundary.",
+            ) {
+                TextButton(
+                    onClick = { viewModel.refineToSurveyBoundary() },
+                    enabled = canRefine && surveyBoundaries.isNotEmpty() && !isRefining && !isReloadingSurface,
+                    modifier = Modifier.testTag("tool_refine_boundary"),
+                ) { Text("Refine to boundary") }
+                TextButton(
+                    onClick = { onNavigate(AppDestination.TERRAIN) },
+                ) { Text("Open terrain") }
+            }
+        }
+        item {
+            ToolCard(
+                icon = Icons.Default.Archive,
+                title = "Site package export",
+                status = when {
+                    isExportingSitePackage -> "Building package…"
+                    sitePackageStatus != null -> sitePackageStatus!!
+                    else -> "Export zip with finds, digs, trails, PDF, clipped LAS"
+                },
+                statusActive = !isExportingSitePackage,
+                description = "One offline zip: summary, targets (CSV/GPX/GeoJSON), digs, boundaries, " +
+                    "trails, annotated PNG/PDF when available, and optional clipped LAS surface sample. " +
+                    "LAS is a surface sample, not original pulse returns.",
+            ) {
+                TextButton(
+                    onClick = {
+                        if (isExportingSitePackage) return@TextButton
+                        isExportingSitePackage = true
+                        sitePackageStatus = "Building site package…"
+                        scope.launch {
+                            runCatching { viewModel.buildSitePackageBytes(includeClippedLas = true) }
+                                .onSuccess { bytes ->
+                                    pendingSitePackageBytes = bytes
+                                    sitePackageLauncher.launch(
+                                        "find-it-site-package-${System.currentTimeMillis()}.zip",
+                                    )
+                                }
+                                .onFailure {
+                                    isExportingSitePackage = false
+                                    sitePackageStatus = "Export failed: ${it.localizedMessage}"
+                                }
+                        }
+                    },
+                    enabled = !isExportingSitePackage,
+                    modifier = Modifier.testTag("tool_site_package_export"),
+                ) { Text("Export site package") }
+                TextButton(
+                    onClick = {
+                        runCatching { viewModel.buildClippedLasBytes() }
+                            .onSuccess { bytes ->
+                                pendingClippedLasBytes = bytes
+                                clippedLasLauncher.launch(
+                                    "find-it-clipped-${System.currentTimeMillis()}.las",
+                                )
+                            }
+                            .onFailure {
+                                sitePackageStatus = "Clipped LAS failed: ${it.localizedMessage}"
+                            }
+                    },
+                ) { Text("Clipped LAS only") }
+            }
+        }
+        item {
+            ToolCard(
+                icon = Icons.Default.Warning,
+                title = "Boundary GPS alert",
+                status = boundaryProximityAlert?.message
+                    ?: "Enable GPS near a survey boundary for edge alerts",
+                statusActive = boundaryProximityAlert?.level == BoundaryProximityLevel.NEAR_EDGE ||
+                    boundaryProximityAlert?.level == BoundaryProximityLevel.OUTSIDE,
+                description = "Live GPS vs survey polygons: inside, near edge (~25 m), or outside. " +
+                    "Helps keep field work on permitted ground — not legal ownership proof.",
+            ) {
+                TextButton(
+                    onClick = { onNavigate(AppDestination.TERRAIN) },
+                ) { Text("Open terrain") }
+            }
+        }
+        item {
+            ToolCard(
+                icon = Icons.Default.Terrain,
+                title = "Surface Z under finds",
+                status = "Open finds to see relative Z under each georeferenced find",
+                statusActive = terrainReady && metadata.isGeoreferenced,
+                description = "Relative bare-earth ΔZ and slope bucket under a find’s lat/lon. " +
+                    "Relative surface context only — not buried-object or dig depth.",
+            ) {
+                TextButton(
+                    onClick = { onNavigate(AppDestination.FIELD) },
+                ) { Text("Open finds") }
             }
         }
     }
@@ -429,7 +608,3 @@ private fun routeDistanceText(totalMeters: Double): String =
     }
 
 // Tab indices in MainScreen's tab list.
-private const val TAB_TERRAIN = 0
-private const val TAB_MAP = 1
-private const val TAB_FINDS = 5
-private const val TAB_IMPORT = 6

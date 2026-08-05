@@ -44,6 +44,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -52,16 +53,128 @@ import com.example.ai.GeminiApiClient
 import com.example.ai.OpenAiApiClient
 import com.example.ai.TerrainAiProvider
 import com.example.ai.TerrainVisionSession
+import com.example.ai.parseFindSuggestions
+import com.example.ai.resolveMetalType
+import com.example.ai.resolveOutcome
 import com.example.data.ElevationGrid
+import com.example.data.MetalType
+import com.example.data.TargetSignal
+import com.example.data.VerificationOutcome
 import com.example.geospatial.GeoSpatialLibrary.GeoSpatialMetadata
 
-internal val AI_BUILT_IN_QUESTIONS = listOf(
-    "Analyze the visible viewport image",
-    "Compare the local detector results with the image",
-    "Identify road traces, walls, foundations, and depressions",
-    "Rank the strongest field-check locations",
-    "Explain what should be verified on site",
+/**
+ * Built-in AI field prompts for metal-detecting / historic-site work.
+ * [label] is the short chip text; [prompt] is the full question sent to the model.
+ * Prompts stay honest: LiDAR ranks surface morphology and context, not buried metal or age.
+ */
+data class AiBuiltInPrompt(
+    val label: String,
+    val prompt: String,
 )
+
+internal val AI_BUILT_IN_PROMPTS: List<AiBuiltInPrompt> = listOf(
+    AiBuiltInPrompt(
+        label = "Analyze viewport",
+        prompt = "Analyze the visible viewport image. Describe the strongest terrain anomalies " +
+            "that could relate to historic human activity (foundations, roads, walls, depressions). " +
+            "Note uncertainty and natural alternatives. Do not claim buried metal, age, or dig depth.",
+    ),
+    AiBuiltInPrompt(
+        label = "Best dig spots",
+        prompt = "Rank the best places in this viewport to field-check for historic artifacts " +
+            "(coins, buttons, household goods) based on terrain morphology only: flats near " +
+            "possible structures, yard zones, road edges, and refuse-context depressions. " +
+            "List 5–10 ordered targets with grid/relative location, why each ranks high, " +
+            "and what to verify on the ground. LiDAR does not identify metal or depth.",
+    ),
+    AiBuiltInPrompt(
+        label = "Homesites",
+        prompt = "Locate the strongest old homesite / house-lot candidates: building platforms, " +
+            "rectangular foundations, cellar-hole depressions with rims, yard flats, and " +
+            "clustered small anomalies. Explain supporting and opposing evidence for each. " +
+            "Do not invent ownership history or construction dates as fact.",
+    ),
+    AiBuiltInPrompt(
+        label = "Foundations",
+        prompt = "Identify possible old foundations and building platforms: rectangular edges, " +
+            "corner angles, raised pads, and stone-line footprints. Distinguish from natural " +
+            "benches, root throws, and modern grading. Rank by geometric clarity and size.",
+    ),
+    AiBuiltInPrompt(
+        label = "Cellar holes",
+        prompt = "Find cellar-hole style depressions: roughly square or rectangular bowls, " +
+            "rim raised relative to interior, typical homesite scale. Flag lookalikes " +
+            "(tree throws, drainage sinks, modern pits). Give approximate size and search radius.",
+    ),
+    AiBuiltInPrompt(
+        label = "Wagon roads",
+        prompt = "Trace old wagon roads, cart paths, and abandoned lanes: linear hollows, " +
+            "parallel banks, continuous faint cuts across the terrain. Note where they meet " +
+            "possible homesites or field openings. Mark segments that may be modern trails or drainage.",
+    ),
+    AiBuiltInPrompt(
+        label = "Stone walls",
+        prompt = "Detect stone-wall and old field-boundary lines: thin linear ridges, " +
+            "property-edge continuity, and corners. Separate from natural rock outcrops " +
+            "and modern fence grades. Describe how walls may frame a homesite lot.",
+    ),
+    AiBuiltInPrompt(
+        label = "Trash / refuse",
+        prompt = "Suggest refuse-pit or trash-scatter zones near likely homesites: small " +
+            "depressions, disturbed ground, downslope dumps, and yard edges. These are " +
+            "screening hints only—not proof of bottles, iron, or other artifacts.",
+    ),
+    AiBuiltInPrompt(
+        label = "Camp flats",
+        prompt = "Find small use-flats or possible camp/occupation pads: level benches above " +
+            "wet ground, slight clearings, and clusters of subtle anomalies away from modern roads. " +
+            "Prioritize pre-modern appearance; flag modern clearings and logging landings.",
+    ),
+    AiBuiltInPrompt(
+        label = "Civil War era?",
+        prompt = "Using terrain context only, highlight locations that could relate to " +
+            "19th-century (including Civil War–period) activity: road junctions, camps-like flats, " +
+            "linear earthworks, and homesite clusters. Be explicit that terrain cannot date " +
+            "features or identify military relics as fact—only suggest field-check priorities.",
+    ),
+    AiBuiltInPrompt(
+        label = "False positives",
+        prompt = "List terrain anomalies that look human-made but are likely natural or modern: " +
+            "drainage, wetlands, root throws, erosion, logging scars, septic, driveways, " +
+            "and low-density LiDAR artifacts. Explain how to reject them in the field.",
+    ),
+    AiBuiltInPrompt(
+        label = "Vs local AI",
+        prompt = "Compare the local detector results with the visible viewport image. " +
+            "Where do they agree, where do they disagree, and which targets deserve field checks first?",
+    ),
+    AiBuiltInPrompt(
+        label = "Roads & walls",
+        prompt = "Identify road traces, stone walls, foundations, and depressions in the " +
+            "current view. Rank the clearest historic-looking features and note natural alternatives.",
+    ),
+    AiBuiltInPrompt(
+        label = "Field checklist",
+        prompt = "Explain what should be verified on site for the top targets: approach path, " +
+            "search radius, photos to take, notes to log, and ethics (permission, modern disturbance, " +
+            "avoid cemeteries and restricted ground). No metal/depth claims from LiDAR alone.",
+    ),
+    AiBuiltInPrompt(
+        label = "Sweep plan",
+        prompt = "Propose a practical metal-detecting sweep plan for this site: order of " +
+            "targets, walking route that reduces backtracking, coil-friendly open ground vs " +
+            "brush, and estimated time. Start from high-value homesite/road edges first.",
+    ),
+    AiBuiltInPrompt(
+        label = "Water & lot layout",
+        prompt = "Infer a possible historic lot layout from terrain: house platform, yard, " +
+            "lane, and relationship to drainage or water. Where would front-yard and side-yard " +
+            "artifact scatter often be if this were an old homesite? Label uncertainty clearly.",
+    ),
+)
+
+/** @deprecated Prefer [AI_BUILT_IN_PROMPTS]; kept for any callers expecting plain strings. */
+internal val AI_BUILT_IN_QUESTIONS: List<String> = AI_BUILT_IN_PROMPTS.map { it.prompt }
 
 private val CompactButtonHeight = 32.dp
 private val CompactButtonPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
@@ -74,6 +187,14 @@ fun AiCloudPanel(
     metadata: GeoSpatialMetadata,
     terrainKey: String,
     assistantViewModel: AiTerrainViewModel,
+    loggedSignals: List<TargetSignal> = emptyList(),
+    onConfirmAiSuggestions: (
+        signalId: Long,
+        metal: MetalType?,
+        outcome: VerificationOutcome?,
+        status: String?,
+        notes: String?,
+    ) -> Unit = { _, _, _, _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     val state by assistantViewModel.state.collectAsStateWithLifecycle()
@@ -83,7 +204,23 @@ fun AiCloudPanel(
     var geminiKey by rememberSaveable { mutableStateOf("") }
     var showKeys by rememberSaveable { mutableStateOf(!state.openAiConfigured && !state.geminiConfigured) }
     var attachImage by rememberSaveable { mutableStateOf(true) }
+    var dismissedSuggestionMessageId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var selectedSuggestionSignalId by rememberSaveable { mutableStateOf<Long?>(null) }
     val imageReady = viewport.bitmap?.let { !it.isRecycled && it.width > 0 && it.height > 0 } == true
+
+    val lastModelMessage = state.messages.lastOrNull { it.role == AiMessageRole.MODEL }
+    val findSuggestions = remember(lastModelMessage?.id, lastModelMessage?.text) {
+        lastModelMessage?.text?.let { parseFindSuggestions(it) }
+    }
+    val hasSuggestion = findSuggestions != null && (
+        findSuggestions.metalTypeLabel != null ||
+            findSuggestions.outcomeLabel != null ||
+            findSuggestions.statusLabel != null ||
+            findSuggestions.notes != null
+        )
+    val showConfirmCard = hasSuggestion &&
+        lastModelMessage != null &&
+        dismissedSuggestionMessageId != lastModelMessage.id
 
     LaunchedEffect(imageReady) {
         if (!imageReady) attachImage = false
@@ -260,18 +397,20 @@ fun AiCloudPanel(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    AI_BUILT_IN_QUESTIONS.forEach { question ->
+                    AI_BUILT_IN_PROMPTS.forEach { item ->
                         AssistChip(
                             onClick = {
-                                draft = question
+                                draft = item.prompt
                                 if (imageReady) attachImage = true
                             },
-                            label = { Text(question, style = MaterialTheme.typography.labelSmall) },
+                            label = { Text(item.label, style = MaterialTheme.typography.labelSmall) },
                             leadingIcon = {
                                 Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.height(16.dp))
                             },
                             enabled = !state.isSending,
-                            modifier = Modifier.height(CompactButtonHeight),
+                            modifier = Modifier
+                                .height(CompactButtonHeight)
+                                .testTag("ai_prompt_${item.label.lowercase().replace(Regex("[^a-z0-9]+"), "_")}"),
                         )
                     }
                 }
@@ -300,6 +439,115 @@ fun AiCloudPanel(
                         )
                         Spacer(Modifier.height(3.dp))
                         Text(message.text)
+                    }
+                }
+            }
+        }
+
+        if (showConfirmCard && findSuggestions != null && lastModelMessage != null) {
+            item {
+                val targets = loggedSignals
+                val resolvedId = selectedSuggestionSignalId
+                    ?: targets.singleOrNull()?.id
+                    ?: targets.firstOrNull()?.id
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("ai_confirm_write_card"),
+                ) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "AI find suggestions (confirm to write)",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Text(
+                            "Suggestions are not applied until you confirm. LiDAR and AI text are not metal identity.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                        findSuggestions.metalTypeLabel?.let {
+                            Text("Metal: $it", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        findSuggestions.outcomeLabel?.let {
+                            Text("Outcome: $it", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        findSuggestions.statusLabel?.let {
+                            Text("Status: $it", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        findSuggestions.notes?.let {
+                            Text("Notes: $it", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        if (targets.isEmpty()) {
+                            Text(
+                                "No logged finds on this terrain — log a find first, then confirm.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        } else if (targets.size > 1) {
+                            Text(
+                                "Apply to which find?",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                targets.forEach { signal ->
+                                    FilterChip(
+                                        selected = (selectedSuggestionSignalId ?: resolvedId) == signal.id,
+                                        onClick = { selectedSuggestionSignalId = signal.id },
+                                        label = {
+                                            Text(
+                                                "#${signal.id} ${signal.metalType.label}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1,
+                                            )
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    val id = selectedSuggestionSignalId ?: resolvedId
+                                    if (id != null) {
+                                        onConfirmAiSuggestions(
+                                            id,
+                                            findSuggestions.metalTypeLabel?.let { resolveMetalType(it) },
+                                            findSuggestions.outcomeLabel?.let { resolveOutcome(it) },
+                                            findSuggestions.statusLabel,
+                                            findSuggestions.notes,
+                                        )
+                                        dismissedSuggestionMessageId = lastModelMessage.id
+                                    }
+                                },
+                                enabled = (selectedSuggestionSignalId ?: resolvedId) != null,
+                                modifier = Modifier
+                                    .height(CompactButtonHeight)
+                                    .testTag("ai_confirm_write_button"),
+                                contentPadding = CompactButtonPadding,
+                            ) {
+                                Text("Confirm write", style = MaterialTheme.typography.labelSmall)
+                            }
+                            OutlinedButton(
+                                onClick = { dismissedSuggestionMessageId = lastModelMessage.id },
+                                modifier = Modifier.height(CompactButtonHeight),
+                                contentPadding = CompactButtonPadding,
+                            ) {
+                                Text("Dismiss", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
                     }
                 }
             }

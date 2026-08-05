@@ -893,19 +893,13 @@ fun GeminiAssistantScreen(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                listOf(
-                    "Analyze the visible viewport image",
-                    "Compare the local detector results with the image",
-                    "Identify road traces, walls, foundations, and depressions",
-                    "Rank the strongest field-check locations",
-                    "Explain what should be verified on site",
-                ).forEach { suggestion ->
+                AI_BUILT_IN_PROMPTS.forEach { item ->
                     AssistChip(
                         onClick = {
-                            draft = suggestion
+                            draft = item.prompt
                             if (imageReady) attachViewportImage = true
                         },
-                        label = { Text(suggestion) },
+                        label = { Text(item.label) },
                         leadingIcon = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
                     )
                 }

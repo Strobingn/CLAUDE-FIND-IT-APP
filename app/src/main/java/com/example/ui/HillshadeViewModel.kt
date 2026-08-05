@@ -11,6 +11,7 @@ import com.example.analysis.MetalDetectingTargetType
 import com.example.analysis.TerrainDerivedLayerCache
 import com.example.analysis.TerrainDerivedLayers
 import com.example.analysis.TerrainIntelligenceEngine
+import com.example.data.BoundaryFocusMapper
 import com.example.data.DemGenerator
 import com.example.data.DetectionSource
 import com.example.data.ElevationGrid
@@ -18,6 +19,8 @@ import com.example.data.GroundSurfaceMode
 import com.example.data.basemap.OfflineBasemapRegion
 import com.example.data.basemap.OfflineBasemapStatus
 import com.example.data.AppTerrainStorage
+import com.example.data.field.BoundaryProximity
+import com.example.data.field.BoundaryProximityAlert
 import com.example.data.field.BoundaryVertex
 import com.example.data.field.NavigationTarget
 import com.example.data.field.BreadcrumbPoint
@@ -38,18 +41,26 @@ import com.example.data.LazTerrainReader
 import com.example.data.LidarImportOptions
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
+import com.example.data.PointClassPreset
+import com.example.data.SiteSurfaceSampler
+import com.example.data.SurfaceZSample
 import com.example.data.TerrainDecodeCoordinator
 import com.example.data.TerrainGpuSceneBuilder
 import com.example.data.TerrainImportSource
 import com.example.data.TerrainPerformanceSession
 import com.example.data.TerrainSessionStore
 import com.example.data.TargetSignal
+import com.example.data.VerificationOutcome
 import com.example.data.gridForHillshadePreview
 import com.example.data.hillshadeDebounceMs
 import com.example.data.previewMaxSideForZoom
+import com.example.data.export.ClippedLasWriter
+import com.example.data.export.DEFAULT_ETHICS_FOOTER
 import com.example.data.export.ProjectExportFiles
 import com.example.data.export.ProjectExportRenderer
 import com.example.data.export.ProjectExportSnapshot
+import com.example.data.export.SitePackageExporter
+import com.example.data.export.SitePackageInput
 import com.example.data.targetsForTerrain
 import com.example.data.survey.SurveyLayer
 import com.example.data.local.AnalyzedDatasetEntity
@@ -75,6 +86,7 @@ import com.example.geospatial.BasemapDownloadProgress
 import com.example.geospatial.BasemapPlan
 import com.example.geospatial.SlippyTileMath
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -134,12 +146,13 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private var isSettingsLoaded = false
     private var restoreImportedTerrainOnStart = false
 
-    private val _currentSiteIndex = MutableStateFlow(0)
+    /** 3 = imported LiDAR/custom; no built-in Homestead/Fort/Villa demos. */
+    private val _currentSiteIndex = MutableStateFlow(3)
     val currentSiteIndex: StateFlow<Int> = _currentSiteIndex.asStateFlow()
-    private val _activeTerrainKey = MutableStateFlow("builtin:0")
+    private val _activeTerrainKey = MutableStateFlow("empty")
     val activeTerrainKey: StateFlow<String> = _activeTerrainKey.asStateFlow()
     // Keep ViewModel construction cheap so Compose can produce its first frame immediately.
-    // The real demo terrain is generated on Dispatchers.Default from loadSettings().
+    // Real terrain is restored from the last LiDAR import (or stays empty until Import).
     private val _elevationGrid = MutableStateFlow(
         ElevationGrid(
             width = 2,
@@ -177,7 +190,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     val analysisSensitivity = _analysisSensitivity.asStateFlow()
     private val _contourIntervalMeters = MutableStateFlow(0f)
     val contourIntervalMeters = _contourIntervalMeters.asStateFlow()
-    private val _activeTerrainSummary = MutableStateFlow("Built-in demonstration terrain")
+    private val _activeTerrainSummary = MutableStateFlow("Import a LAZ/LAS tile to begin")
     val activeTerrainSummary = _activeTerrainSummary.asStateFlow()
     private val _canRefineTerrain = MutableStateFlow(false)
     val canRefineTerrain = _canRefineTerrain.asStateFlow()
@@ -192,6 +205,21 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private var terrainSource: TerrainImportSource? = null
     private var overviewTerrain: DemGenerator.TerrainLoadResult? = null
     private var currentSourceBounds = NormalizedRasterBounds.Full
+
+    /** Dual-surface / class-filter state for the open LiDAR project. */
+    private val _activeGroundMode = MutableStateFlow(GroundSurfaceMode.SOURCE_CLASSIFIED)
+    val activeGroundMode: StateFlow<GroundSurfaceMode> = _activeGroundMode.asStateFlow()
+    private val _activeClassPreset = MutableStateFlow(PointClassPreset.ALL)
+    val activeClassPreset: StateFlow<PointClassPreset> = _activeClassPreset.asStateFlow()
+    private val _isReloadingSurface = MutableStateFlow(false)
+    val isReloadingSurface: StateFlow<Boolean> = _isReloadingSurface.asStateFlow()
+    private val _surfaceReloadMessage = MutableStateFlow<String?>(null)
+    val surfaceReloadMessage: StateFlow<String?> = _surfaceReloadMessage.asStateFlow()
+    private val _boundaryProximityAlert = MutableStateFlow<BoundaryProximityAlert?>(null)
+    val boundaryProximityAlert: StateFlow<BoundaryProximityAlert?> = _boundaryProximityAlert.asStateFlow()
+    private val _lastExportMessage = MutableStateFlow<String?>(null)
+    val lastExportMessage: StateFlow<String?> = _lastExportMessage.asStateFlow()
+    private var surfaceReloadJob: Job? = null
 
     private val _hillshadeBitmap = MutableStateFlow<Bitmap?>(null)
     val hillshadeBitmap = _hillshadeBitmap.asStateFlow()
@@ -274,7 +302,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val _pendingSyncCount = MutableStateFlow(0)
     val pendingSyncCount: StateFlow<Int> = _pendingSyncCount.asStateFlow()
 
-    private val _activeGeoMetadata = MutableStateFlow(GeoSpatialLibrary.SITES_METADATA.first())
+    private val _activeGeoMetadata = MutableStateFlow(
+        GeoSpatialLibrary.localGrid(name = "No terrain loaded", columns = 2, rows = 2),
+    )
     val activeGeoMetadata: StateFlow<GeoSpatialMetadata> = _activeGeoMetadata.asStateFlow()
     private val _currentLat = MutableStateFlow<Double?>(null)
     val currentLat: StateFlow<Double?> = _currentLat.asStateFlow()
@@ -679,6 +709,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                     _deviceGridPosition.value =
                         GeoSpatialLibrary.geographicToGrid(fix.latitude, fix.longitude, _activeGeoMetadata.value)
                     appendBreadcrumbFix(fix.latitude, fix.longitude, fix.accuracyMeters)
+                    refreshBoundaryProximity(fix.latitude, fix.longitude)
                 }
         }
     }
@@ -717,6 +748,15 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _deviceLatitude.value = null
         _deviceLongitude.value = null
         _deviceLocationRecordedAtMillis.value = null
+        _boundaryProximityAlert.value = null
+    }
+
+    private fun refreshBoundaryProximity(lat: Double?, lon: Double?) {
+        if (lat == null || lon == null) {
+            _boundaryProximityAlert.value = null
+            return
+        }
+        _boundaryProximityAlert.value = BoundaryProximity.evaluate(lat, lon, _surveyBoundaries.value)
     }
 
     private val _heatmapEnabled = MutableStateFlow(false)
@@ -902,37 +942,6 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun selectSite(index: Int) {
-        if (index !in 0..3 || index == 3 && customGrid == null) return
-        _currentSiteIndex.value = index
-        if (index in 0..2) {
-            setActiveTerrainKey("builtin:$index")
-        }
-        siteGenerationJob?.cancel()
-        if (index in 0..2) {
-            siteGenerationJob = viewModelScope.launch {
-                _isRendering.value = true
-                val generatedGrid = withContext(Dispatchers.Default) {
-                    DemGenerator.generateSite(index)
-                }
-                // Ignore an obsolete result if the user selected another site while this
-                // terrain was being generated.
-                if (_currentSiteIndex.value != index) return@launch
-                _elevationGrid.value = generatedGrid
-                _activeGeoMetadata.value = GeoSpatialLibrary.SITES_METADATA[index]
-                _activeTerrainSummary.value = "Built-in simulated terrain"
-                updateCoordinates()
-                scheduleRender(immediate = true)
-                if (_basemapEnabled.value) refreshBasemapTiles()
-            }
-        } else {
-            _elevationGrid.value = requireNotNull(customGrid)
-            updateCoordinates()
-            scheduleRender(immediate = true)
-            if (_basemapEnabled.value) refreshBasemapTiles()
-        }
-    }
-
     fun setCustomTerrain(
         result: DemGenerator.TerrainLoadResult,
         source: TerrainImportSource? = null,
@@ -947,6 +956,10 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _canRefineTerrain.value = source != null
         _isDetailedTerrain.value = false
         _terrainDetailMessage.value = null
+        if (source != null) {
+            _activeGroundMode.value = source.options.groundMode
+            _activeClassPreset.value = presetFromAllowedClasses(source.options.allowedClasses)
+        }
         source?.uri?.let { uriString ->
             val uri = Uri.parse(uriString)
             if (uri.scheme.equals("file", ignoreCase = true)) {
@@ -979,15 +992,6 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         if (_basemapEnabled.value) refreshBasemapTiles()
         if (resetViewport) {
             _viewportResetKey.value = _viewportResetKey.value + 1
-        }
-    }
-
-    /**
-     * Called by UI during pinch-to-zoom when current zoom scale reaches or exceeds 2.5x.
-     */
-    fun onZoomThresholdReached(viewport: NormalizedRasterBounds, scale: Float) {
-        if (scale >= 2.5f && _canRefineTerrain.value && !_isDetailedTerrain.value && !_isRefiningTerrain.value) {
-            refineTerrain(viewport)
         }
     }
 
@@ -1172,6 +1176,222 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         applyCustomTerrain(overview, resetViewport = true)
     }
 
+    /**
+     * Re-rasterize the open LiDAR with a different ground-surface mode (classified ground,
+     * auto-lowest, or first-return surface model). Full footprint only — dual surface is not
+     * a zoomed refine.
+     */
+    fun setGroundSurfaceMode(mode: GroundSurfaceMode) {
+        _activeGroundMode.value = mode
+        reloadTerrainWithOptions { options -> options.copy(groundMode = mode) }
+    }
+
+    /**
+     * Re-rasterize the open LiDAR with an ASPRS class filter preset (or all returns).
+     */
+    fun setPointClassPreset(preset: PointClassPreset) {
+        _activeClassPreset.value = preset
+        reloadTerrainWithOptions { options -> options.copy(allowedClasses = preset.classes) }
+    }
+
+    /**
+     * Clip-refine the active LiDAR into a survey boundary polygon (by id, or first boundary).
+     * Uses [BoundaryFocusMapper] so refine re-reads the original point cloud for that AOI.
+     */
+    fun refineToSurveyBoundary(boundaryId: String? = null) {
+        val boundary = when {
+            boundaryId != null -> _surveyBoundaries.value.firstOrNull { it.id == boundaryId }
+            else -> _surveyBoundaries.value.firstOrNull()
+        }
+        if (boundary == null) {
+            _terrainDetailMessage.value = "No survey boundary available for clip refine."
+            return
+        }
+        val metadata = overviewTerrain?.geoMetadata ?: _activeGeoMetadata.value
+        val bounds = BoundaryFocusMapper.toNormalizedBounds(boundary, metadata)
+        if (bounds == null) {
+            _terrainDetailMessage.value =
+                "Could not map the survey boundary onto this terrain (georeferenced LiDAR required)."
+            return
+        }
+        // Boundary focus is in full-footprint normalized space; nest against Full, not a prior refine.
+        currentSourceBounds = NormalizedRasterBounds.Full
+        refineTerrain(bounds, recommendedAiRefineResolution())
+    }
+
+    /**
+     * Relative bare-earth surface context under a find. Not buried-object depth or metal identity.
+     */
+    fun surfaceZForSignal(signal: TargetSignal): SurfaceZSample? {
+        val lat = signal.latitude ?: signal.gpsLatitude ?: return null
+        val lon = signal.longitude ?: signal.gpsLongitude ?: return null
+        return SiteSurfaceSampler.sample(
+            grid = _elevationGrid.value,
+            metadata = _activeGeoMetadata.value,
+            latitude = lat,
+            longitude = lon,
+        )
+    }
+
+    /**
+     * Applies confirmed AI metal/outcome/status/notes suggestions to an existing logged find.
+     * Only non-null fields are written; notes are appended when both sides are non-blank.
+     * Returns false when the signal id is not found.
+     */
+    fun applyAiFindSuggestions(
+        signalId: Long,
+        metalType: MetalType?,
+        outcome: VerificationOutcome?,
+        status: String?,
+        notes: String?,
+    ): Boolean {
+        val existing = allLoggedSignals.firstOrNull { it.id == signalId }
+            ?: _loggedSignals.value.firstOrNull { it.id == signalId }
+            ?: return false
+        val mergedNotes = when {
+            notes.isNullOrBlank() -> existing.notes
+            existing.notes.isBlank() -> notes.trim()
+            else -> existing.notes.trimEnd() + "\n" + notes.trim()
+        }
+        val updated = existing.copy(
+            metalType = metalType ?: existing.metalType,
+            outcome = outcome ?: existing.outcome,
+            status = status?.takeIf { it.isNotBlank() } ?: existing.status,
+            notes = mergedNotes,
+        )
+        updateLoggedSignal(updated)
+        return true
+    }
+
+    private fun reloadTerrainWithOptions(transform: (LidarImportOptions) -> LidarImportOptions) {
+        val source = terrainSource
+        if (source == null) {
+            _surfaceReloadMessage.value = "Open a LiDAR project to change surface mode or class filter."
+            return
+        }
+        if (_isReloadingSurface.value || _isRefiningTerrain.value) return
+
+        // Dual surface / class filter always reopen the full footprint (not a refined crop).
+        val options = transform(source.options).copy(focusBounds = null).sanitized()
+        val sourceUri = Uri.parse(source.uri)
+        val sourceFile = sourceUri.takeIf { it.scheme.equals("file", ignoreCase = true) }
+            ?.path
+            ?.let(::File)
+            ?.takeIf(File::isFile)
+
+        surfaceReloadJob?.cancel()
+        _isReloadingSurface.value = true
+        _surfaceReloadMessage.value =
+            "Reloading surface · ${options.groundMode.name} · ${presetFromAllowedClasses(options.allowedClasses).label}…"
+
+        surfaceReloadJob = viewModelScope.launch(Dispatchers.IO) {
+            var decodedNow = false
+            var loadedFromCache = false
+            try {
+                val preservedGeo = overviewTerrain?.geoMetadata
+                    ?: _activeGeoMetadata.value.takeIf { it.isGeoreferenced }
+                val result = runCatching {
+                    sourceFile?.let { file ->
+                        refinementMemoryCache.get(file, options)?.also { loadedFromCache = true }
+                            ?: refinementDiskCache.get(file, options)?.also {
+                                refinementMemoryCache.put(file, options, it)
+                                loadedFromCache = true
+                            }
+                            ?: run {
+                                if (!LazSpatialIndex.exists(file)) {
+                                    LazSpatialIndex.build(file)
+                                }
+                                LazTerrainReader.read(file, options)?.let { laz ->
+                                    DemGenerator.TerrainLoadResult(
+                                        grid = laz.grid,
+                                        summary = laz.note,
+                                        isBareEarth = laz.appliedGroundMode != GroundSurfaceMode.SURFACE_MODEL,
+                                    )
+                                }?.also {
+                                    refinementMemoryCache.put(file, options, it)
+                                    decodedNow = true
+                                }
+                            }
+                    } ?: getApplication<Application>().contentResolver.openInputStream(sourceUri)
+                        ?.buffered()?.use { input ->
+                            DemGenerator.parseFromStreamDetailed(
+                                source.displayName,
+                                input,
+                                options,
+                            )?.also {
+                                sourceFile?.let { file -> refinementMemoryCache.put(file, options, it) }
+                                decodedNow = true
+                            }
+                        }
+                }.getOrElse { error ->
+                    if (error is CancellationException) throw error
+                    withContext(Dispatchers.Main.immediate) {
+                        _surfaceReloadMessage.value =
+                            "Surface reload failed: ${error.localizedMessage ?: "decode error"}"
+                    }
+                    null
+                }
+
+                withContext(Dispatchers.Main.immediate) {
+                    if (result == null) {
+                        if (_surfaceReloadMessage.value?.startsWith("Surface reload failed") != true) {
+                            _surfaceReloadMessage.value =
+                                "Could not reload the LiDAR surface with the selected options."
+                        }
+                        return@withContext
+                    }
+                    val withGeo = if (result.geoMetadata == null && preservedGeo != null) {
+                        result.copy(
+                            geoMetadata = preservedGeo.copy(
+                                columns = result.grid.width,
+                                rows = result.grid.height,
+                                resolutionMeters = result.grid.cellSizeMeters.toDouble(),
+                            ),
+                        )
+                    } else {
+                        result
+                    }
+                    val updatedSource = source.copy(options = options)
+                    terrainSource = updatedSource
+                    overviewTerrain = withGeo
+                    currentSourceBounds = NormalizedRasterBounds.Full
+                    _isDetailedTerrain.value = false
+                    _canRefineTerrain.value = true
+                    _activeGroundMode.value = options.groundMode
+                    _activeClassPreset.value = presetFromAllowedClasses(options.allowedClasses)
+                    terrainSessionStore.save(updatedSource)
+                    applyCustomTerrain(withGeo, resetViewport = false)
+                    _surfaceReloadMessage.value = if (loadedFromCache) {
+                        "Surface loaded from cache · ${options.groundMode.name} · " +
+                            presetFromAllowedClasses(options.allowedClasses).label
+                    } else {
+                        "Surface reloaded · ${options.groundMode.name} · " +
+                            presetFromAllowedClasses(options.allowedClasses).label
+                    }
+                    _terrainDetailMessage.value = _surfaceReloadMessage.value
+                }
+                if (decodedNow && result != null && sourceFile != null) {
+                    runCatching { refinementDiskCache.put(sourceFile, options, result) }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } finally {
+                withContext(NonCancellable) {
+                    if (_isReloadingSurface.value) {
+                        _isReloadingSurface.value = false
+                    }
+                }
+            }
+        }
+    }
+
+    private fun presetFromAllowedClasses(allowed: Set<Int>?): PointClassPreset {
+        if (allowed == null || allowed.isEmpty()) return PointClassPreset.ALL
+        return PointClassPreset.entries.firstOrNull { preset ->
+            preset.classes != null && preset.classes == allowed
+        } ?: PointClassPreset.ALL
+    }
+
     fun setCustomGrid(grid: ElevationGrid) {
         setCustomTerrain(
             DemGenerator.TerrainLoadResult(
@@ -1354,6 +1574,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         surveyBoundaryJob = viewModelScope.launch {
             surveyBoundaryDao.observeByTerrainKey(terrainKey).collect { stored ->
                 _surveyBoundaries.value = stored.map { it.toDomain() }
+                refreshBoundaryProximity(_deviceLatitude.value, _deviceLongitude.value)
             }
         }
     }
@@ -1426,9 +1647,104 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                     visualizationLabel = visualizationLabel(_visualizationMode.value),
                     targets = _loggedSignals.value,
                     surveyLayers = _surveyLayers.value,
+                    digCount = _excavationLogs.value.size,
+                    boundaryCount = _surveyBoundaries.value.size,
+                    trailCount = _breadcrumbTracks.value.size,
+                    ethicsFooter = DEFAULT_ETHICS_FOOTER,
+                    scorecardLines = buildScorecardLines(),
                 ),
             )
         }
+    }
+
+    /**
+     * Terrain / ground-quality scorecard lines for PDF and site package.
+     * LiDAR language only — never claims metal identity or dig depth from elevation.
+     */
+    private fun buildScorecardLines(): List<String> {
+        val fullResult = overviewTerrain
+        val grid = fullResult?.grid ?: _elevationGrid.value
+        val metadata = fullResult?.geoMetadata ?: _activeGeoMetadata.value
+        val bareEarthLabel = when (fullResult?.isBareEarth) {
+            true -> "Bare-earth terrain model"
+            false -> "First-return / canopy surface model"
+            null -> null
+        }
+        return listOfNotNull(
+            (fullResult?.summary ?: _activeTerrainSummary.value).takeIf { it.isNotBlank() },
+            "Grid: ${grid.width}×${grid.height}",
+            "CRS: ${metadata.crs}",
+            String.format(Locale.US, "Cell size: %.2f m", grid.cellSizeMeters),
+            bareEarthLabel?.let { "Surface: $it" },
+            "Ground mode: ${_activeGroundMode.value.name}",
+            "Class filter: ${_activeClassPreset.value.label}",
+            if (metadata.isGeoreferenced) "Georeferenced: yes" else "Georeferenced: no (local grid)",
+            "LiDAR is terrain context only — not metal identity or dig depth.",
+        )
+    }
+
+    /**
+     * Surface-sample LAS (not original pulse returns) clipped to [normalizedBounds], the first
+     * survey-boundary focus when bounds are omitted, or the full footprint.
+     */
+    fun buildClippedLasBytes(normalizedBounds: NormalizedRasterBounds? = null): ByteArray {
+        val fullResult = overviewTerrain
+        val exportGrid = fullResult?.grid ?: _elevationGrid.value
+        val exportMetadata = (fullResult?.geoMetadata ?: _activeGeoMetadata.value).copy(
+            columns = exportGrid.width,
+            rows = exportGrid.height,
+            resolutionMeters = exportGrid.cellSizeMeters.toDouble(),
+        )
+        val bounds = normalizedBounds
+            ?: _surveyBoundaries.value.firstOrNull()?.let { boundary ->
+                BoundaryFocusMapper.toNormalizedBounds(boundary, exportMetadata)
+            }
+            ?: NormalizedRasterBounds.Full
+        return ClippedLasWriter.writeFromElevationGrid(
+            grid = exportGrid,
+            metadata = exportMetadata,
+            normalizedBounds = bounds,
+        )
+    }
+
+    /**
+     * Full site package zip: project export (PNG/PDF), digs/boundaries/trails, optional clipped LAS.
+     */
+    suspend fun buildSitePackageBytes(includeClippedLas: Boolean = true): ByteArray {
+        val projectFiles = buildProjectExportFiles()
+        val clippedLas = if (includeClippedLas) {
+            runCatching { buildClippedLasBytes() }.getOrNull()
+        } else {
+            null
+        }
+        val fullResult = overviewTerrain
+        val exportGrid = fullResult?.grid ?: _elevationGrid.value
+        val exportMetadata = fullResult?.geoMetadata ?: _activeGeoMetadata.value
+        val crsBanner = buildString {
+            append(exportMetadata.crs)
+            append(" · ")
+            append(String.format(Locale.US, "%.2f m cells", exportGrid.cellSizeMeters))
+            append(if (exportMetadata.isGeoreferenced) " · georeferenced" else " · local grid")
+        }
+        val bytes = SitePackageExporter.build(
+            SitePackageInput(
+                projectName = exportMetadata.siteName,
+                terrainKey = _activeTerrainKey.value,
+                summary = fullResult?.summary ?: _activeTerrainSummary.value,
+                crsBanner = crsBanner,
+                scorecardLines = buildScorecardLines(),
+                targets = _loggedSignals.value,
+                digs = _excavationLogs.value,
+                boundaries = _surveyBoundaries.value,
+                trails = _breadcrumbTracks.value,
+                terrainPng = projectFiles.terrainPng,
+                reportPdf = projectFiles.reportPdf,
+                clippedLas = clippedLas,
+            ),
+        )
+        _lastExportMessage.value = "Site package ready" +
+            if (includeClippedLas && clippedLas != null) " (with clipped LAS surface sample)" else ""
+        return bytes
     }
 
     /**
@@ -1702,25 +2018,27 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         _analysisSensitivity.value = settingsRepo.getFloat(SettingsRepository.Keys.ANALYSIS_SENSITIVITY, 1.2f)
         _contourIntervalMeters.value = settingsRepo.getFloat(SettingsRepository.Keys.CONTOUR_INTERVAL_METERS, 0f)
         
-        val savedSite = settingsRepo.getInt(SettingsRepository.Keys.CURRENT_SITE_INDEX, 0)
+        // Always try to restore the last imported LiDAR; no Homestead/Fort/Villa demos.
         val recoveryPreferences = getApplication<Application>().getSharedPreferences(
             "terrain_recovery",
             0,
         )
-        val needsLegacyRecovery = !recoveryPreferences.getBoolean("checked_cached_terrain_v1", false)
-        restoreImportedTerrainOnStart = savedSite == 3 || needsLegacyRecovery
+        restoreImportedTerrainOnStart = true
         recoveryPreferences.edit().putBoolean("checked_cached_terrain_v1", true).apply()
-        val site = savedSite.takeIf { it in 0..2 } ?: 0
-        _currentSiteIndex.value = site
-        _elevationGrid.value = withContext(Dispatchers.Default) {
-            DemGenerator.generateSite(site)
-        }
-        _activeGeoMetadata.value = GeoSpatialLibrary.SITES_METADATA[site]
-        if (savedSite in 0..2) {
-            _activeTerrainSummary.value = "Built-in simulated terrain"
-        } else {
-            _activeTerrainSummary.value = "Built-in demonstration terrain"
-        }
+        _currentSiteIndex.value = 3
+        _elevationGrid.value = ElevationGrid(
+            width = 2,
+            height = 2,
+            bareEarth = FloatArray(4),
+            canopySpikes = FloatArray(4),
+        )
+        _activeGeoMetadata.value = GeoSpatialLibrary.localGrid(
+            name = "No terrain loaded",
+            columns = 2,
+            rows = 2,
+        )
+        _activeTerrainSummary.value = "Import a LAZ/LAS tile to begin"
+        setActiveTerrainKey("empty")
 
         _sweepX.value = settingsRepo.getFloat(SettingsRepository.Keys.SWEEP_X, 50f)
         _sweepY.value = settingsRepo.getFloat(SettingsRepository.Keys.SWEEP_Y, 50f)
@@ -1757,7 +2075,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         val file = session?.file?.takeIf { it.isFile }
             ?: withContext(Dispatchers.IO) { store.list().firstOrNull()?.file }
             ?: run {
-                _activeTerrainSummary.value = "Built-in demonstration terrain"
+                _activeTerrainSummary.value = "Import a LAZ/LAS tile to begin"
                 return
             }
         val displayName = session?.displayName ?: file.name
@@ -1872,6 +2190,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         surveyBoundaryJob?.cancel()
         offlineBasemapRegionJob?.cancel()
         offlineBasemapDownloadJob?.cancel()
+        surfaceReloadJob?.cancel()
         saveSettingsJob?.cancel()
         super.onCleared()
     }

@@ -21,6 +21,12 @@ import com.example.geospatial.MeasurementFormat
 
 const val PROJECT_REPORT_SCHEMA_VERSION = 1
 
+/** Sticky field-ethics line used on PDF footers and site-package summaries. */
+const val DEFAULT_ETHICS_FOOTER =
+    "Ethics: only detect on land you have permission to search. " +
+        "LiDAR does not prove buried metal or ownership. " +
+        "Verify laws and access before digging."
+
 data class ProjectExportSnapshot(
     val projectName: String,
     val terrainKey: String,
@@ -31,6 +37,16 @@ data class ProjectExportSnapshot(
     val targets: List<TargetSignal>,
     val surveyLayers: List<SurveyLayer>,
     val generatedAtMillis: Long = System.currentTimeMillis(),
+    /** Open dig / excavation logs included in this export. */
+    val digCount: Int = 0,
+    /** Survey boundary polygons attached to the project. */
+    val boundaryCount: Int = 0,
+    /** Recorded breadcrumb trails attached to the project. */
+    val trailCount: Int = 0,
+    /** Sticky ethics disclaimer drawn on every PDF page footer. */
+    val ethicsFooter: String = DEFAULT_ETHICS_FOOTER,
+    /** Optional ground-quality / site scorecard lines for the metadata page. */
+    val scorecardLines: List<String> = emptyList(),
 )
 
 data class ProjectExportFiles(
@@ -209,7 +225,17 @@ object ProjectExportRenderer {
         }
 
         fun finishPage(page: PdfDocument.Page, canvas: Canvas) {
-            canvas.drawLine(PDF_MARGIN, 812f, PDF_WIDTH - PDF_MARGIN, 812f, paint(Color.LTGRAY, 1f))
+            // Sticky ethics disclaimer above the page chrome so every handoff page carries it.
+            canvas.drawLine(PDF_MARGIN, 788f, PDF_WIDTH - PDF_MARGIN, 788f, paint(Color.LTGRAY, 1f))
+            drawWrappedText(
+                canvas,
+                snapshot.ethicsFooter.safeText().ifBlank { DEFAULT_ETHICS_FOOTER },
+                PDF_MARGIN,
+                800f,
+                PDF_WIDTH - PDF_MARGIN * 2,
+                paint(Color.DKGRAY, 7f),
+                9f,
+            )
             canvas.drawText(
                 "Page $pageNumber | Generated ${formatTimestamp(snapshot.generatedAtMillis)}",
                 PDF_MARGIN,
@@ -279,6 +305,9 @@ object ProjectExportRenderer {
                 "Visualization" to snapshot.visualizationLabel,
                 "Saved targets" to snapshot.targets.size.toString(),
                 "Survey layers" to snapshot.surveyLayers.size.toString(),
+                "Dig logs" to snapshot.digCount.toString(),
+                "Survey boundaries" to snapshot.boundaryCount.toString(),
+                "Trail tracks" to snapshot.trailCount.toString(),
             )
             metadataRows.forEach { (label, value) ->
                 canvas.drawText(label.safeText(), PDF_MARGIN, y, labelPaint)
@@ -291,6 +320,28 @@ object ProjectExportRenderer {
                     valuePaint,
                     13f,
                 ) + 8f
+            }
+            if (snapshot.scorecardLines.isNotEmpty()) {
+                y += 10f
+                canvas.drawText(
+                    "Ground / site scorecard",
+                    PDF_MARGIN,
+                    y,
+                    paint(Color.rgb(74, 61, 53), 12f, bold = true),
+                )
+                y += 16f
+                snapshot.scorecardLines.forEach { line ->
+                    if (y > 760f) return@forEach
+                    y = drawWrappedText(
+                        canvas,
+                        "- ${line.safeText()}",
+                        PDF_MARGIN,
+                        y,
+                        PDF_WIDTH - PDF_MARGIN * 2,
+                        valuePaint,
+                        12f,
+                    ) + 3f
+                }
             }
             finishPage(page, canvas)
         }
@@ -309,7 +360,7 @@ object ProjectExportRenderer {
                 y,
                 paint(Color.rgb(74, 61, 53), 9f, bold = true),
             )
-            canvas.drawText("Grid / coordinate", 245f, y, paint(Color.rgb(74, 61, 53), 9f, bold = true))
+            canvas.drawText("Grid / lat, lon", 245f, y, paint(Color.rgb(74, 61, 53), 9f, bold = true))
             canvas.drawText("Status", 445f, y, paint(Color.rgb(74, 61, 53), 9f, bold = true))
             y += 14f
         }
@@ -318,7 +369,7 @@ object ProjectExportRenderer {
             targetCanvas?.drawText("No targets saved for this terrain.", PDF_MARGIN, y + 20f, paint(Color.DKGRAY, 10f))
         } else {
             snapshot.targets.forEachIndexed { index, target ->
-                if (y > 760f) {
+                if (y > 750f) {
                     finishPage(requireNotNull(targetPage), requireNotNull(targetCanvas))
                     startTargetPage()
                 }
@@ -332,11 +383,12 @@ object ProjectExportRenderer {
                 )
                 canvas.drawText(target.source.name.safeText(), PDF_MARGIN, y + 32f, paint(Color.GRAY, 8f))
                 canvas.drawText(
-                    "${target.gridX.toInt()}, ${target.gridY.toInt()}",
+                    "Grid ${target.gridX.toInt()}, ${target.gridY.toInt()}",
                     245f,
                     y + 17f,
                     paint(Color.DKGRAY, 9f),
                 )
+                // Explicit lat/lon line when present so site-package PDFs hand off coordinates cleanly.
                 canvas.drawText(targetCoordinate(target), 245f, y + 32f, paint(Color.GRAY, 8f))
                 canvas.drawText(target.status.safeText(), 445f, y + 17f, paint(Color.DKGRAY, 9f))
                 canvas.drawText(target.outcome.label.safeText(), 445f, y + 32f, paint(Color.GRAY, 8f))
@@ -540,9 +592,9 @@ object ProjectExportRenderer {
 
     private fun targetCoordinate(target: TargetSignal): String =
         if (target.latitude != null && target.longitude != null) {
-            String.format(Locale.US, "%.6f, %.6f", target.latitude, target.longitude)
+            String.format(Locale.US, "lat %.6f, lon %.6f", target.latitude, target.longitude)
         } else {
-            "Local grid"
+            "Local grid (no lat/lon)"
         }
 
     private fun formatMeters(value: Double): String = MeasurementFormat.length(value)

@@ -76,6 +76,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.data.SurfaceZSample
 import com.example.data.TargetSignal
 import com.example.data.VerificationOutcome
 import com.example.data.field.BoundaryVertex
@@ -147,6 +148,8 @@ fun TargetLoggerPanel(
     onDeleteSurveyBoundary: (SurveyBoundary) -> Unit = {},
     onMarkSyncSent: (Long) -> Unit = {},
     onClearSyncQueue: () -> Unit = {},
+    /** Relative bare-earth surface context under a find — never dig/metal depth. */
+    surfaceZForSignal: (TargetSignal) -> SurfaceZSample? = { null },
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -540,6 +543,11 @@ fun TargetLoggerPanel(
         EditSignalDialog(
             signal = signal,
             excavationLogs = excavationLogs.filter { it.targetId == signal.id },
+            surfaceZSample = if (signal.latitude != null || signal.gpsLatitude != null) {
+                surfaceZForSignal(signal)
+            } else {
+                null
+            },
             onDismiss = { editingSignal = null },
             onSave = {
                 onUpdateSignal(it)
@@ -909,6 +917,7 @@ private fun SignalCard(
 private fun EditSignalDialog(
     signal: TargetSignal,
     excavationLogs: List<ExcavationLogEntry> = emptyList(),
+    surfaceZSample: SurfaceZSample? = null,
     onDismiss: () -> Unit,
     onSave: (TargetSignal) -> Unit,
     onSaveExcavationLog: (ExcavationLogEntry) -> Unit = {},
@@ -1036,6 +1045,51 @@ private fun EditSignalDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("${signal.metalType.label} at grid ${signal.gridX.toInt()}, ${signal.gridY.toInt()}")
+                surfaceZSample?.let { sample ->
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("find_surface_z_card"),
+                    ) {
+                        Column(
+                            Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                "Surface Z (relative)",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            val delta = sample.relativeToLocalMeanMeters
+                            val deltaLabel = when {
+                                !sample.cellValid -> "No valid bare-earth cell here"
+                                delta >= 0f -> String.format(Locale.US, "+%.2f m vs local mean", delta)
+                                else -> String.format(Locale.US, "%.2f m vs local mean", delta)
+                            }
+                            Text(deltaLabel, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Local slope: ${sample.localSlopeBucket}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                            sample.surfaceElevationMeters?.let { elev ->
+                                Text(
+                                    String.format(Locale.US, "Surface elev ≈ %.1f m (if georeferenced)", elev),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                            }
+                            Text(
+                                sample.disclaimer,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = notes,
                     onValueChange = { notes = it.take(500) },
