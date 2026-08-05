@@ -91,6 +91,12 @@ fun AiAnalysisWorkspace(
     val featureTypeCalibration by viewModel.featureTypeCalibration.collectAsStateWithLifecycle()
     val visualizationMode by viewModel.visualizationMode.collectAsStateWithLifecycle()
     val aiState by assistantViewModel.state.collectAsStateWithLifecycle()
+    val analyzedDatasets by viewModel.analyzedDatasets.collectAsStateWithLifecycle()
+
+    val secondaryDataset = remember(analyzedDatasets, terrainKey) {
+        // Prefer a different dataset than the active terrain key for compare-two-sites.
+        analyzedDatasets.firstOrNull { it.datasetKey != terrainKey }
+    }
 
     val fieldPack = remember(
         summary,
@@ -107,7 +113,20 @@ fun AiAnalysisWorkspace(
         excavationLogs,
         breadcrumbTracks,
         aiState.localResult,
+        visualizationMode,
+        secondaryDataset,
     ) {
+        val secondarySummary = secondaryDataset?.let { ds ->
+            buildString {
+                append(ds.displayName)
+                if (ds.siteName.isNotBlank()) append(" · ").append(ds.siteName)
+                append(" · ${ds.width}x${ds.height} @ ${ds.cellSizeMeters} m")
+                if (ds.crs.isNotBlank()) append(" · ").append(ds.crs)
+            }
+        }.orEmpty()
+        val secondaryContext = secondaryDataset?.let { ds ->
+            "CRS=${ds.crs}; site=${ds.siteName}; key=${ds.datasetKey}"
+        }.orEmpty()
         FieldAiSessionPack(
             terrainSummary = summary,
             terrainContext = "CRS=${metadata.crs}; site=${metadata.siteName}",
@@ -122,6 +141,12 @@ fun AiAnalysisWorkspace(
             excavationLogs = excavationLogs,
             breadcrumbTracks = breadcrumbTracks,
             localResult = aiState.localResult,
+            inspectedCellSummary = "",
+            visualizationMode = visualizationMode,
+            secondaryTerrainSummary = secondarySummary,
+            secondaryTerrainContext = secondaryContext,
+            secondaryCandidateCount = 0,
+            secondaryFindCount = 0,
         )
     }
 
@@ -134,7 +159,6 @@ fun AiAnalysisWorkspace(
     val showDatasetComparison = rememberSaveable { mutableStateOf(false) }
     val pendingLocalLayer = remember { mutableStateOf<TerrainDerivedLayer?>(null) }
     val localBitmapAtRequest = remember { mutableStateOf(aiState.localLayerBitmap) }
-    val analyzedDatasets by viewModel.analyzedDatasets.collectAsStateWithLifecycle()
     val sourceRenderLabel = aiSourceVisualizationLabel(visualizationMode)
     val localLayerPending = !aiState.showSourceHillshade && pendingLocalLayer.value != null
     val analysisBitmap = when {
@@ -633,6 +657,9 @@ fun AiAnalysisWorkspace(
             onApplyLighting = { az, alt ->
                 viewModel.updateSunAzimuth(az)
                 viewModel.updateSunAltitude(alt)
+            },
+            onApplyVizMode = { mode ->
+                viewModel.updateVisualizationMode(mode)
             },
             // weight(1f), not fillMaxSize(): this Column isn't scrollable, and the header +
             // map above already claim their own height, so a fillMaxSize() panel here asked

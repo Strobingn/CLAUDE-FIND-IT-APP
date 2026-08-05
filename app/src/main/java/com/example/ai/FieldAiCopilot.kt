@@ -2,7 +2,6 @@ package com.example.ai
 
 import com.example.analysis.TerrainFeatureCandidate
 import com.example.analysis.TerrainIntelligenceResult
-import com.example.analysis.VerifiedFeedback
 import com.example.data.TargetSignal
 import com.example.data.VerificationOutcome
 import com.example.data.field.BreadcrumbTrack
@@ -12,8 +11,8 @@ import com.example.data.field.FindSiteClusterer
 import java.util.Locale
 
 /**
- * Ten AI-heavy field features that turn session context into specialist prompts
- * for [TerrainAiGateway] (OpenAI primary, Gemini fallback).
+ * Twenty AI-heavy field features that turn session context into specialist prompts
+ * for [TerrainAiGateway] (OpenAI primary, Gemini fallback). Pack 1 (10) + pack 3 (10).
  */
 enum class FieldAiFeature(
     val title: String,
@@ -82,6 +81,67 @@ enum class FieldAiFeature(
         description = "End-of-day structured debrief from freeform notes + session data",
         prefersViewportImage = false,
     ),
+    // --- Pack 3 ---
+    RETURN_TRIP_PLANNER(
+        title = "Return-trip planner",
+        shortLabel = "Return trip",
+        description = "Ordered next-visit stops from starred finds and open digs; optional NAV_TARGET lines",
+        prefersViewportImage = false,
+    ),
+    FALSE_POSITIVE_AUTOPSY(
+        title = "False-positive autopsy",
+        shortLabel = "FP autopsy",
+        description = "Why rejected finds looked real; never-again cues and VIZ_MODE suggestions",
+        prefersViewportImage = true,
+    ),
+    COMPARE_TWO_SITES(
+        title = "Compare two sites",
+        shortLabel = "Compare",
+        description = "Side-by-side rank of primary vs secondary parcel/tile for hunting priority",
+        prefersViewportImage = false,
+    ),
+    QUESTION_THE_CELL(
+        title = "Question the cell",
+        shortLabel = "Ask cell",
+        description = "Plain-language micro-topography for an inspected cell + viz mode",
+        prefersViewportImage = true,
+    ),
+    EVIDENCE_CHAIN(
+        title = "Evidence chain",
+        shortLabel = "Evidence",
+        description = "Observation → inference → field test chain for top candidates",
+        prefersViewportImage = true,
+    ),
+    VOICE_STRUCTURED_FIND(
+        title = "Voice → structured find",
+        shortLabel = "Voice find",
+        description = "Freeform notes/transcript → suggested METAL_TYPE / OUTCOME / STATUS / NOTES",
+        prefersViewportImage = false,
+    ),
+    PHOTO_CATALOG_ASSIST(
+        title = "Photo catalog assist",
+        shortLabel = "Photo AI",
+        description = "Catalog hints from find notes (no dating claims); vision optional later",
+        prefersViewportImage = false,
+    ),
+    COVERAGE_GAP_AI(
+        title = "Coverage gap AI",
+        shortLabel = "Gaps",
+        description = "Unswept high-value terrain relative to trails; map targets for gaps",
+        prefersViewportImage = true,
+    ),
+    PARTNER_HANDOFF(
+        title = "Partner handoff brief",
+        shortLabel = "Handoff",
+        description = "One-page brief for a teammate taking over the detector",
+        prefersViewportImage = false,
+    ),
+    RISK_ETHICS_COACH(
+        title = "Risk & ethics coach",
+        shortLabel = "Ethics",
+        description = "Do/don't dig cautions; never invent property or heritage law",
+        prefersViewportImage = false,
+    ),
 }
 
 /** Packed field session context for AI copilot prompts. */
@@ -100,6 +160,15 @@ data class FieldAiSessionPack(
     val breadcrumbTracks: List<BreadcrumbTrack> = emptyList(),
     val localResult: TerrainIntelligenceResult? = null,
     val freeformNotes: String = "",
+    /** Plain-language / structured summary of the user-inspected terrain cell. */
+    val inspectedCellSummary: String = "",
+    /** Current visualization mode 0..8 (hillshade, LRM, etc.). */
+    val visualizationMode: Int = 0,
+    /** Secondary parcel/tile terrain summary for compare-two-sites. */
+    val secondaryTerrainSummary: String = "",
+    val secondaryCandidateCount: Int = 0,
+    val secondaryFindCount: Int = 0,
+    val secondaryTerrainContext: String = "",
 )
 
 object FieldAiCopilot {
@@ -118,6 +187,14 @@ object FieldAiCopilot {
         )
     }
 
+    // Pack-3 structured-tag parsers (delegates keep call sites on FieldAiCopilot)
+    fun parseNavTargetIds(text: String): List<Long> = FieldAiStructuredTags.parseNavTargetIds(text)
+    fun parseVizMode(text: String): Int? = FieldAiStructuredTags.parseVizMode(text)
+    fun parseMetalTypeSuggestion(text: String): String? = FieldAiStructuredTags.parseMetalTypeSuggestion(text)
+    fun parseOutcomeSuggestion(text: String): String? = FieldAiStructuredTags.parseOutcomeSuggestion(text)
+    fun parseStatusSuggestion(text: String): String? = FieldAiStructuredTags.parseStatusSuggestion(text)
+    fun parseNotesSuggestion(text: String): String? = FieldAiStructuredTags.parseNotesSuggestion(text)
+
     fun buildUserPrompt(feature: FieldAiFeature, pack: FieldAiSessionPack): String {
         val body = when (feature) {
             FieldAiFeature.DIG_BRIEF -> digBriefPrompt(pack)
@@ -130,6 +207,16 @@ object FieldAiCopilot {
             FieldAiFeature.HISTORIC_CORRELATOR -> historicCorrelatorPrompt(pack)
             FieldAiFeature.ANOMALY_DEEPDIVE -> anomalyDeepDivePrompt(pack)
             FieldAiFeature.DAY_DEBRIEF -> dayDebriefPrompt(pack)
+            FieldAiFeature.RETURN_TRIP_PLANNER -> returnTripPlannerPrompt(pack)
+            FieldAiFeature.FALSE_POSITIVE_AUTOPSY -> falsePositiveAutopsyPrompt(pack)
+            FieldAiFeature.COMPARE_TWO_SITES -> compareTwoSitesPrompt(pack)
+            FieldAiFeature.QUESTION_THE_CELL -> questionTheCellPrompt(pack)
+            FieldAiFeature.EVIDENCE_CHAIN -> evidenceChainPrompt(pack)
+            FieldAiFeature.VOICE_STRUCTURED_FIND -> voiceStructuredFindPrompt(pack)
+            FieldAiFeature.PHOTO_CATALOG_ASSIST -> photoCatalogAssistPrompt(pack)
+            FieldAiFeature.COVERAGE_GAP_AI -> coverageGapAiPrompt(pack)
+            FieldAiFeature.PARTNER_HANDOFF -> partnerHandoffPrompt(pack)
+            FieldAiFeature.RISK_ETHICS_COACH -> riskEthicsCoachPrompt(pack)
         }
         return body.trim()
     }
@@ -180,10 +267,64 @@ object FieldAiCopilot {
             You are a field team lead writing an end-of-day debrief. Structure wins, misses,
             unfinished work, and tomorrow's priorities. Be blunt and useful.
         """.trimIndent()
+        FieldAiFeature.RETURN_TRIP_PLANNER -> """
+            You are a field logistics planner. Order return-trip stops from starred finds and open digs.
+            Hard rule: LiDAR does not prove buried metal, age, or depth.
+            After the plan, optionally emit ordered machine lines: NAV_TARGET id=<long>
+            using only ids provided in the user context. Never invent ids.
+        """.trimIndent()
+        FieldAiFeature.FALSE_POSITIVE_AUTOPSY -> """
+            You are a detection QA analyst. Autopsy false positives only — what looked real and why it failed.
+            Hard rule: LiDAR does not prove buried metal, age, or depth.
+            After analysis, optionally suggest viz modes as machine lines: VIZ_MODE=<0-8>
+            (0 hillshade, 1 multi-hillshade, 2 slope, 3 LRM, 4 curvature, 5 disturbance, 6 aspect, 7 elev, 8 canopy).
+        """.trimIndent()
+        FieldAiFeature.COMPARE_TWO_SITES -> """
+            You are a survey prioritization analyst. Compare Site A (primary) vs Site B (secondary)
+            with explicit scores and a recommended pick. Separate evidence from speculation.
+            Hard rule: LiDAR does not prove buried metal, age, or depth.
+        """.trimIndent()
+        FieldAiFeature.QUESTION_THE_CELL -> """
+            You are a micro-topography explainer. Answer what the inspected cell likely shows in plain language.
+            Hard rule: LiDAR does not prove buried metal, age, or depth. Give 5 tight bullets plus uncertainty.
+        """.trimIndent()
+        FieldAiFeature.EVIDENCE_CHAIN -> """
+            You are an explainability specialist for terrain rankers. Build numbered evidence chains:
+            observation → inference → field test. Hard rule: LiDAR does not prove buried metal, age, or depth.
+            If an image is attached you may add up to 4 [MAP_TARGET x= y= confidence= label=] lines.
+        """.trimIndent()
+        FieldAiFeature.VOICE_STRUCTURED_FIND -> """
+            You are a finds data-entry assistant. Convert freeform field notes into suggested catalog fields.
+            Do not invent provenience. User will confirm before save.
+            End with machine lines when confident: METAL_TYPE=…  OUTCOME=…  STATUS=…  NOTES=…
+            (one value per line; omit a line if unknown).
+        """.trimIndent()
+        FieldAiFeature.PHOTO_CATALOG_ASSIST -> """
+            You are a finds catalog assistant. Suggest labels and what to photograph next from notes/context.
+            Never claim dating, authenticity, or monetary value as fact. No age/depth/metal proven from LiDAR.
+            Catalog hints only; mark uncertainty.
+        """.trimIndent()
+        FieldAiFeature.COVERAGE_GAP_AI -> """
+            You are a survey coverage analyst. Identify gaps between walked GPS trails and high-value terrain.
+            Hard rule: LiDAR does not prove buried metal, age, or depth.
+            After the written plan, if useful emit up to 6 [MAP_TARGET x= y= confidence= label=] for gap centroids
+            (0..100 image coords when an image is attached; otherwise use grid percent language in prose).
+        """.trimIndent()
+        FieldAiFeature.PARTNER_HANDOFF -> """
+            You write a concise one-page handoff for a teammate taking over the detector.
+            Be operational: nearest priorities, open digs, hazards, radio-style brevity. No hype.
+            Hard rule: LiDAR does not prove buried metal, age, or depth.
+        """.trimIndent()
+        FieldAiFeature.RISK_ETHICS_COACH -> """
+            You are a field ethics and risk coach. List practical do/don't dig cautions from context.
+            Never invent property ownership, statutes, permit status, or cemetery boundaries as facts.
+            Urge users to verify land permission and local heritage rules themselves. No legal advice.
+            Hard rule: LiDAR does not prove buried metal, age, or depth.
+        """.trimIndent()
     }
 
     // ------------------------------------------------------------------
-    // Prompt builders
+    // Prompt builders — pack 1
     // ------------------------------------------------------------------
 
     private fun digBriefPrompt(pack: FieldAiSessionPack): String = buildString {
@@ -297,6 +438,218 @@ object FieldAiCopilot {
     }
 
     // ------------------------------------------------------------------
+    // Prompt builders — pack 3
+    // ------------------------------------------------------------------
+
+    private fun returnTripPlannerPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("Build a RETURN TRIP PLAN for the next visit.")
+        appendLine("Prioritize starred finds and open (incomplete) digs. Include order, reason, and time budget.")
+        appendLine("Hard rule: LiDAR does not prove buried metal, age, or depth.")
+        appendLine("After the plan, optionally emit ordered machine lines only for provided ids:")
+        appendLine("NAV_TARGET id=<long>")
+        appendLine()
+        append(sessionFacts(pack))
+        val starred = pack.signals.filter { it.starred }
+        appendLine("--- Starred finds (${starred.size}) ---")
+        if (starred.isEmpty()) {
+            appendLine("None starred.")
+        } else {
+            starred.forEachIndexed { i, s ->
+                appendLine(
+                    "${i + 1}. id=${s.id} ${s.metalType.label} · status=${s.status} · " +
+                        locLabel(s) + noteSuffix(s.notes),
+                )
+            }
+        }
+        val openDigs = pack.excavationLogs.filter { !it.isComplete }
+        appendLine()
+        appendLine("--- Open digs (${openDigs.size}) ---")
+        if (openDigs.isEmpty()) {
+            appendLine("None open.")
+        } else {
+            openDigs.takeLast(25).forEach { log ->
+                val notes = listOf(log.soilNotes, log.findsDescription)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" · ")
+                    .take(100)
+                appendLine("targetId=${log.targetId} complete=false depth=${log.depthCentimeters ?: "?"} notes=$notes")
+            }
+        }
+        appendLine()
+        append(trailSummary(pack.breadcrumbTracks))
+        append(candidatesBrief(pack.localResult, limit = 10))
+        append(findsDetail(pack.signals, limit = 20))
+    }
+
+    private fun falsePositiveAutopsyPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("FALSE-POSITIVE AUTOPSY: explain why rejected finds looked real and how to avoid repeats.")
+        appendLine("Use only rejected outcomes plus local terrain candidates as evidence.")
+        appendLine("Deliver: pattern checklist of 'never again' cues, and optional VIZ_MODE=0..8 lines.")
+        appendLine("Hard rule: LiDAR does not prove buried metal, age, or depth.")
+        appendLine()
+        append(sessionFacts(pack))
+        val rejected = pack.signals.filter {
+            it.outcome == VerificationOutcome.REJECTED_FALSE_POSITIVE
+        }
+        appendLine("--- Rejected false positives (${rejected.size}) ---")
+        if (rejected.isEmpty()) {
+            appendLine("None logged as false positive yet.")
+        } else {
+            append(findsDetail(rejected, limit = 40))
+        }
+        append(outcomeBreakdown(pack.signals))
+        append(candidatesBrief(pack.localResult, limit = 15, detailed = true))
+        appendLine("Current viz mode: ${pack.visualizationMode} (${vizModeLabel(pack.visualizationMode)})")
+    }
+
+    private fun compareTwoSitesPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("COMPARE TWO SITES for hunting priority. Score A vs B and pick one with reasons.")
+        appendLine("Hard rule: LiDAR does not prove buried metal, age, or depth.")
+        appendLine()
+        appendLine("--- Site A (primary) ---")
+        append(sessionFacts(pack))
+        append(candidatesBrief(pack.localResult, limit = 12))
+        append(sitesSummary(pack.signals))
+        append(findsDetail(pack.signals, limit = 20))
+        appendLine()
+        appendLine("--- Site B (secondary) ---")
+        if (pack.secondaryTerrainSummary.isBlank() && pack.secondaryTerrainContext.isBlank()) {
+            appendLine("Secondary site data not provided. Note that comparison is incomplete.")
+        } else {
+            if (pack.secondaryTerrainContext.isNotBlank()) {
+                appendLine(pack.secondaryTerrainContext.trim())
+            }
+            appendLine("Terrain summary: ${pack.secondaryTerrainSummary.ifBlank { "(none)" }}")
+            appendLine("Secondary candidate count: ${pack.secondaryCandidateCount}")
+            appendLine("Secondary find count: ${pack.secondaryFindCount}")
+        }
+        appendLine()
+        appendLine("Produce side-by-side scores (terrain promise, find density, access/risk, data quality)")
+        appendLine("and a clear recommended pick with caveats.")
+    }
+
+    private fun questionTheCellPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("QUESTION THE CELL: explain the inspected micro-topography in plain language.")
+        appendLine("Answer format: 5 bullets — what it looks like, natural vs cultural likelihood,")
+        appendLine("what to check in the field, what would disprove it, confidence.")
+        appendLine("Hard rule: LiDAR does not prove buried metal, age, or depth.")
+        appendLine()
+        append(sessionFacts(pack))
+        appendLine("Visualization mode: ${pack.visualizationMode} (${vizModeLabel(pack.visualizationMode)})")
+        appendLine("Sun: az=${pack.sunAzimuth}° alt=${pack.sunAltitude}°")
+        appendLine()
+        appendLine("--- Inspected cell ---")
+        if (pack.inspectedCellSummary.isBlank()) {
+            appendLine("No cell summary provided. Describe general viewport morphology if an image is attached.")
+        } else {
+            appendLine(pack.inspectedCellSummary.take(4_000))
+        }
+        appendLine()
+        append(candidatesBrief(pack.localResult, limit = 8, detailed = true))
+    }
+
+    private fun evidenceChainPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("EVIDENCE CHAIN for the top local candidates.")
+        appendLine("For each candidate produce a numbered chain: observation → inference → field test.")
+        appendLine("Hard rule: LiDAR does not prove buried metal, age, or depth.")
+        appendLine()
+        append(sessionFacts(pack))
+        append(candidatesBrief(pack.localResult, limit = 10, detailed = true))
+        append(findsDetail(pack.signals, limit = 15))
+        append(outcomeBreakdown(pack.signals))
+    }
+
+    private fun voiceStructuredFindPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("VOICE / FREEFORM → STRUCTURED FIND fields.")
+        appendLine("From the transcript/notes, suggest catalog values the operator can confirm.")
+        appendLine("End with machine lines when confident (omit unknown):")
+        appendLine("METAL_TYPE=<type>")
+        appendLine("OUTCOME=<outcome>")
+        appendLine("STATUS=<status>")
+        appendLine("NOTES=<cleaned notes>")
+        appendLine("Do not invent location or provenience. Hard rule: LiDAR ≠ metal/age/depth.")
+        appendLine()
+        if (pack.freeformNotes.isNotBlank()) {
+            appendLine("--- Freeform notes / voice transcript ---")
+            appendLine(pack.freeformNotes.take(4_000))
+        } else {
+            appendLine("No freeform notes provided — ask what fields can still be inferred from session finds.")
+        }
+        appendLine()
+        append(sessionFacts(pack))
+        append(findsDetail(pack.signals, limit = 15))
+    }
+
+    private fun photoCatalogAssistPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("PHOTO / CATALOG ASSIST for finds (text/notes based; no dating claims).")
+        appendLine("Suggest catalog labels, missing fields, and what to photograph next.")
+        appendLine("Never claim age, authenticity, or value as fact. LiDAR does not prove metal/age/depth.")
+        appendLine()
+        if (pack.freeformNotes.isNotBlank()) {
+            appendLine("--- Operator notes ---")
+            appendLine(pack.freeformNotes.take(3_000))
+            appendLine()
+        }
+        append(sessionFacts(pack))
+        append(findsDetail(pack.signals, limit = 40))
+        append(sitesSummary(pack.signals))
+    }
+
+    private fun coverageGapAiPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("COVERAGE GAP AI: find where trails have not covered high-value terrain.")
+        appendLine("Describe gap zones, priority order, and suggested re-walk lanes.")
+        appendLine("Mention MAP_TARGET protocol for gap centroids when an image is attached:")
+        appendLine("[MAP_TARGET x=.. y=.. confidence=.. label=..]")
+        appendLine("Hard rule: LiDAR does not prove buried metal, age, or depth.")
+        appendLine()
+        append(sessionFacts(pack))
+        append(trailSummary(pack.breadcrumbTracks))
+        append(candidatesBrief(pack.localResult, limit = 15, detailed = true))
+        append(sitesSummary(pack.signals))
+        append(findsDetail(pack.signals, limit = 20))
+    }
+
+    private fun partnerHandoffPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("Write a PARTNER HANDOFF brief (one page, radio-style, share-sheet ready).")
+        appendLine("Sections: Where we are · What is hot · Open digs · Nearest priorities ·")
+        appendLine("Do not dig / watch-outs · Suggested next 60 minutes · Data state.")
+        appendLine("Hard rule: LiDAR does not prove buried metal, age, or depth.")
+        appendLine()
+        append(sessionFacts(pack))
+        val starred = pack.signals.filter { it.starred }
+        if (starred.isNotEmpty()) {
+            appendLine("--- Starred for handoff ---")
+            starred.take(12).forEach { s ->
+                appendLine("id=${s.id} ${s.metalType.label} · ${locLabel(s)}${noteSuffix(s.notes)}")
+            }
+            appendLine()
+        }
+        append(findsDetail(pack.signals, limit = 25))
+        append(digsSummary(pack.excavationLogs))
+        append(trailSummary(pack.breadcrumbTracks))
+        append(candidatesBrief(pack.localResult, limit = 8))
+        append(outcomeBreakdown(pack.signals))
+    }
+
+    private fun riskEthicsCoachPrompt(pack: FieldAiSessionPack): String = buildString {
+        appendLine("RISK & ETHICS COACH: practical do/don't dig cautions for this session.")
+        appendLine("Never invent property ownership, permits, cemetery status, or statutes.")
+        appendLine("Urge the operator to verify permission and local heritage rules themselves.")
+        appendLine("Hard rule: LiDAR does not prove buried metal, age, or depth.")
+        appendLine()
+        if (pack.freeformNotes.isNotBlank()) {
+            appendLine("--- Operator notes / concerns ---")
+            appendLine(pack.freeformNotes.take(3_000))
+            appendLine()
+        }
+        append(sessionFacts(pack))
+        append(findsDetail(pack.signals, limit = 20))
+        append(digsSummary(pack.excavationLogs))
+        append(sitesSummary(pack.signals))
+        append(candidatesBrief(pack.localResult, limit = 8))
+    }
+
+    // ------------------------------------------------------------------
     // Context formatters
     // ------------------------------------------------------------------
 
@@ -334,7 +687,7 @@ object FieldAiCopilot {
                 } else {
                     "grid ${s.gridX.toInt()},${s.gridY.toInt()}"
                 }
-                append("${i + 1}. ${s.metalType.label}")
+                append("${i + 1}. id=${s.id} ${s.metalType.label}")
                 if (s.starred) append(" ★")
                 append(" · $geo · ${s.status} · ${s.outcome.label}")
                 if (s.notes.isNotBlank()) append(" · notes=${s.notes.take(120)}")
@@ -427,4 +780,27 @@ object FieldAiCopilot {
             base
         }
     }
+
+    private fun vizModeLabel(mode: Int): String = when (mode.coerceIn(0, 8)) {
+        0 -> "Hillshade"
+        1 -> "Multi-directional hillshade"
+        2 -> "Slope"
+        3 -> "Local relief"
+        4 -> "Curvature"
+        5 -> "Disturbance candidates"
+        6 -> "Aspect"
+        7 -> "Elevation"
+        8 -> "Canopy height"
+        else -> "Unknown"
+    }
+
+    private fun locLabel(s: TargetSignal): String =
+        if (s.latitude != null && s.longitude != null) {
+            String.format(Locale.US, "%.5f,%.5f", s.latitude, s.longitude)
+        } else {
+            "grid ${s.gridX.toInt()},${s.gridY.toInt()}"
+        }
+
+    private fun noteSuffix(notes: String): String =
+        if (notes.isNotBlank()) " · notes=${notes.take(80)}" else ""
 }

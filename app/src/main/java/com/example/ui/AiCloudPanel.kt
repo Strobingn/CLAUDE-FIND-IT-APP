@@ -1,5 +1,6 @@
 package com.example.ui
 
+import android.content.Intent
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +46,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -70,6 +72,19 @@ internal val AI_BUILT_IN_QUESTIONS = listOf(
 private val CompactButtonHeight = 32.dp
 private val CompactButtonPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
 
+/** Which AI field-pack chip strip to show. Pack1 = ordinals 0..9, Pack3 = 10..19. */
+private enum class AiPackFilter {
+    ALL,
+    PACK1,
+    PACK3,
+}
+
+private fun FieldAiFeature.matchesPackFilter(filter: AiPackFilter): Boolean = when (filter) {
+    AiPackFilter.ALL -> true
+    AiPackFilter.PACK1 -> ordinal < 10
+    AiPackFilter.PACK3 -> ordinal >= 10
+}
+
 /** Cloud controls and conversation only. The interactive analysis map lives above this panel. */
 @Composable
 fun AiCloudPanel(
@@ -80,8 +95,10 @@ fun AiCloudPanel(
     assistantViewModel: AiTerrainViewModel,
     fieldSessionPack: FieldAiSessionPack? = null,
     onApplyLighting: (azimuth: Float, altitude: Float) -> Unit = { _, _ -> },
+    onApplyVizMode: (Int) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     val state by assistantViewModel.state.collectAsStateWithLifecycle()
     val viewport by TerrainVisionSession.snapshot.collectAsStateWithLifecycle()
     var draft by rememberSaveable { mutableStateOf("") }
@@ -89,7 +106,17 @@ fun AiCloudPanel(
     var geminiKey by rememberSaveable { mutableStateOf("") }
     var showKeys by rememberSaveable { mutableStateOf(!state.openAiConfigured && !state.geminiConfigured) }
     var attachImage by rememberSaveable { mutableStateOf(true) }
+    var packFilter by rememberSaveable { mutableStateOf(AiPackFilter.ALL) }
     val imageReady = viewport.bitmap?.let { !it.isRecycled && it.width > 0 && it.height > 0 } == true
+    val lastAssistantText = remember(state.messages) {
+        state.messages.lastOrNull { it.role == AiMessageRole.MODEL }?.text?.takeIf { it.isNotBlank() }
+    }
+    val filteredFeatures = remember(packFilter) {
+        FieldAiFeature.entries.filter { it.matchesPackFilter(packFilter) }
+    }
+    val hasSuggestedFindFields = state.pendingMetalType != null ||
+        state.pendingOutcome != null ||
+        state.pendingStatus != null
 
     LaunchedEffect(imageReady) {
         if (!imageReady) attachImage = false
@@ -295,12 +322,41 @@ fun AiCloudPanel(
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    FieldAiFeature.entries.forEach { feature ->
+                    FilterChip(
+                        selected = packFilter == AiPackFilter.ALL,
+                        onClick = { packFilter = AiPackFilter.ALL },
+                        label = { Text("All", style = MaterialTheme.typography.labelSmall) },
+                        modifier = Modifier
+                            .height(CompactButtonHeight)
+                            .testTag("ai_pack_filter_all"),
+                    )
+                    FilterChip(
+                        selected = packFilter == AiPackFilter.PACK1,
+                        onClick = { packFilter = AiPackFilter.PACK1 },
+                        label = { Text("Pack 1", style = MaterialTheme.typography.labelSmall) },
+                        modifier = Modifier
+                            .height(CompactButtonHeight)
+                            .testTag("ai_pack_filter_1"),
+                    )
+                    FilterChip(
+                        selected = packFilter == AiPackFilter.PACK3,
+                        onClick = { packFilter = AiPackFilter.PACK3 },
+                        label = { Text("Pack 3", style = MaterialTheme.typography.labelSmall) },
+                        modifier = Modifier
+                            .height(CompactButtonHeight)
+                            .testTag("ai_pack_filter_3"),
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    filteredFeatures.forEach { feature ->
                         AssistChip(
                             onClick = {
-                                val pack = if (
-                                    feature == FieldAiFeature.DAY_DEBRIEF && draft.isNotBlank()
-                                ) {
+                                val pack = if (draft.isNotBlank()) {
                                     baseFieldPack.copy(freeformNotes = draft)
                                 } else {
                                     baseFieldPack
@@ -333,6 +389,17 @@ fun AiCloudPanel(
                         )
                     }
                 }
+                if (filteredFeatures.isEmpty()) {
+                    Text(
+                        when (packFilter) {
+                            AiPackFilter.PACK3 -> "Pack 3 features not available yet"
+                            AiPackFilter.PACK1 -> "No Pack 1 features"
+                            AiPackFilter.ALL -> "No field-pack features"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 val pendingAz = state.pendingLightingAzimuth
                 val pendingAlt = state.pendingLightingAltitude
                 if (pendingAz != null && pendingAlt != null) {
@@ -351,6 +418,85 @@ fun AiCloudPanel(
                             "Apply lighting recommendation",
                             style = MaterialTheme.typography.labelSmall,
                         )
+                    }
+                }
+                state.pendingVizMode?.let { mode ->
+                    FilledTonalButton(
+                        onClick = {
+                            onApplyVizMode(mode)
+                            assistantViewModel.clearPendingStructuredActions()
+                        },
+                        enabled = !state.isSending,
+                        modifier = Modifier
+                            .height(CompactButtonHeight)
+                            .testTag("ai_apply_viz"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text(
+                            "Apply viz mode ($mode)",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                }
+                if (hasSuggestedFindFields) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(
+                            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                "AI suggested find fields",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            state.pendingMetalType?.let {
+                                Text("Metal: $it", style = MaterialTheme.typography.bodySmall)
+                            }
+                            state.pendingOutcome?.let {
+                                Text("Outcome: $it", style = MaterialTheme.typography.bodySmall)
+                            }
+                            state.pendingStatus?.let {
+                                Text("Status: $it", style = MaterialTheme.typography.bodySmall)
+                            }
+                            state.pendingStructuredNotes?.let {
+                                Text("Notes: $it", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text(
+                                "Suggestions only — not written to finds until you confirm elsewhere.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                            TextButton(
+                                onClick = assistantViewModel::clearPendingStructuredActions,
+                                modifier = Modifier.height(CompactButtonHeight),
+                                contentPadding = CompactButtonPadding,
+                            ) {
+                                Text("Dismiss", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+                if (lastAssistantText != null) {
+                    TextButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, lastAssistantText)
+                                putExtra(Intent.EXTRA_SUBJECT, "Find-It AI reply")
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share reply"))
+                        },
+                        modifier = Modifier
+                            .height(CompactButtonHeight)
+                            .testTag("ai_share_reply"),
+                        contentPadding = CompactButtonPadding,
+                    ) {
+                        Text("Share reply", style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }

@@ -191,6 +191,18 @@ data class AiTerrainState(
     val pendingLightingAzimuth: Float? = null,
     /** Hillshade altitude from LIGHTING_ADVISOR; consumed by the terrain UI then cleared. */
     val pendingLightingAltitude: Float? = null,
+    /** Viz mode index from VIZ_MODE= tag; consumed by the terrain UI then cleared. */
+    val pendingVizMode: Int? = null,
+    /** Signal ids from NAV_TARGET id= tags; consumed by navigation UI then cleared. */
+    val pendingNavTargetIds: List<Long> = emptyList(),
+    /** Suggested metal type from voice/photo structured assist; user confirms before write. */
+    val pendingMetalType: String? = null,
+    /** Suggested verification outcome from voice/photo structured assist. */
+    val pendingOutcome: String? = null,
+    /** Suggested find status from voice/photo structured assist. */
+    val pendingStatus: String? = null,
+    /** Cleaned notes suggestion from voice/photo structured assist. */
+    val pendingStructuredNotes: String? = null,
     /** Title of the last Field AI feature that completed successfully. */
     val lastFieldFeature: String? = null,
 )
@@ -639,10 +651,24 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
+    /** Clears pack-3 structured action tags (viz, nav, metal, outcome, status, notes). Does not clear lighting. */
+    fun clearPendingStructuredActions() {
+        _state.value = _state.value.copy(
+            pendingVizMode = null,
+            pendingNavTargetIds = emptyList(),
+            pendingMetalType = null,
+            pendingOutcome = null,
+            pendingStatus = null,
+            pendingStructuredNotes = null,
+        )
+    }
+
     /**
-     * Runs one of the ten Field AI specialist features through [TerrainAiGateway]
-     * (OpenAI primary / Gemini fallback). Lighting recommendations are exposed via
-     * [AiTerrainState.pendingLightingAzimuth] / [AiTerrainState.pendingLightingAltitude].
+     * Runs one of the twenty Field AI specialist features through [TerrainAiGateway]
+     * (OpenAI primary / Gemini fallback). Structured tags are stored on state for UI apply:
+     * lighting ([AiTerrainState.pendingLightingAzimuth] / [AiTerrainState.pendingLightingAltitude]),
+     * viz mode ([AiTerrainState.pendingVizMode]), nav targets ([AiTerrainState.pendingNavTargetIds]),
+     * and voice/photo find fields (metal / outcome / status / notes).
      */
     fun runFieldAiFeature(
         feature: FieldAiFeature,
@@ -734,6 +760,31 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                 } else {
                     null
                 }
+                // Pack-3 structured tags (parsers land with FieldAiCopilot / merge).
+                val navTargetIds = FieldAiCopilot.parseNavTargetIds(answer.text)
+                val vizMode = FieldAiCopilot.parseVizMode(answer.text)
+                val structuredFind = feature == FieldAiFeature.VOICE_STRUCTURED_FIND ||
+                    feature == FieldAiFeature.PHOTO_CATALOG_ASSIST
+                val metalType = if (structuredFind) {
+                    FieldAiCopilot.parseMetalTypeSuggestion(answer.text)
+                } else {
+                    null
+                }
+                val outcome = if (structuredFind) {
+                    FieldAiCopilot.parseOutcomeSuggestion(answer.text)
+                } else {
+                    null
+                }
+                val status = if (structuredFind) {
+                    FieldAiCopilot.parseStatusSuggestion(answer.text)
+                } else {
+                    null
+                }
+                val structuredNotes = if (structuredFind) {
+                    FieldAiCopilot.parseNotesSuggestion(answer.text)
+                } else {
+                    null
+                }
                 _state.value = _state.value.copy(
                     messages = _state.value.messages + AiMessage(
                         id = ids.getAndIncrement(),
@@ -753,6 +804,16 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                     cloudTerrainKey = if (cloudTargets.isNotEmpty()) terrainKey else _state.value.cloudTerrainKey,
                     pendingLightingAzimuth = lighting?.azimuth ?: _state.value.pendingLightingAzimuth,
                     pendingLightingAltitude = lighting?.altitude ?: _state.value.pendingLightingAltitude,
+                    pendingVizMode = vizMode ?: _state.value.pendingVizMode,
+                    pendingNavTargetIds = if (navTargetIds.isNotEmpty()) {
+                        navTargetIds
+                    } else {
+                        _state.value.pendingNavTargetIds
+                    },
+                    pendingMetalType = metalType ?: _state.value.pendingMetalType,
+                    pendingOutcome = outcome ?: _state.value.pendingOutcome,
+                    pendingStatus = status ?: _state.value.pendingStatus,
+                    pendingStructuredNotes = structuredNotes ?: _state.value.pendingStructuredNotes,
                     lastFieldFeature = feature.title,
                 ).withProviderStatus()
             } catch (cancelled: CancellationException) {
