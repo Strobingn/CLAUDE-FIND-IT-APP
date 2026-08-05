@@ -43,6 +43,8 @@ import com.example.data.TerrainGpuSceneBuilder
 import com.example.data.TerrainImportSource
 import com.example.data.TerrainPerformanceSession
 import com.example.data.TerrainSessionStore
+import com.example.data.TerrainQuality
+import com.example.data.TerrainQualityScorecard
 import com.example.data.TargetSignal
 import com.example.data.gridForHillshadePreview
 import com.example.data.hillshadeDebounceMs
@@ -179,6 +181,8 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     val contourIntervalMeters = _contourIntervalMeters.asStateFlow()
     private val _activeTerrainSummary = MutableStateFlow("Built-in demonstration terrain")
     val activeTerrainSummary = _activeTerrainSummary.asStateFlow()
+    private val _terrainQuality = MutableStateFlow<TerrainQualityScorecard?>(null)
+    val terrainQuality: StateFlow<TerrainQualityScorecard?> = _terrainQuality.asStateFlow()
     private val _canRefineTerrain = MutableStateFlow(false)
     val canRefineTerrain = _canRefineTerrain.asStateFlow()
     private val _isRefiningTerrain = MutableStateFlow(false)
@@ -917,12 +921,14 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 _elevationGrid.value = generatedGrid
                 _activeGeoMetadata.value = GeoSpatialLibrary.SITES_METADATA[index]
                 _activeTerrainSummary.value = "Built-in simulated terrain"
+                publishTerrainQuality()
                 updateCoordinates()
                 scheduleRender(immediate = true)
                 if (_basemapEnabled.value) refreshBasemapTiles()
             }
         } else {
             _elevationGrid.value = requireNotNull(customGrid)
+            publishTerrainQuality()
             updateCoordinates()
             scheduleRender(immediate = true)
             if (_basemapEnabled.value) refreshBasemapTiles()
@@ -970,12 +976,26 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             resolutionMeters = grid.cellSizeMeters.toDouble(),
         )
         _activeTerrainSummary.value = result.summary
+        publishTerrainQuality()
         updateCoordinates()
         scheduleRender(immediate = true)
         if (_basemapEnabled.value) refreshBasemapTiles()
         if (resetViewport) {
             _viewportResetKey.value = _viewportResetKey.value + 1
         }
+    }
+
+    /** Recompute the ground-quality scorecard from the active grid + geo metadata. */
+    private fun publishTerrainQuality() {
+        val grid = _elevationGrid.value
+        val metadata = _activeGeoMetadata.value
+        _terrainQuality.value = TerrainQuality.from(
+            grid = grid,
+            crs = metadata.crs,
+            datum = metadata.datum,
+            georeferenced = metadata.isGeoreferenced,
+            summary = _activeTerrainSummary.value,
+        )
     }
 
     /**
@@ -1840,6 +1860,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         } else {
             _activeTerrainSummary.value = "Built-in demonstration terrain"
         }
+        publishTerrainQuality()
 
         _sweepX.value = settingsRepo.getFloat(SettingsRepository.Keys.SWEEP_X, 50f)
         _sweepY.value = settingsRepo.getFloat(SettingsRepository.Keys.SWEEP_Y, 50f)
@@ -1920,10 +1941,21 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         try {
             val terrainCache = LazTerrainCache(LazTerrainMemoryCache(), diskCache)
             val coordinator = TerrainDecodeCoordinator(terrainCache)
+            val source = TerrainImportSource(
+                uri = Uri.fromFile(file).toString(),
+                displayName = displayName,
+                options = preferredOptions,
+            )
             val outcome = coordinator.decode(
                 file = file,
                 displayName = displayName,
                 options = preferredOptions,
+                onPreview = { preview ->
+                    withContext(Dispatchers.Main.immediate) {
+                        TerrainPerformanceSession.publish(preview.gpuScene)
+                        setCustomTerrain(result = preview.terrain, source = source)
+                    }
+                },
                 onStage = { stage ->
                     withContext(Dispatchers.Main.immediate) {
                         _activeTerrainSummary.value = stage
@@ -1931,14 +1963,16 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 },
             )
             TerrainPerformanceSession.publish(outcome.gpuScene)
-            setCustomTerrain(
-                result = outcome.terrain,
-                source = TerrainImportSource(
-                    uri = Uri.fromFile(file).toString(),
-                    displayName = displayName,
-                    options = preferredOptions,
-                ),
-            )
+            setCustomTerrain(result = outcome.terrain, source = source)
+            // If a sparse/preview path still returns exactOutcome, promote to full product.
+            val exactJob = outcome.exactOutcome
+            if (exactJob != null) {
+                viewModelScope.launch {
+                    val exact = runCatching { exactJob.await() }.getOrNull() ?: return@launch
+                    TerrainPerformanceSession.publish(exact.gpuScene)
+                    setCustomTerrain(result = exact.terrain, source = source)
+                }
+            }
         } catch (error: Throwable) {
             _activeTerrainSummary.value =
                 "Could not restore ${displayName}: ${error.localizedMessage ?: "decode failed"}"

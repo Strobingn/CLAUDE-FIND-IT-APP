@@ -79,36 +79,9 @@ class TerrainDecodeCoordinator(
                     return@withLock outcome
                 }
 
-                val canSparsePreview = isLazFile(file, displayName) &&
-                    sanitized.focusBounds == null &&
-                    sanitized.rasterResolution >= GPU_PREVIEW_MAX_DIMENSION
-
-                if (canSparsePreview) {
-                    onStage("Building full-resolution sparse preview…")
-                    val previewTerrain = decodeSparsePreview(file, sanitized)
-                    if (previewTerrain != null) {
-                        currentCoroutineContext().ensureActive()
-                        LazSpatialIndex.ensureBuiltAsync(file)
-                        val previewScene = buildGpuScene(previewTerrain.grid, fastTiles = true)
-                        val exact = exactJobs[fullKey] ?: startExactJob(
-                            key = fullKey,
-                            file = file,
-                            displayName = displayName,
-                            options = sanitized,
-                        ).also { exactJobs[fullKey] = it }
-                        val previewOutcome = TerrainDecodeOutcome(
-                            terrain = previewTerrain,
-                            cacheHit = LazTerrainCache.Hit.MISS,
-                            gpuScene = previewScene,
-                            exactOutcome = exact,
-                            isPreview = true,
-                        )
-                        onPreview?.invoke(previewOutcome)
-                        onStage("Preview ready — exact terrain decoding in background…")
-                        return@withLock previewOutcome
-                    }
-                }
-
+                // Sparse chunk previews used to paint first, but they left swiss-cheese holes and
+                // soft detail users hated as the first view. Always decode the exact full-footprint
+                // product first (still memory-bounded by sample stride). Focused Refine stays exact.
                 onStage("Decoding LAZ/LAS at ${sanitized.rasterResolution} px…")
                 val decoded = decodeFile(file, displayName, sanitized)
                     ?: error("Could not decode ${file.name}")

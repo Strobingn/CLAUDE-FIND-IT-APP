@@ -18,10 +18,10 @@ import kotlin.math.min
 internal object LazTerrainReader {
     private const val DECODE_BATCH_POINTS = 32_768
     private const val FILE_BUFFER_BYTES = 1024 * 1024
-    /** Only large tiles benefit from a sparse seek preview; smaller files finish exact quickly. */
+    /** Sparse preview is disabled at the coordinator; keep denser knobs if re-enabled later. */
     private const val PREVIEW_MIN_SOURCE_POINTS = 3_000_000L
-    private const val PREVIEW_TARGET_POINTS = 1_500_000
-    private const val PREVIEW_MAX_CHUNKS = 256
+    private const val PREVIEW_TARGET_POINTS = 5_000_000
+    private const val PREVIEW_MAX_CHUNKS = 1_024
     private const val DEFAULT_CHUNK_POINTS = 50_000
     private val TERRAIN_DECOMPRESS_FIELDS =
         LASZIP_DECOMPRESS_SELECTIVE_Z or
