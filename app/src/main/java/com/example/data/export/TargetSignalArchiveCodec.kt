@@ -59,7 +59,7 @@ object TargetSignalArchiveCodec {
                         signal.datasetKey?.let { enc(it) }.orEmpty(),
                         signal.terrainKey?.let { enc(it) }.orEmpty(),
                         signal.detectedFeatureType?.let { enc(it) }.orEmpty(),
-                    ).joinToString("\t") + "\t" + signal.starred,
+                    ).joinToString("\t") + "\t" + signal.starred + "\t" + signal.updatedAtMillis,
                 )
             }
         }
@@ -104,6 +104,9 @@ object TargetSignalArchiveCodec {
                 terrainKey = fields[20].takeIf { it.isNotBlank() }?.let { dec(it) },
                 detectedFeatureType = fields[21].takeIf { it.isNotBlank() }?.let { dec(it) },
                 starred = fields.getOrNull(22)?.toBooleanStrictOrNull() ?: false,
+                // Falls back to the logged timestamp for archives written before this field
+                // existed, so an old archive still round-trips instead of failing to parse.
+                updatedAtMillis = fields.getOrNull(23)?.toLongOrNull() ?: fields[12].toLong(),
             )
         } catch (malformed: Exception) {
             null

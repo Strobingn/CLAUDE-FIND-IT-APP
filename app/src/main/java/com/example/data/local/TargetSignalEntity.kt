@@ -22,6 +22,8 @@ data class TargetSignalEntity(
     val gpsAccuracyMeters: Float? = null,
     val source: String,
     val timestamp: Long,
+    val updatedAtMillis: Long = timestamp,
+    val lastSyncedAtMillis: Long? = null,
     val notes: String,
     val photoUris: String,
     val photoBearingsDegrees: String = "",
@@ -48,6 +50,8 @@ fun TargetSignal.toEntity() = TargetSignalEntity(
     gpsAccuracyMeters = gpsAccuracyMeters,
     source = source.name,
     timestamp = timestamp,
+    updatedAtMillis = updatedAtMillis,
+    lastSyncedAtMillis = lastSyncedAtMillis,
     notes = notes,
     photoUris = photoUris.joinToString("\n") { it.replace("\n", "") },
     // Blank line = no bearing recorded for that photo; kept aligned by index with photoUris, so
@@ -76,6 +80,8 @@ fun TargetSignalEntity.toDomain() = TargetSignal(
     gpsAccuracyMeters = gpsAccuracyMeters,
     source = enumValueOrDefault(source, DetectionSource.MANUAL),
     timestamp = timestamp,
+    updatedAtMillis = updatedAtMillis,
+    lastSyncedAtMillis = lastSyncedAtMillis,
     notes = notes,
     photoUris = photoUris.lineSequence().filter { it.isNotBlank() }.toList(),
     photoBearingsDegrees = if (photoBearingsDegrees.isEmpty()) {

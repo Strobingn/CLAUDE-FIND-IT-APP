@@ -95,6 +95,39 @@ class TargetSignalEntityTest {
     }
 
     @Test
+    fun updatedAtAndLastSyncedAtSurviveDatabaseMappingAsDistinctFields() {
+        val signal = TargetSignal(
+            gridX = 0f,
+            gridY = 0f,
+            metalType = MetalType.MANUAL_MARKER,
+            signalStrength = 0f,
+            timestamp = 1_000L,
+            updatedAtMillis = 2_000L,
+            lastSyncedAtMillis = 1_500L,
+        )
+
+        val restored = signal.toEntity().toDomain()
+
+        assertEquals(1_000L, restored.timestamp)
+        assertEquals(2_000L, restored.updatedAtMillis)
+        assertEquals(1_500L, restored.lastSyncedAtMillis)
+    }
+
+    @Test
+    fun updatedAtMillisDefaultsToTimestampWhenNotSetExplicitly() {
+        val signal = TargetSignal(
+            gridX = 0f,
+            gridY = 0f,
+            metalType = MetalType.MANUAL_MARKER,
+            signalStrength = 0f,
+            timestamp = 4_200L,
+        )
+
+        assertEquals(4_200L, signal.updatedAtMillis)
+        assertEquals(null, signal.lastSyncedAtMillis)
+    }
+
+    @Test
     fun databaseMappingDropsBlankPhotoEntries() {
         val entity = TargetSignal(
             gridX = 0f,

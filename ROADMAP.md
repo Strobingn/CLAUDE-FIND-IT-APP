@@ -411,7 +411,7 @@ Exit criteria:
 - QGIS auto-project creation. **Implemented; unit verified.** `QgisProjectWriter` emits a well-formed .qgs referencing exported rasters and vectors with names, relative datasources, and EPSG:4326 preset.
 - Portable project archives. **Implemented; unit verified.** `ProjectArchiveWriter` bundles a project into one self-describing zip with a manifest that round-trips and rejects malformed archives.
 - Optional cloud backup and multi-device synchronization. **Not started** (external service); the Phase 5 offline sync queue and the conflict resolver below are its local prerequisites. Field use never requires connectivity.
-- Conflict detection and resolution. **Implemented; unit verified; UI wired.** `SyncConflictResolver`: both-sides-changed conflicts are reported for review instead of guessed, single-side changes win, and ties break deterministically on timestamps. It now runs for real on the portable-archive import path (Tools tab → "Import portable archive"): each incoming target signal is resolved against the local copy by timestamp, applied as LOCAL_WINS/REMOTE_WINS, or — when both sides changed — held out for the user to review rather than silently overwritten, with an import summary (imported / updated / kept-local / needs-review counts).
+- Conflict detection and resolution. **Implemented; unit verified; UI wired.** `SyncConflictResolver`: both-sides-changed conflicts are reported for review instead of guessed, single-side changes win, and ties break deterministically on timestamps. It runs for real on the portable-archive import path (Tools tab → "Import portable archive"): each `TargetSignal` now carries a genuine `updatedAtMillis` (bumped on every real edit, distinct from the fixed logging-time `timestamp`) and `lastSyncedAtMillis` (stamped on export and on fresh import — the common-ancestor base). A collision resolves the incoming copy against the local one using that base, so a real both-sides-changed conflict is actually held out for review (`needsReview`) instead of the base always being null and silently picking a winner — the bug an independent verification pass caught in the first version of this wiring. Room migration v17→v18 adds the two columns (database now v18).
 
 Exit criteria:
 
@@ -668,6 +668,7 @@ Ten fully wired product features on branch `KIMIV6`. See [docs/FEATURES_SITE_PAC
 
 ## Decision log
 
+- **2026-08-06:** A follow-up 4-agent verification pass code-checked the fix-and-wire-all work above and confirmed 16 of 18 claims hold end-to-end. It found the sync-conflict-resolution wiring was itself broken — the import path always passed a null common-ancestor base, so `MERGE_REQUIRED` could never fire and conflicts silently picked a winner instead of being held for review. Fixed by giving `TargetSignal` a real `updatedAtMillis` (bumped on edit) and `lastSyncedAtMillis` (stamped on export/import) so the resolver has a genuine base (database v17→v18). It also found a stale doc line claiming AI confirm-write was "later polish" when it already shipped with the Site Package Pack — corrected in this file and in `docs/FEATURES_PRODUCT_PACK.md`.
 - **2026-08-06:** Closed out every dead-code gap the roadmap audit found: historic-map ranking adjustment, horizon-line UI, sync-conflict resolution (via portable-archive import/merge), directional photo bearings, manual historic-map feature tracing, reviewed-example capture from field verification, the spatial-holdout/hard-negative ML training pipeline, and real on-device voice dictation are now all reachable from the production UI, not just unit-tested in isolation.
 - **2026-08-05:** Site Package Pack ships dual-surface re-decode, boundary clip refine, relative Z-under-find, class filters, mosaic open UX, clipped LAS, site package zip, field PDF enhancements, boundary GPS alerts, and AI confirm-write — never auto-write finds; LiDAR still never claims metal or dig depth.
 - **2026-07-26:** Historic human-activity detection remains the central product objective.
@@ -714,7 +715,7 @@ See [docs/FEATURES_AI_PACK3.md](docs/FEATURES_AI_PACK3.md).
 | 3 | Share last AI reply (share sheet) | **Done** |
 | 4 | Apply `VIZ_MODE=` from AI | **Done** |
 | 5 | Apply `NAV_TARGET id=` to navigate | **Done** |
-| 6 | Confirm/dismiss `METAL_TYPE` / `OUTCOME` suggestions | **Done** (dismiss; confirm-write later) |
+| 6 | Confirm/dismiss `METAL_TYPE` / `OUTCOME` suggestions | **Done.** Confirm-write shipped with the Site Package Pack (`AiCloudPanel.kt` "Confirm write" button → `HillshadeViewModel.applyAiFindSuggestions`); this line previously said "confirm-write later," which was stale. |
 | 7 | AI field pack filter: Pack 1 / Pack 3 / All | **Done** |
 | 8 | Offline local draft for return-trip (no cloud) | **Done** |
 | 9 | Coverage gap map targets from trail density | **Done** |

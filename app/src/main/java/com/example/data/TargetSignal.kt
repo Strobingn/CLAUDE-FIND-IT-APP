@@ -20,6 +20,19 @@ data class TargetSignal(
     val gpsAccuracyMeters: Float? = null,
     val source: DetectionSource = DetectionSource.MANUAL,
     val timestamp: Long = System.currentTimeMillis(),
+    /**
+     * Bumped whenever this signal's fields are edited and saved - unlike [timestamp], which stays
+     * fixed at logging time. This is the field multi-device conflict resolution actually diffs.
+     */
+    val updatedAtMillis: Long = timestamp,
+    /**
+     * The last time this exact copy was known to match another device's copy: stamped when a
+     * signal is exported into a portable archive, and when a signal is freshly imported from one.
+     * Serves as the common-ancestor base for [com.example.data.field.SyncConflictResolver], so it
+     * can tell a genuine both-sides-changed conflict from an unrelated id collision instead of
+     * always guessing from bare timestamps.
+     */
+    val lastSyncedAtMillis: Long? = null,
     val notes: String = "",
     val photoUris: List<String> = emptyList(),
     /**

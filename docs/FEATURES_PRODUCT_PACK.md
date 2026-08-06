@@ -4,8 +4,8 @@ Product/UX features that close the “Next 10” pipeline after AI packs 1 and 3
 Complements cloud copilots with LAZ quality reporting, structured-tag apply actions,
 offline drafts, trail-density coverage targets, and field ethics friction.
 
-**Branch:** `GROKV5` (not merge to `main` until green)  
-**Status:** Done (shipping on GROKV5)
+**Branch:** `GROKV5` (merged to `main`)  
+**Status:** Done
 
 | # | Feature | Track | What it does |
 |---|---------|--------|--------------|
@@ -14,7 +14,7 @@ offline drafts, trail-density coverage targets, and field ethics friction.
 | 3 | **Share last AI reply** | AI UX | Share-sheet export of the latest AI field-pack answer for teammate handoff without leaving the app. |
 | 4 | **Apply `VIZ_MODE=` from AI** | AI UX | Parses `VIZ_MODE=` tags from AI replies and applies the matching terrain visualization mode. |
 | 5 | **Apply `NAV_TARGET id=` to navigate** | AI → Finds | Parses ordered `NAV_TARGET id=<long>` tags and hands signal ids to navigation / Finds flow (user-driven apply). |
-| 6 | **Confirm/dismiss metal & outcome suggestions** | AI UX | Dismissable suggestion cards for `METAL_TYPE` / `OUTCOME` / status; never auto-writes finds without user confirm (confirm-write remains a later polish). |
+| 6 | **Confirm/dismiss metal & outcome suggestions** | AI UX | Dismissable suggestion cards for `METAL_TYPE` / `OUTCOME` / status; never auto-writes finds without user confirm. Confirm-write itself shipped with the Site Package Pack (`AiCloudPanel.kt` "Confirm write" → `HillshadeViewModel.applyAiFindSuggestions`). |
 | 7 | **AI field pack filter: All / Pack 1 / Pack 3** | AI UX | Chips filter the 20 field-pack features so operators can focus one pack at a time. |
 | 8 | **Offline local draft for return-trip** | AI offline | When cloud keys are missing, produces a local ordered return-trip draft from starred finds, open digs, trails, and GPS (no network required). |
 | 9 | **Coverage gap map targets from trail density** | Field | Turns trail-density / sweep-coverage gaps into map targets so unswept high-value ground is actionable offline. |

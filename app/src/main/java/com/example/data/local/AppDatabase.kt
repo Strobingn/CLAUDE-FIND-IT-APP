@@ -21,7 +21,7 @@ import androidx.room.migration.Migration
         HistoricMapEntity::class,
         HistoricMapFeatureEntity::class,
     ],
-    version = 17,
+    version = 18,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -301,6 +301,19 @@ abstract class AppDatabase : RoomDatabase() {
                 )
             }
         }
+        private val migration17To18 = object : Migration(17, 18) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE target_signals ADD COLUMN updatedAtMillis INTEGER NOT NULL DEFAULT 0",
+                )
+                // Existing rows have no separate edit history; their creation timestamp is the
+                // only known "last changed" point until they're edited again post-migration.
+                db.execSQL("UPDATE target_signals SET updatedAtMillis = timestamp")
+                db.execSQL(
+                    "ALTER TABLE target_signals ADD COLUMN lastSyncedAtMillis INTEGER DEFAULT NULL",
+                )
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -325,6 +338,7 @@ abstract class AppDatabase : RoomDatabase() {
                     migration14To15,
                     migration15To16,
                     migration16To17,
+                    migration17To18,
                 )
                 .build()
                 .also { instance = it }

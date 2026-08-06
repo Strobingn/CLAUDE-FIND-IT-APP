@@ -1660,8 +1660,11 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         // Read before the coroutine launches: _loggedSignals is about to be overwritten by the
         // DB round-trip this triggers, so the pre-edit outcome must be captured now or it's gone.
         val previousOutcome = _loggedSignals.value.firstOrNull { it.id == signal.id }?.outcome
+        // Every real edit bumps updatedAtMillis - the field multi-device conflict resolution
+        // diffs against lastSyncedAtMillis, distinct from the fixed logging-time timestamp.
+        val edited = signal.copy(updatedAtMillis = System.currentTimeMillis())
         viewModelScope.launch {
-            signalDao.upsert(signal.toEntity())
+            signalDao.upsert(edited.toEntity())
             enqueuePendingSync(
                 entityType = SyncEntityType.TARGET_SIGNAL,
                 entityId = signal.id.toString(),
@@ -1947,7 +1950,12 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
      */
     suspend fun buildProjectArchiveBytes(): ByteArray {
         val projectFiles = buildProjectExportFiles()
-        val signals = _loggedSignals.value
+        // Stamp every included signal as "known shared as of now" so a future import - on this
+        // device or the one receiving this archive - has a real common-ancestor base to diff
+        // against instead of guessing from bare timestamps.
+        val exportedAt = System.currentTimeMillis()
+        val signals = _loggedSignals.value.map { it.copy(lastSyncedAtMillis = exportedAt) }
+        signals.forEach { signalDao.upsert(it.toEntity()) }
         val entries = mutableListOf(
             ProjectArchiveFile("targets.csv", buildCsv(signals).toByteArray()),
             ProjectArchiveFile("targets.gpx", buildGpx(signals).toByteArray()),
@@ -1971,11 +1979,14 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
      * Imports the target-signal snapshot from a portable project archive built by
      * [buildProjectArchiveBytes] on another device, merging it into the local find list.
      *
-     * Every incoming signal that doesn't collide with a local id is inserted outright. A
-     * collision runs through [SyncConflictResolver] using each side's [TargetSignal.timestamp] —
-     * there's no shared "base" version to diff against (this app has no live cloud sync yet), so
-     * ties resolve to whichever side is newer and anything genuinely ambiguous is left for the
-     * user to review rather than silently picked, per [ArchiveImportSummary.needsReview].
+     * Every incoming signal that doesn't collide with a local id is inserted outright (and
+     * stamped as freshly synced). A collision runs through [SyncConflictResolver] using each
+     * side's [TargetSignal.updatedAtMillis] against the local copy's [TargetSignal.lastSyncedAtMillis]
+     * as the common-ancestor base - the last time this exact record was known to match another
+     * device's copy (stamped on export and on import). When that base is missing (the id
+     * collided without any shared export/import history), the newer side wins; when it's known
+     * and both sides changed since it, the signal is left for the user to review rather than
+     * silently picked, per [ArchiveImportSummary.needsReview].
      */
     suspend fun importProjectArchive(archiveBytes: ByteArray): ArchiveImportSummary? {
         val manifest = ProjectArchiveWriter.readManifest(archiveBytes) ?: return null
@@ -1989,6 +2000,7 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         )
         val incoming = TargetSignalArchiveCodec.decode(entitiesBytes)
         val local = _loggedSignals.value.associateBy { it.id }
+        val importedAt = System.currentTimeMillis()
         var imported = 0
         var updated = 0
         var keptLocal = 0
@@ -1996,20 +2008,20 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
         for (signal in incoming) {
             val existing = local[signal.id]
             if (existing == null) {
-                signalDao.upsert(signal.toEntity())
+                signalDao.upsert(signal.copy(lastSyncedAtMillis = importedAt).toEntity())
                 imported++
                 continue
             }
             if (existing == signal) continue
             val report = SyncConflictResolver.resolve(
                 entityId = signal.id.toString(),
-                baseUpdatedAtMillis = null,
-                localUpdatedAtMillis = existing.timestamp,
-                remoteUpdatedAtMillis = signal.timestamp,
+                baseUpdatedAtMillis = existing.lastSyncedAtMillis,
+                localUpdatedAtMillis = existing.updatedAtMillis,
+                remoteUpdatedAtMillis = signal.updatedAtMillis,
             )
             when (report.resolution) {
                 SyncConflictResolution.REMOTE_WINS -> {
-                    signalDao.upsert(signal.toEntity())
+                    signalDao.upsert(signal.copy(lastSyncedAtMillis = importedAt).toEntity())
                     updated++
                 }
                 SyncConflictResolution.LOCAL_WINS -> keptLocal++

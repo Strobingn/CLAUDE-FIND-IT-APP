@@ -1,7 +1,7 @@
 # Plan: AI pack 3 (10 more) + LAZ capability roadmap
 
-**Branch:** `GROKV5` (not merge to `main` until green)  
-**Status:** Implementing / shipping on GROKV5  
+**Branch:** `GROKV5` (merged to `main`)  
+**Status:** Shipped  
 **Depends on:** AI pack 1 (`FEATURES_AI_PACK.md`), LAZ decode/refine pipeline, local `TerrainIntelligenceEngine`
 
 ---

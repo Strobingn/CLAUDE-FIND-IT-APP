@@ -53,6 +53,38 @@ class TargetSignalArchiveCodecTest {
     }
 
     @Test
+    fun updatedAtMillisRoundTripsDistinctFromLoggedTimestamp() {
+        val signal = TargetSignal(
+            gridX = 1f,
+            gridY = 1f,
+            metalType = MetalType.GOLD,
+            signalStrength = 50f,
+            timestamp = 1_000L,
+            updatedAtMillis = 5_000L,
+        )
+
+        val decoded = TargetSignalArchiveCodec.decode(TargetSignalArchiveCodec.encode(listOf(signal)).bytes)
+
+        assertEquals(1_000L, decoded.single().timestamp)
+        assertEquals(5_000L, decoded.single().updatedAtMillis)
+    }
+
+    @Test
+    fun decodingAnArchiveWrittenBeforeUpdatedAtMillisExistedFallsBackToTimestamp() {
+        // 23 tab-separated fields (22 named + starred), no trailing updatedAtMillis column —
+        // the exact shape an archive from before this field existed would have.
+        val bytes = (
+            "FINDIT_TARGET_SIGNALS_V1\n" +
+                "1\t1.0\t1.0\tGOLD\t50.0\t\t\t\t\t\t\tMANUAL\t9_000\t\t\t\t\tLogged\tUNVERIFIED\t\t\t\tfalse\n"
+            ).replace("9_000", "9000").toByteArray()
+
+        val decoded = TargetSignalArchiveCodec.decode(bytes)
+
+        assertEquals(9000L, decoded.single().timestamp)
+        assertEquals(9000L, decoded.single().updatedAtMillis)
+    }
+
+    @Test
     fun decodeReturnsEmptyForWrongHeaderOrGarbage() {
         assertTrue(TargetSignalArchiveCodec.decode("not the right header".toByteArray()).isEmpty())
         assertTrue(TargetSignalArchiveCodec.decode(byteArrayOf(1, 2, 3)).isEmpty())
