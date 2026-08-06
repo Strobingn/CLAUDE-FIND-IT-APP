@@ -2,7 +2,8 @@
 
 **Status:** Active  
 **Repository:** <https://github.com/Strobingn/Find-It-App>  
-**Last reviewed:** 2026-08-06
+**Last reviewed:** 2026-08-06  
+**Wiring status (code-verified, not self-reported):** [docs/ROADMAP_WIRING_STATUS.md](docs/ROADMAP_WIRING_STATUS.md)
 
 ## Product objective
 
@@ -348,7 +349,7 @@ Exit criteria:
 
 ### Phase 5 — Field verification
 
-- Add breadcrumbs, compass navigation, AR guidance, voice notes, and directional photos. **Mostly implemented.** Breadcrumb tracks, compass/bearing navigation, and voice notes exist; photos now carry a per-photo compass bearing (`photoBearingsDegrees`, index-aligned with `photoUris`, migrated in database v17) shown as a facing direction ("Facing NE 47°") in the edit dialog, making them genuinely directional rather than plain attachments; AR guidance remains device-bound future work.
+- Add breadcrumbs, compass navigation, AR guidance, voice notes, and directional photos. **Mostly implemented.** Breadcrumb tracks, compass/bearing navigation, and voice notes exist; photos now carry a per-photo compass bearing (`photoBearingsDegrees`, index-aligned with `photoUris`, migrated in database v17) shown as a facing direction ("Facing NE 47°") in the edit dialog, making them genuinely directional rather than plain attachments. Full ARCore dig guidance (camera-overlay AR) remains device-bound future work — what exists today is AR-lite only: the compass ring and bearing/distance readout, not a camera-passthrough overlay.
 - Add target states, excavation logs, boundaries, route optimization, and offline sync queue. **Implemented; unit verified; production UI wired (GROKV5).** `TargetVisitStates` validates outcome transitions (checked targets can be corrected, never erased) and maps outcomes to reviewed-example verdicts; `ExcavationLogEntry`, `SurveyBoundary` (with polygon containment), `TargetRouteOptimizer` (nearest-neighbor + 2-opt), and `FieldSyncQueue` (coalescing upserts, delete-wins, ordered replay, no silent drops) ship with Room persistence (`excavation_logs`, `survey_boundaries`, `pending_sync`, database v14). HillshadeViewModel observes and persists digs/boundaries and enqueues every field mutation; Finds tab exposes dig logs, boundary create/delete, and the offline sync queue; Tools tab shows live status cards for each.
 
 Exit criteria:
@@ -361,7 +362,7 @@ Exit criteria:
 
 - Add automatic georeferencing with manual control points. **Implemented; unit verified; production UI wired (GROKV5).** `GeoReferencer` fits a least-squares affine from 3+ control points (exact similarity fit for 2), rejects collinear/duplicate sets, and reports per-point meter residuals. Map tab: image crosshair + map tap adds control points; Fit applies `HistoricMapGeoreference.placementFromFit` to the ground overlay; confidence/RMSE stay on-screen; fits persist to SharedPreferences and Room `historic_maps`.
 - Add opacity, side-by-side, and swipe alignment tools. **Implemented in production UI.** Opacity slider retained; swipe blend multiplies active historic overlay opacity; side-by-side dialog compares terrain hillshade vs historic image.
-- Extract roads, structures, walls, and boundaries. **Implemented; unit verified; UI wired.** `HistoricMapFeature` with typed geometry (`ROAD`, `STRUCTURE`, `WALL`, `BOUNDARY`) persists per map with confidence and notes; the historic map panel's feature bar lets a user trace a feature by tapping points on the map, confidence is scored against the real terrain relief via `MapTerrainAgreement.rasterizePolyline`/`.score` at save time (not fabricated), and saved features render as colored polylines. Automatic image-based extraction remains future work.
+- Extract roads, structures, walls, and boundaries. **Implemented; unit verified; UI wired (manual entry only).** `HistoricMapFeature` with typed geometry (`ROAD`, `STRUCTURE`, `WALL`, `BOUNDARY`) persists per map with confidence and notes; the historic map panel's feature bar lets a user trace a feature by tapping points on the map, confidence is scored against the real terrain relief via `MapTerrainAgreement.rasterizePolyline`/`.score` at save time (not fabricated), and saved features render as colored polylines. **Automatic extraction is not started**: no computer-vision pass over the scanned historic-map image exists yet to propose roads/structures/walls automatically — every feature today is placed by hand.
 - Score map-to-terrain agreement and georeferencing confidence. **Implemented; unit verified; UI wired.** `MapTerrainAgreement` blends support coverage and contrast into a bounded 0–1 score whose ranking adjustment is capped at ±0.1 so map evidence informs but never overpowers terrain; that adjustment now actually feeds `MetalDetectingTargetRefiner` (nearby traced historic-map features nudge a matching candidate's score, with an evidence line noting the terrain-agreement percentage) rather than sitting unused. `GeoReferenceConfidence` buckets (good / fair / low-confidence / insufficient) are computed from meter-scale RMSE and shown on the historic map panel.
 - Preserve source and alignment metadata. **Implemented; unit verified; UI wired.** `GeoReferencedMap` retains source attribution, control points, transform coefficients, RMSE/max residuals, and confidence in the `historic_maps` and `historic_map_features` tables (database v15), so every alignment is reproducible and correctable.
 
@@ -395,6 +396,7 @@ Exit criteria:
 - Multi-threaded ray processing. **Implemented; unit verified.** Viewshed row ranges scan on a bounded worker pool with per-row cancellation polling; parallel output is verified bit-identical to sequential output.
 - Multi-dataset analysis. **Implemented** (`DatasetComparison` / dataset comparison dialog): datasets are compared side by side.
 - Measurement and profile export. **Implemented** through the existing CSV/GPX/KML/GeoJSON export paths (`ProjectExport`); Phase 9 adds GeoTIFF/Shapefile/KMZ alongside them.
+- Two-epoch change detection. **Not started.** Comparing two LiDAR captures of the same extent from different dates to surface new/removed ground features (recent disturbance, new cuts/fills, vegetation clearing) — would need two co-registered tile sets for the same area, which the app has no path to acquire or pair today. No engine, no UI.
 
 Exit criteria:
 
