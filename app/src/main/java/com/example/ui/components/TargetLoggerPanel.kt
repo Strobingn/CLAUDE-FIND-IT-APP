@@ -80,6 +80,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.data.LogSignalResult
 import com.example.data.SurfaceZSample
 import com.example.data.TargetSignal
 import com.example.data.VerificationOutcome
@@ -156,6 +157,9 @@ fun TargetLoggerPanel(
     onClearSyncQueue: () -> Unit = {},
     /** Relative bare-earth surface context under a find — never dig/metal depth. */
     surfaceZForSignal: (TargetSignal) -> SurfaceZSample? = { null },
+    /** AI-suggested nav targets handed off from the Assist tab's shared AiTerrainViewModel. */
+    pendingNavTargetIds: List<Long> = emptyList(),
+    onConsumeNavTargets: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current

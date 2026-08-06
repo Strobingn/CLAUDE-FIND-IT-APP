@@ -24,7 +24,7 @@ class AiWorkspaceConfigTest {
 
     @Test
     fun activeAiPanelKeepsBuiltInQuestions() {
-        assertEquals(5, AI_BUILT_IN_QUESTIONS.size)
+        assertEquals(16, AI_BUILT_IN_QUESTIONS.size)
         assertEquals(AI_BUILT_IN_QUESTIONS.size, AI_BUILT_IN_QUESTIONS.distinct().size)
         assertTrue(AI_BUILT_IN_QUESTIONS.all(String::isNotBlank))
     }

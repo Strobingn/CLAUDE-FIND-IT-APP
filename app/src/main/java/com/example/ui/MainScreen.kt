@@ -28,12 +28,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ShowChart
+import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.CropFree
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.GpsNotFixed
 import androidx.compose.material.icons.filled.HomeWork
 import androidx.compose.material.icons.filled.Landscape
@@ -45,6 +47,7 @@ import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.ZoomInMap
 import androidx.compose.material.icons.filled.ZoomOutMap
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -92,7 +95,6 @@ import com.example.analysis.TerrainElevationProfiler
 import com.example.data.LidarSearchRequest
 import com.example.data.LogSignalResult
 import com.example.data.NormalizedRasterBounds
-import com.example.data.field.FieldNavigation
 import com.example.geospatial.GeoSpatialLibrary
 import com.example.geospatial.MeasurementFormat
 import com.example.ui.components.CustomFileLoader
@@ -113,6 +115,7 @@ import com.example.ui.components.ViewshedCard
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -317,8 +320,6 @@ private fun TerrainTab(
     val homesiteCells = remember { mutableStateOf<FloatArray?>(null) }
     val homesiteStatus = remember { mutableStateOf<String?>(null) }
     val navigationTarget by viewModel.navigationTarget.collectAsStateWithLifecycle()
-    val deviceLatitude by viewModel.deviceLatitude.collectAsStateWithLifecycle()
-    val deviceLongitude by viewModel.deviceLongitude.collectAsStateWithLifecycle()
     val navigationSolution = remember(navigationTarget, deviceLatitude, deviceLongitude) {
         val target = navigationTarget ?: return@remember null
         val lat = deviceLatitude ?: return@remember null
@@ -340,6 +341,29 @@ private fun TerrainTab(
             toneGenerator?.startTone(ToneGenerator.TONE_PROP_ACK, 500)
         }
     }
+    // "Mark GPS" quick action: log the current position, warning first if another find already
+    // sits nearby (same duplicate check TargetLoggerPanel's own logging path uses).
+    val nearestFind = remember(deviceLatitude, deviceLongitude, signals) {
+        viewModel.nearestFindFromDevice()
+    }
+    var markMessage by remember { mutableStateOf<String?>(null) }
+    var pendingProximity by remember { mutableStateOf<LogSignalResult?>(null) }
+    fun attemptMark(force: Boolean = false) {
+        val result = viewModel.logCurrentSignal(force)
+        if (result.nearbyFind != null && !force) {
+            pendingProximity = result
+            return
+        }
+        pendingProximity = null
+        markMessage = "Marked ${result.signal.metalType.label}"
+    }
+    LaunchedEffect(markMessage) {
+        if (markMessage != null) {
+            delay(2_000)
+            markMessage = null
+        }
+    }
+
     val viewshedComputing = remember { mutableStateOf(false) }
     var isSelectingProfile by rememberSaveable { mutableStateOf(false) }
     var profileStartPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
@@ -1206,6 +1230,8 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         onMarkSyncSent = viewModel::markPendingSyncSent,
         onClearSyncQueue = viewModel::clearPendingSyncQueue,
         surfaceZForSignal = viewModel::surfaceZForSignal,
+        pendingNavTargetIds = aiState.pendingNavTargetIds,
+        onConsumeNavTargets = assistantViewModel::consumeNavTargets,
         modifier = Modifier.fillMaxSize().padding(padding),
     )
 }

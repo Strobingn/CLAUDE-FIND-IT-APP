@@ -46,6 +46,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -213,11 +214,19 @@ fun AiCloudPanel(
         status: String?,
         notes: String?,
     ) -> Unit = { _, _, _, _, _ -> },
+    /** Overrides the session pack built from [terrainSummary]/[grid]/[metadata] below, if supplied. */
+    fieldSessionPack: FieldAiSessionPack? = null,
+    onApplyLighting: (azimuth: Float, altitude: Float) -> Unit = { _, _ -> },
+    onApplyVizMode: (Int) -> Unit = {},
+    /** Ids stay on assistantViewModel.state until the Finds tab reads and consumes them — this is
+     * only a hook for callers that want to react locally (e.g. switch tabs) when applied. */
+    onApplyNavTargets: (List<Long>) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val state by assistantViewModel.state.collectAsStateWithLifecycle()
     val viewport by TerrainVisionSession.snapshot.collectAsStateWithLifecycle()
+    var packFilter by rememberSaveable { mutableStateOf(AiPackFilter.ALL) }
     var draft by rememberSaveable { mutableStateOf("") }
     var openAiKey by rememberSaveable { mutableStateOf("") }
     var geminiKey by rememberSaveable { mutableStateOf("") }

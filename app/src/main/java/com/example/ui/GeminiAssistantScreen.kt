@@ -651,6 +651,11 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
+    /** Clears just the pending nav-target handoff once the Finds tab has applied it as a route target. */
+    fun consumeNavTargets() {
+        _state.value = _state.value.copy(pendingNavTargetIds = emptyList())
+    }
+
     /** Clears pack-3 structured action tags (viz, nav, metal, outcome, status, notes). Does not clear lighting. */
     fun clearPendingStructuredActions() {
         _state.value = _state.value.copy(

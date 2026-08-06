@@ -996,13 +996,28 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             resolutionMeters = grid.cellSizeMeters.toDouble(),
         )
         _activeTerrainSummary.value = result.summary
-        publishTerrainQuality()
+        publishTerrainQuality(grid, _activeGeoMetadata.value, result.summary)
         updateCoordinates()
         scheduleRender(immediate = true)
         if (_basemapEnabled.value) refreshBasemapTiles()
         if (resetViewport) {
             _viewportResetKey.value = _viewportResetKey.value + 1
         }
+    }
+
+    /** Recomputes the ground/CRS quality banner for the Terrain workspace after a grid changes. */
+    private fun publishTerrainQuality(
+        grid: ElevationGrid,
+        metadata: GeoSpatialLibrary.GeoSpatialMetadata,
+        summary: String,
+    ) {
+        _terrainQuality.value = TerrainQuality.from(
+            grid = grid,
+            crs = metadata.crs,
+            datum = metadata.datum,
+            georeferenced = metadata.isGeoreferenced,
+            summary = summary,
+        )
     }
 
     fun recommendedAiRefineResolution(): Int {

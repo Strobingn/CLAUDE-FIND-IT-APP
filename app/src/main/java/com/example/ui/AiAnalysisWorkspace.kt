@@ -732,6 +732,11 @@ fun AiAnalysisWorkspace(
             onConfirmAiSuggestions = { signalId, metal, outcome, status, notes ->
                 viewModel.applyAiFindSuggestions(signalId, metal, outcome, status, notes)
             },
+            onApplyLighting = { azimuth, altitude ->
+                viewModel.updateSunAzimuth(azimuth)
+                viewModel.updateSunAltitude(altitude)
+            },
+            onApplyVizMode = viewModel::updateVisualizationMode,
             // weight(1f), not fillMaxSize(): this Column isn't scrollable, and the header +
             // map above already claim their own height, so a fillMaxSize() panel here asked
             // for the full column height on top of that and pushed its own internal chat
