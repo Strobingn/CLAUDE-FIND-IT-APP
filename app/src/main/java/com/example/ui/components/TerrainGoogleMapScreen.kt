@@ -91,6 +91,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.BuildConfig
+import com.example.ai.HistoricMapFeatureExtractor
+import com.example.ai.ProposedMapFeature
+import com.example.ai.TerrainAiGateway
 import com.example.data.ElevationGrid
 import com.example.data.HistoricMapOverlay
 import com.example.data.HistoricMapOverlayRepository
@@ -134,6 +137,7 @@ import java.io.File
 import java.util.Locale
 import java.security.MessageDigest
 import kotlin.math.cos
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -198,6 +202,13 @@ fun TerrainGoogleMapScreen(
     var mapFeatures by remember { mutableStateOf<List<HistoricMapFeature>>(emptyList()) }
     var featurePolylines by remember { mutableStateOf<List<Polyline>>(emptyList()) }
     var draftFeaturePolyline by remember { mutableStateOf<Polyline?>(null) }
+    // AI auto-extraction: sends the scanned map image to the cloud AI gateway and proposes
+    // features for the user to accept or dismiss - never auto-saved, matching the app's
+    // confirm-write rule for every other AI suggestion.
+    val terrainAiGateway = remember(context) { TerrainAiGateway(context) }
+    var aiFeatureExtracting by remember { mutableStateOf(false) }
+    var aiProposedFeatures by remember { mutableStateOf<List<ProposedMapFeature>>(emptyList()) }
+    var aiProposalPolylines by remember { mutableStateOf<List<Polyline>>(emptyList()) }
     var pendingImageXFraction by rememberSaveable { mutableFloatStateOf(0.5f) }
     var pendingImageYFraction by rememberSaveable { mutableFloatStateOf(0.5f) }
     var swipeBlend by rememberSaveable { mutableFloatStateOf(1f) }
@@ -280,6 +291,7 @@ fun TerrainGoogleMapScreen(
 
     val activeHistoricMap = historicMaps.firstOrNull { it.id == activeHistoricMapId }
     val activeHistoricBitmap = activeHistoricMap?.let { historicBitmaps[it.id] }
+    val activeHistoricTransform = activeHistoricMap?.transformStorage?.let { GeoReferenceTransform.fromStorage(it) }
     val historicAgreement by produceState<MapFeatureAgreement?>(
         null,
         reliefEvidence,
@@ -554,6 +566,9 @@ fun TerrainGoogleMapScreen(
 
     // Observes features saved against the active historic map.
     LaunchedEffect(activeHistoricMapId) {
+        // Switching maps invalidates any pending AI proposals - they were traced against the
+        // previous map's image, not this one.
+        aiProposedFeatures = emptyList()
         val mapId = activeHistoricMapId
         if (mapId == null) {
             mapFeatures = emptyList()
@@ -596,6 +611,24 @@ fun TerrainGoogleMapScreen(
         }
     }
 
+    // Real terrain-agreement score when it can be computed, not a placeholder — the same scorer
+    // the alignment feedback card uses, applied to just this feature's traced cells. Shared by
+    // manual tracing and AI-proposal acceptance so both feed the same real scoring path.
+    fun scoreFeatureAgainstTerrain(points: List<BoundaryVertex>): Float {
+        val evidence = reliefEvidence
+        val bounds = metadata.bounds
+        if (evidence == null || bounds == null || bounds.maxLon <= bounds.minLon || bounds.maxLat <= bounds.minLat) {
+            return 0f
+        }
+        val gridPoints = points.map { vertex ->
+            val x = ((vertex.longitude - bounds.minLon) / (bounds.maxLon - bounds.minLon) * evidence.width).toFloat()
+            val y = ((bounds.maxLat - vertex.latitude) / (bounds.maxLat - bounds.minLat) * evidence.height).toFloat()
+            x to y
+        }
+        val cells = MapTerrainAgreement.rasterizePolyline(gridPoints, evidence.width, evidence.height, halfWidthCells = 1)
+        return MapTerrainAgreement.score(cells, evidence.values, evidence.valid, evidence.supportThreshold).score
+    }
+
     fun saveDraftFeature() {
         val mapId = activeHistoricMapId
         if (mapId == null) {
@@ -606,23 +639,7 @@ fun TerrainGoogleMapScreen(
             historicMapMessage = "Tap at least two points on the map to trace a feature."
             return
         }
-        val evidence = reliefEvidence
-        val bounds = metadata.bounds
-        // Real terrain-agreement score when it can be computed, not a placeholder — the same
-        // scorer the alignment feedback card uses, applied to just this feature's traced cells.
-        val confidence = if (evidence != null && bounds != null &&
-            bounds.maxLon > bounds.minLon && bounds.maxLat > bounds.minLat
-        ) {
-            val gridPoints = featureDrawPoints.map { vertex ->
-                val x = ((vertex.longitude - bounds.minLon) / (bounds.maxLon - bounds.minLon) * evidence.width).toFloat()
-                val y = ((bounds.maxLat - vertex.latitude) / (bounds.maxLat - bounds.minLat) * evidence.height).toFloat()
-                x to y
-            }
-            val cells = MapTerrainAgreement.rasterizePolyline(gridPoints, evidence.width, evidence.height, halfWidthCells = 1)
-            MapTerrainAgreement.score(cells, evidence.values, evidence.valid, evidence.supportThreshold).score
-        } else {
-            0f
-        }
+        val confidence = scoreFeatureAgainstTerrain(featureDrawPoints)
         val feature = HistoricMapFeature(
             id = java.util.UUID.randomUUID().toString(),
             mapId = mapId,
@@ -635,7 +652,96 @@ fun TerrainGoogleMapScreen(
         scope.launch(Dispatchers.IO) { historicMapFeatureDao.upsert(feature.toEntity()) }
         featureDrawPoints = emptyList()
         historicMapMessage = "Saved ${featureDrawType.label.lowercase()}" +
-            if (evidence != null) " (terrain agreement ${(confidence * 100).toInt()}%)." else "."
+            if (reliefEvidence != null) " (terrain agreement ${(confidence * 100).toInt()}%)." else "."
+    }
+
+    fun extractFeaturesWithAi() {
+        val bitmap = activeHistoricBitmap
+        if (bitmap == null) {
+            historicMapMessage = "Select a historic map first."
+            return
+        }
+        if (activeHistoricTransform == null) {
+            historicMapMessage = "Fit control points before AI extraction — proposed features need a georeference to place them."
+            return
+        }
+        aiFeatureExtracting = true
+        scope.launch {
+            try {
+                val proposals = HistoricMapFeatureExtractor.extract(terrainAiGateway, bitmap)
+                aiProposedFeatures = proposals
+                historicMapMessage = if (proposals.isEmpty()) {
+                    "AI found no clearly traceable features in this map."
+                } else {
+                    "AI proposed ${proposals.size} feature${if (proposals.size == 1) "" else "s"} — review below before saving."
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                historicMapMessage = error.localizedMessage ?: "AI feature extraction failed."
+            } finally {
+                aiFeatureExtracting = false
+            }
+        }
+    }
+
+    fun acceptProposedFeature(proposal: ProposedMapFeature) {
+        val mapId = activeHistoricMapId
+        val transform = activeHistoricTransform
+        val bitmap = activeHistoricBitmap
+        if (mapId == null || transform == null || bitmap == null) {
+            aiProposedFeatures = aiProposedFeatures - proposal
+            return
+        }
+        val worldPoints = proposal.normalizedPoints.map { (nx, ny) ->
+            val (latitude, longitude) = transform.imageToWorld(nx * bitmap.width, ny * bitmap.height)
+            BoundaryVertex(latitude, longitude)
+        }
+        val confidence = scoreFeatureAgainstTerrain(worldPoints)
+        val feature = HistoricMapFeature(
+            id = java.util.UUID.randomUUID().toString(),
+            mapId = mapId,
+            type = proposal.type,
+            points = worldPoints,
+            confidence = confidence,
+            note = "AI-suggested: ${proposal.description}",
+            createdAtMillis = System.currentTimeMillis(),
+        )
+        scope.launch(Dispatchers.IO) { historicMapFeatureDao.upsert(feature.toEntity()) }
+        aiProposedFeatures = aiProposedFeatures - proposal
+        historicMapMessage = "Saved AI-suggested ${proposal.type.label.lowercase()}" +
+            if (reliefEvidence != null) " (terrain agreement ${(confidence * 100).toInt()}%)." else "."
+    }
+
+    fun dismissProposedFeature(proposal: ProposedMapFeature) {
+        aiProposedFeatures = aiProposedFeatures - proposal
+    }
+
+    // AI-proposed features render in a distinct color from saved ones, before the user accepts
+    // any of them, so a proposal is visibly a proposal and never mistaken for a saved record.
+    LaunchedEffect(googleMap, aiProposedFeatures, activeHistoricTransform, activeHistoricBitmap) {
+        val map = googleMap ?: return@LaunchedEffect
+        aiProposalPolylines.forEach { it.remove() }
+        val transform = activeHistoricTransform
+        val bitmap = activeHistoricBitmap
+        aiProposalPolylines = if (transform == null || bitmap == null) {
+            emptyList()
+        } else {
+            aiProposedFeatures.mapNotNull { proposal ->
+                if (proposal.normalizedPoints.size < 2) return@mapNotNull null
+                val latLngs = proposal.normalizedPoints.map { (nx, ny) ->
+                    val (latitude, longitude) = transform.imageToWorld(nx * bitmap.width, ny * bitmap.height)
+                    LatLng(latitude, longitude)
+                }
+                map.addPolyline(
+                    PolylineOptions()
+                        .addAll(latLngs)
+                        .color(0xFFE040FB.toInt())
+                        .width(6f)
+                        .zIndex(8f),
+                )
+            }
+        }
     }
 
     LaunchedEffect(googleMap, activeHistoricMap?.controlPoints, controlPointMode) {
@@ -905,6 +1011,7 @@ fun TerrainGoogleMapScreen(
                     controlPointMode = false
                     featureDrawMode = false
                     featureDrawPoints = emptyList()
+                    aiProposedFeatures = emptyList()
                 },
                 modifier = Modifier.align(Alignment.TopEnd).padding(top = 92.dp, end = 12.dp).width(280.dp),
             )
@@ -930,7 +1037,17 @@ fun TerrainGoogleMapScreen(
                         scope.launch(Dispatchers.IO) { historicMapFeatureDao.deleteById(feature.id) }
                     }
                 },
+                aiExtracting = aiFeatureExtracting,
+                canExtractWithAi = activeHistoricBitmap != null && activeHistoricTransform != null,
+                onExtractWithAi = { extractFeaturesWithAi() },
                 modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 96.dp).width(300.dp),
+            )
+            HistoricMapAiFeatureReviewCard(
+                proposals = aiProposedFeatures,
+                onAccept = { acceptProposedFeature(it) },
+                onDismiss = { dismissProposedFeature(it) },
+                onDismissAll = { aiProposedFeatures = emptyList() },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 96.dp).width(300.dp),
             )
         }
 
@@ -1294,6 +1411,9 @@ private fun HistoricMapFeatureBar(
     onClear: () -> Unit,
     onSave: () -> Unit,
     onDeleteLastSaved: () -> Unit,
+    aiExtracting: Boolean,
+    canExtractWithAi: Boolean,
+    onExtractWithAi: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -1326,6 +1446,13 @@ private fun HistoricMapFeatureBar(
                 modifier = Modifier.fillMaxWidth().height(40.dp).testTag("feature_draw_mode_toggle"),
             ) {
                 Text(if (drawMode) "Tap map to add points — tap here to stop" else "Trace a feature on the map")
+            }
+            OutlinedButton(
+                onClick = onExtractWithAi,
+                enabled = canExtractWithAi && !aiExtracting,
+                modifier = Modifier.fillMaxWidth().height(40.dp).testTag("feature_ai_extract_button"),
+            ) {
+                Text(if (aiExtracting) "Asking AI…" else "Auto-detect features (AI)")
             }
             if (drawMode) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

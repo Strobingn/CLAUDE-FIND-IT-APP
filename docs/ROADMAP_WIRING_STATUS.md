@@ -21,7 +21,7 @@ fixes and caught one of them still broken in practice.
 | 3 Historic-feature analysis | Yes | Yes (AI workspace + evidence) | **Mostly** — field-area false-positive metrics require field data, not code |
 | 4 Performance architecture | Partial | Partial | **Partial** (not re-audited this pass) |
 | 5 Field verification | Yes | Yes | **Yes for offline record path** (AR guidance deferred, device-bound) |
-| 6 Historic-map intelligence | Yes | Yes | **Yes** — including manual feature tracing (`HistoricMapFeatureBar`) and its ranking-adjustment feed into `MetalDetectingTargetRefiner`; automatic image-based feature extraction still future work |
+| 6 Historic-map intelligence | Yes | Yes | **Yes** — including manual feature tracing (`HistoricMapFeatureBar`), AI-assisted auto-extraction (`HistoricMapFeatureExtractor`, confirm-write), and the ranking-adjustment feed into `MetalDetectingTargetRefiner` |
 | 7 ML ranking | Yes | Yes | **Yes** — "Train ranker" now runs a real spatial holdout (`RankerHoldoutEvaluator`) and hard-negative mining, not just in-sample accuracy; regional datasets remain field-data dependent |
 | 8 Advanced terrain tools | Yes | Yes | **Yes** — horizon-line UI (`HorizonCard`) now wired alongside viewshed/profile/compare |
 | 9 Interop / cloud | Partial writers | Partial exports | **Mostly** — GeoTIFF/Shapefile/KMZ/QGIS-project/portable-archive all real and UI-reachable; GeoPackage export, image-bundle packaging, QR sharing, and cloud backup/sync remain not started. Conflict resolution during archive import is now genuinely reachable (see below), not just present. |
@@ -65,6 +65,22 @@ Phase 9 + Site Package Pack, and AI packs + Product pack.
   (`AiCloudPanel.kt` "Confirm write" → `HillshadeViewModel.applyAiFindSuggestions`). Corrected in both
   files, plus a similarly stale "not merged to main" branch note in `docs/FEATURES_AI_PACK3_PLAN.md`.
 
+## What changed 2026-08-06, later (AI-assisted feature extraction)
+
+Closed one of the three future-work items below: automatic historic-map feature extraction.
+`HistoricMapFeatureExtractor` (new, `com.example.ai`) sends the active georeferenced historic-map bitmap to
+the configured cloud AI provider and asks it to trace visible roads/structures/walls/boundaries as
+normalized-image-coordinate polylines, parsed from a strict `FEATURE|TYPE|x1,y1;x2,y2|description` line
+format (7 unit tests covering well-formed input, `NONE`, unknown types, malformed lines, and out-of-range
+coordinates). Proposals render on the map in a distinct color via a new
+`HistoricMapAiFeatureReviewCard` and are **never** written to `historicMapFeatureDao` until the user taps
+Save on each one individually — an accepted proposal is converted from image pixels to lat/lon via the
+map's real `GeoReferenceTransform` and scored against real terrain relief with the same
+`MapTerrainAgreement` path manual tracing already used, so an AI-accepted feature is indistinguishable in
+quality from a hand-traced one. Requires the map to be georeferenced first (a transform must exist to place
+the proposals) and a cloud AI provider configured; both are surfaced as disabled-state/error messages, not
+silent failures.
+
 ## Still open (not code gaps — flagged, not yet acted on)
 
 - **Possible PDF-export contradiction, unverified.** `ROADMAP.md` Phase 9 says "styled PDF report export
@@ -75,9 +91,6 @@ Phase 9 + Site Package Pack, and AI packs + Product pack.
 
 - **Full ARCore dig guidance** (Phase 5) — device-bound future work. What exists today (compass ring,
   bearing/distance readout) is AR-lite only, not a camera-passthrough overlay.
-- **Automatic historic-map feature extraction** (Phase 6) — no computer-vision pass over the scanned map
-  image exists to propose roads/structures/walls; every `HistoricMapFeature` today is placed by hand via
-  `HistoricMapFeatureBar`.
 - **Two-epoch change detection** (Phase 8) — comparing two LiDAR captures of the same extent from
   different dates to surface new/removed ground features. No engine, no UI, and no path today to acquire
   or pair two co-registered tile sets for the same area.
