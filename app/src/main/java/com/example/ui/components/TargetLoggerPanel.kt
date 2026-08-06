@@ -82,6 +82,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.data.LogSignalResult
 import com.example.data.SurfaceZSample
+import com.example.data.export.ArchiveImportSummary
 import com.example.data.TargetSignal
 import com.example.data.VerificationOutcome
 import com.example.data.field.BoundaryVertex
@@ -116,6 +117,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.cos
+import kotlin.math.roundToInt
 
 @Composable
 fun TargetLoggerPanel(
@@ -146,6 +148,7 @@ fun TargetLoggerPanel(
     onBuildProjectExport: suspend () -> ProjectExportFiles,
     onBuildQgisBundle: suspend () -> ByteArray? = { null },
     onBuildProjectArchive: suspend () -> ByteArray = { ByteArray(0) },
+    onImportProjectArchive: suspend (ByteArray) -> ArchiveImportSummary? = { null },
     onRoutePlanned: (OptimizedFieldRoute?) -> Unit = {},
     onSaveExcavationLog: (ExcavationLogEntry) -> Unit = {},
     onDeleteExcavationLog: (ExcavationLogEntry) -> Unit = {},
@@ -313,6 +316,42 @@ fun TargetLoggerPanel(
                 }
                 .onFailure { exportMessage = "Export failed: ${it.localizedMessage}" }
             isBuildingProjectExport = false
+        }
+    }
+
+    val archiveImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            showProjectExport = false
+            isBuildingProjectExport = true
+            exportMessage = "Reading project archive..."
+            scope.launch {
+                val bytes = withContext(Dispatchers.IO) {
+                    runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+                }
+                if (bytes == null) {
+                    exportMessage = "Could not read the selected archive."
+                } else {
+                    val summary = runCatching { onImportProjectArchive(bytes) }.getOrNull()
+                    exportMessage = when {
+                        summary == null -> "That file isn't a Find It project archive."
+                        !summary.hasConflicts ->
+                            "Imported ${summary.imported} new, updated ${summary.updated}, " +
+                                "kept ${summary.keptLocal} local finds from \"${summary.projectName}\"."
+                        else -> {
+                            val sample = summary.needsReview.take(5).joinToString("; ") {
+                                "${it.metalType.label} at grid ${it.gridX.toInt()},${it.gridY.toInt()}"
+                            }
+                            "Imported ${summary.imported} new, updated ${summary.updated}, " +
+                                "kept ${summary.keptLocal} local. ${summary.needsReview.size} changed on both sides " +
+                                "and were left as-is for review: $sample" +
+                                if (summary.needsReview.size > 5) "…" else ""
+                        }
+                    }
+                }
+                isBuildingProjectExport = false
+            }
         }
     }
 
@@ -807,6 +846,7 @@ fun TargetLoggerPanel(
             onSaveExcavationLog = onSaveExcavationLog,
             onDeleteExcavationLog = onDeleteExcavationLog,
             onStartExcavationLog = { onStartExcavationLog(signal.id) },
+            compassHeadingDegrees = compassHeadingDegrees,
         )
     }
 
@@ -913,6 +953,16 @@ fun TargetLoggerPanel(
                         onClick = { buildArchiveExport() },
                         modifier = Modifier.fillMaxWidth().testTag("export_project_archive"),
                     ) { Text("Save portable archive (.zip)") }
+                    Text(
+                        "Importing merges finds from another device's archive into this one. " +
+                            "Finds changed on both sides are left for you to review, never guessed.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(
+                        onClick = { archiveImportLauncher.launch(arrayOf("application/zip", "application/octet-stream")) },
+                        modifier = Modifier.fillMaxWidth().testTag("import_project_archive"),
+                    ) { Text("Import portable archive (.zip)") }
                 }
             },
             confirmButton = {
@@ -1206,9 +1256,11 @@ private fun EditSignalDialog(
     onSaveExcavationLog: (ExcavationLogEntry) -> Unit = {},
     onDeleteExcavationLog: (ExcavationLogEntry) -> Unit = {},
     onStartExcavationLog: () -> ExcavationLogEntry? = { null },
+    compassHeadingDegrees: Float? = null,
 ) {
     val context = LocalContext.current
     var photoUris by remember(signal.id) { mutableStateOf(signal.photoUris) }
+    var photoBearingsDegrees by remember(signal.id) { mutableStateOf(signal.photoBearingsDegrees) }
     var voiceNoteUris by remember(signal.id) { mutableStateOf(signal.voiceNoteUris) }
     var recorder by remember(signal.id) { mutableStateOf<VoiceNoteRecorder?>(null) }
     var isRecordingVoiceNote by remember(signal.id) { mutableStateOf(false) }
@@ -1302,7 +1354,14 @@ private fun EditSignalDialog(
                     Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
             }
-            photoUris = (photoUris + uri.toString()).distinct().take(10)
+            // .distinct() below can drop a duplicate URI, so bearings are appended after padding
+            // to photoUris' current length (older finds have no bearings recorded at all) and
+            // then re-truncated to match, rather than assuming a bare 1:1 append stays aligned.
+            val nextUris = (photoUris + uri.toString()).distinct().take(10)
+            val paddedBearings = photoBearingsDegrees +
+                List((photoUris.size - photoBearingsDegrees.size).coerceAtLeast(0)) { null }
+            photoUris = nextUris
+            photoBearingsDegrees = (paddedBearings + compassHeadingDegrees).take(nextUris.size)
         }
     }
     var notes by remember(signal.id) { mutableStateOf(signal.notes) }
@@ -1381,18 +1440,29 @@ private fun EditSignalDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text("Photos (${photoUris.size}/10)", style = MaterialTheme.typography.titleSmall)
-                photoUris.forEach { photoUri ->
+                photoUris.forEachIndexed { index, photoUri ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            photoUri.substringAfterLast('/').takeLast(32),
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        TextButton(onClick = { photoUris = photoUris - photoUri }) { Text("Remove") }
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                photoUri.substringAfterLast('/').takeLast(32),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            photoBearingsDegrees.getOrNull(index)?.let { bearing ->
+                                Text(
+                                    "Facing ${compassDirection(bearing)} ${bearing.roundToInt()}°",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        TextButton(onClick = {
+                            photoBearingsDegrees = photoBearingsDegrees.filterIndexed { i, _ -> i != index }
+                            photoUris = photoUris.filterIndexed { i, _ -> i != index }
+                        }) { Text("Remove") }
                     }
                 }
                 OutlinedButton(
@@ -1534,6 +1604,7 @@ private fun EditSignalDialog(
                         signal.copy(
                             notes = notes.trim(),
                             photoUris = photoUris,
+                            photoBearingsDegrees = photoBearingsDegrees,
                             voiceNoteUris = voiceNoteUris,
                             status = status,
                             outcome = outcome,
@@ -2336,3 +2407,9 @@ private fun ExcavationLogsDialog(
 
 private fun formatDigLogTime(millis: Long): String =
     SimpleDateFormat("MMM d, HH:mm", Locale.US).format(Date(millis))
+
+private fun compassDirection(degrees: Float): String {
+    val directions = arrayOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    val normalized = ((degrees % 360f) + 360f) % 360f
+    return directions[((normalized + 22.5f) / 45f).toInt() % directions.size]
+}

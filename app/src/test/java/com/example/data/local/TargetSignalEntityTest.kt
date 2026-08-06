@@ -68,6 +68,33 @@ class TargetSignalEntityTest {
     }
 
     @Test
+    fun photoBearingsSurviveDatabaseMappingAlignedByIndex() {
+        val signal = TargetSignal(
+            gridX = 12f,
+            gridY = 34f,
+            metalType = MetalType.MANUAL_MARKER,
+            signalStrength = 0f,
+            photoUris = listOf("content://one", "content://two", "content://three"),
+            // Middle photo has no bearing (e.g. picked from the gallery, not captured live).
+            photoBearingsDegrees = listOf(45.5f, null, 312f),
+        )
+
+        assertEquals(signal.photoBearingsDegrees, signal.toEntity().toDomain().photoBearingsDegrees)
+    }
+
+    @Test
+    fun missingPhotoBearingsColumnMapsToEmptyList() {
+        val entity = TargetSignal(
+            gridX = 0f,
+            gridY = 0f,
+            metalType = MetalType.MANUAL_MARKER,
+            signalStrength = 0f,
+        ).toEntity().copy(photoBearingsDegrees = "")
+
+        assertEquals(emptyList<Float?>(), entity.toDomain().photoBearingsDegrees)
+    }
+
+    @Test
     fun databaseMappingDropsBlankPhotoEntries() {
         val entity = TargetSignal(
             gridX = 0f,

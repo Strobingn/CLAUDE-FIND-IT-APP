@@ -1,5 +1,6 @@
 package com.example.analysis
 
+import com.example.data.historicmap.MapTerrainAgreement
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -13,6 +14,23 @@ enum class MetalDetectingTargetType(val label: String) {
     STONE_WALL("Stone wall"),
     OLD_HOMESITE("Old homesite context"),
 }
+
+/**
+ * One sampled point along a saved [com.example.data.historicmap.HistoricMapFeature]'s traced
+ * geometry, converted to the same grid-percent coordinates candidates use, with the terrain
+ * agreement score computed when that feature was saved. Built by the caller — this package has
+ * no geo-bounds context to do the lat/lon conversion itself.
+ */
+data class HistoricFeatureAgreement(
+    val targetType: MetalDetectingTargetType,
+    val xPercent: Float,
+    val yPercent: Float,
+    /** [MapTerrainAgreement] score (0..1) for the feature this point came from. */
+    val agreementScore: Float,
+)
+
+/** How close a candidate must be to a sampled feature point to be considered "near" it. */
+private const val HISTORIC_FEATURE_MATCH_RADIUS_PERCENT = 3f
 
 data class MetalDetectingTarget(
     val type: MetalDetectingTargetType,
@@ -113,6 +131,8 @@ object MetalDetectingTargetRefiner {
         feedback: List<VerifiedFeedbackPoint> = emptyList(),
         /** Per-type threshold bias from [FeatureTypeCalibration]; see that object for how it's derived. */
         calibration: Map<MetalDetectingTargetType, Float> = emptyMap(),
+        /** Sampled points from saved historic-map features, for [MapTerrainAgreement.rankingAdjustment]. */
+        historicFeatureAgreements: List<HistoricFeatureAgreement> = emptyList(),
     ): List<MetalDetectingTarget> {
         val layers = result.layers
         val width = layers.width
@@ -303,12 +323,12 @@ object MetalDetectingTargetRefiner {
         fun biasFor(type: MetalDetectingTargetType) = calibration[type] ?: 0f
 
         val output = ArrayList<MetalDetectingTarget>()
-        appendTargets(output, MetalDetectingTargetType.FOUNDATION, foundation, width, height, 0.66f, 8f, feedback, ctx, biasFor(MetalDetectingTargetType.FOUNDATION))
-        appendTargets(output, MetalDetectingTargetType.ROAD_TRAIL, road, width, height, 0.67f, 7f, feedback, ctx, biasFor(MetalDetectingTargetType.ROAD_TRAIL))
-        appendTargets(output, MetalDetectingTargetType.CELLAR_HOLE, cellar, width, height, 0.68f, 7f, feedback, ctx, biasFor(MetalDetectingTargetType.CELLAR_HOLE))
-        appendTargets(output, MetalDetectingTargetType.TRASH_PIT, trash, width, height, 0.65f, 5f, feedback, ctx, biasFor(MetalDetectingTargetType.TRASH_PIT))
-        appendTargets(output, MetalDetectingTargetType.STONE_WALL, wall, width, height, 0.68f, 5f, feedback, ctx, biasFor(MetalDetectingTargetType.STONE_WALL))
-        appendTargets(output, MetalDetectingTargetType.OLD_HOMESITE, homesite, width, height, 0.66f, 14f, feedback, ctx, biasFor(MetalDetectingTargetType.OLD_HOMESITE))
+        appendTargets(output, MetalDetectingTargetType.FOUNDATION, foundation, width, height, 0.66f, 8f, feedback, ctx, biasFor(MetalDetectingTargetType.FOUNDATION), historicFeatureAgreements)
+        appendTargets(output, MetalDetectingTargetType.ROAD_TRAIL, road, width, height, 0.67f, 7f, feedback, ctx, biasFor(MetalDetectingTargetType.ROAD_TRAIL), historicFeatureAgreements)
+        appendTargets(output, MetalDetectingTargetType.CELLAR_HOLE, cellar, width, height, 0.68f, 7f, feedback, ctx, biasFor(MetalDetectingTargetType.CELLAR_HOLE), historicFeatureAgreements)
+        appendTargets(output, MetalDetectingTargetType.TRASH_PIT, trash, width, height, 0.65f, 5f, feedback, ctx, biasFor(MetalDetectingTargetType.TRASH_PIT), historicFeatureAgreements)
+        appendTargets(output, MetalDetectingTargetType.STONE_WALL, wall, width, height, 0.68f, 5f, feedback, ctx, biasFor(MetalDetectingTargetType.STONE_WALL), historicFeatureAgreements)
+        appendTargets(output, MetalDetectingTargetType.OLD_HOMESITE, homesite, width, height, 0.66f, 14f, feedback, ctx, biasFor(MetalDetectingTargetType.OLD_HOMESITE), historicFeatureAgreements)
 
         return suppressNearbyDuplicates(output)
             .sortedByDescending { it.score }
@@ -326,6 +346,7 @@ object MetalDetectingTargetRefiner {
         feedback: List<VerifiedFeedbackPoint>,
         ctx: RefinerContext,
         calibrationBias: Float = 0f,
+        historicFeatureAgreements: List<HistoricFeatureAgreement> = emptyList(),
     ) {
         val effectiveThreshold = calibratedThreshold(threshold, calibrationBias)
         localMaxima(score, width, height, effectiveThreshold, MAX_PER_TYPE).forEach { (index, rawValue) ->
@@ -342,18 +363,37 @@ object MetalDetectingTargetRefiner {
                 rawValue
             }
             val cautions = classifyCaution(type, x, y, index, ctx, feedback, xPercent, yPercent)
-            val adjusted = (afterFeedback - cautionPenalty(cautions.size)).coerceIn(0f, 1f)
+            val beforeMapAgreement = (afterFeedback - cautionPenalty(cautions.size)).coerceIn(0f, 1f)
+            // Nearest same-type sampled point from a saved historic-map feature, if any is close
+            // enough to plausibly be the same real-world feature this candidate is detecting.
+            val nearestFeature = historicFeatureAgreements
+                .asSequence()
+                .filter { it.targetType == type }
+                .map { it to distanceSquared(it.xPercent, it.yPercent, xPercent, yPercent) }
+                .filter { (_, distSq) -> distSq <= HISTORIC_FEATURE_MATCH_RADIUS_PERCENT * HISTORIC_FEATURE_MATCH_RADIUS_PERCENT }
+                .minByOrNull { (_, distSq) -> distSq }
+                ?.first
+            val adjusted = if (nearestFeature != null) {
+                (beforeMapAgreement + MapTerrainAgreement.rankingAdjustment(nearestFeature.agreementScore)).coerceIn(0f, 1f)
+            } else {
+                beforeMapAgreement
+            }
             // Mirrors TerrainIntelligenceEngine's feedback rule: a rejected match can drop an
             // already-qualified candidate, but feedback never resurrects one that never cleared
             // the raw per-pixel threshold in the first place.
             if (adjusted < effectiveThreshold * 0.88f) return@forEach
+            val evidence = explainCandidate(type, x, y, index, ctx) + listOfNotNull(
+                nearestFeature?.let {
+                    "Historic map: ${(it.agreementScore * 100).roundToInt()}% terrain agreement nearby"
+                },
+            )
             output += MetalDetectingTarget(
                 type = type,
                 xPercent = xPercent,
                 yPercent = yPercent,
                 score = adjusted,
                 radiusMeters = radiusMeters,
-                evidence = explainCandidate(type, x, y, index, ctx),
+                evidence = evidence,
                 layerEvidence = measureLayers(x, y, index, ctx),
                 cautionReasons = cautions,
                 verifiedNearby = feedbackMatched,

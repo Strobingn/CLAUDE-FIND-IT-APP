@@ -100,14 +100,19 @@ import com.example.data.historicmap.GeoReferencedMap
 import com.example.data.historicmap.GeoReferencer
 import com.example.data.historicmap.HistoricMapAgreementScorer
 import com.example.data.historicmap.HistoricMapControlPoint
+import com.example.data.historicmap.HistoricMapFeature
 import com.example.data.historicmap.HistoricMapGeoreference
 import com.example.data.historicmap.MapFeatureAgreement
+import com.example.data.historicmap.MapFeatureType
+import com.example.data.historicmap.MapTerrainAgreement
+import com.example.data.field.BoundaryVertex
+import com.example.data.local.toDomain
+import com.example.data.local.toEntity
 import com.example.data.field.BreadcrumbTrack
 import com.example.data.field.FieldWaypoint
 import com.example.data.field.SweepCoverageGrid
 import com.example.data.field.SweepCoverageTracker
 import com.example.data.local.AppDatabase
-import com.example.data.local.toEntity
 import com.example.data.survey.SurveyFeature
 import com.example.data.survey.SurveyGeometryType
 import com.example.geospatial.GeoSpatialLibrary
@@ -184,6 +189,15 @@ fun TerrainGoogleMapScreen(
     var historicPanelExpanded by rememberSaveable { mutableStateOf(false) }
     var historicMapMessage by remember { mutableStateOf<String?>(null) }
     var controlPointMode by rememberSaveable { mutableStateOf(false) }
+    // Manual entry for HistoricMapFeature (roads/structures/walls/boundaries extracted from the
+    // active map): tap points on the map while active, save as a polyline tied to that map.
+    val historicMapFeatureDao = remember(context) { AppDatabase.get(context).historicMapFeatureDao() }
+    var featureDrawMode by rememberSaveable { mutableStateOf(false) }
+    var featureDrawType by rememberSaveable { mutableStateOf(MapFeatureType.ROAD) }
+    var featureDrawPoints by remember { mutableStateOf<List<BoundaryVertex>>(emptyList()) }
+    var mapFeatures by remember { mutableStateOf<List<HistoricMapFeature>>(emptyList()) }
+    var featurePolylines by remember { mutableStateOf<List<Polyline>>(emptyList()) }
+    var draftFeaturePolyline by remember { mutableStateOf<Polyline?>(null) }
     var pendingImageXFraction by rememberSaveable { mutableFloatStateOf(0.5f) }
     var pendingImageYFraction by rememberSaveable { mutableFloatStateOf(0.5f) }
     var swipeBlend by rememberSaveable { mutableFloatStateOf(1f) }
@@ -520,14 +534,108 @@ fun TerrainGoogleMapScreen(
         historicOverlayObjects = updated
     }
 
-    // Keep the map-click handler on current control-point state (mapAsync captures once).
-    LaunchedEffect(googleMap, controlPointMode, activeHistoricMapId, pendingImageXFraction, pendingImageYFraction, historicMaps) {
+    // Keep the map-click handler on current control-point/feature-draw state (mapAsync captures
+    // once). The two modes are mutually exclusive by UI toggle, but resolved here defensively too.
+    LaunchedEffect(
+        googleMap, controlPointMode, featureDrawMode, activeHistoricMapId,
+        pendingImageXFraction, pendingImageYFraction, historicMaps,
+    ) {
         val map = googleMap ?: return@LaunchedEffect
-        if (controlPointMode && activeHistoricMapId != null) {
-            map.setOnMapClickListener { latLng -> addControlPointAt(latLng) }
-        } else {
-            map.setOnMapClickListener(null)
+        when {
+            controlPointMode && activeHistoricMapId != null ->
+                map.setOnMapClickListener { latLng -> addControlPointAt(latLng) }
+            featureDrawMode && activeHistoricMapId != null ->
+                map.setOnMapClickListener { latLng ->
+                    featureDrawPoints = featureDrawPoints + BoundaryVertex(latLng.latitude, latLng.longitude)
+                }
+            else -> map.setOnMapClickListener(null)
         }
+    }
+
+    // Observes features saved against the active historic map.
+    LaunchedEffect(activeHistoricMapId) {
+        val mapId = activeHistoricMapId
+        if (mapId == null) {
+            mapFeatures = emptyList()
+            return@LaunchedEffect
+        }
+        historicMapFeatureDao.observeByMapId(mapId).collect { entities ->
+            mapFeatures = entities.map { it.toDomain() }
+        }
+    }
+
+    // Renders saved features as colored polylines, distinct from the white dashed in-progress draft.
+    LaunchedEffect(googleMap, mapFeatures) {
+        val map = googleMap ?: return@LaunchedEffect
+        featurePolylines.forEach { it.remove() }
+        featurePolylines = mapFeatures.mapNotNull { feature ->
+            if (feature.points.size < 2) return@mapNotNull null
+            map.addPolyline(
+                PolylineOptions()
+                    .addAll(feature.points.map { LatLng(it.latitude, it.longitude) })
+                    .color(featureTypeColor(feature.type))
+                    .width(6f)
+                    .zIndex(6f),
+            )
+        }
+    }
+
+    LaunchedEffect(googleMap, featureDrawPoints) {
+        val map = googleMap ?: return@LaunchedEffect
+        draftFeaturePolyline?.remove()
+        draftFeaturePolyline = if (featureDrawPoints.size >= 2) {
+            map.addPolyline(
+                PolylineOptions()
+                    .addAll(featureDrawPoints.map { LatLng(it.latitude, it.longitude) })
+                    .color(0xFFFFFFFF.toInt())
+                    .width(5f)
+                    .zIndex(7f),
+            )
+        } else {
+            null
+        }
+    }
+
+    fun saveDraftFeature() {
+        val mapId = activeHistoricMapId
+        if (mapId == null) {
+            historicMapMessage = "Select a historic map first."
+            return
+        }
+        if (featureDrawPoints.size < 2) {
+            historicMapMessage = "Tap at least two points on the map to trace a feature."
+            return
+        }
+        val evidence = reliefEvidence
+        val bounds = metadata.bounds
+        // Real terrain-agreement score when it can be computed, not a placeholder — the same
+        // scorer the alignment feedback card uses, applied to just this feature's traced cells.
+        val confidence = if (evidence != null && bounds != null &&
+            bounds.maxLon > bounds.minLon && bounds.maxLat > bounds.minLat
+        ) {
+            val gridPoints = featureDrawPoints.map { vertex ->
+                val x = ((vertex.longitude - bounds.minLon) / (bounds.maxLon - bounds.minLon) * evidence.width).toFloat()
+                val y = ((bounds.maxLat - vertex.latitude) / (bounds.maxLat - bounds.minLat) * evidence.height).toFloat()
+                x to y
+            }
+            val cells = MapTerrainAgreement.rasterizePolyline(gridPoints, evidence.width, evidence.height, halfWidthCells = 1)
+            MapTerrainAgreement.score(cells, evidence.values, evidence.valid, evidence.supportThreshold).score
+        } else {
+            0f
+        }
+        val feature = HistoricMapFeature(
+            id = java.util.UUID.randomUUID().toString(),
+            mapId = mapId,
+            type = featureDrawType,
+            points = featureDrawPoints,
+            confidence = confidence,
+            note = "",
+            createdAtMillis = System.currentTimeMillis(),
+        )
+        scope.launch(Dispatchers.IO) { historicMapFeatureDao.upsert(feature.toEntity()) }
+        featureDrawPoints = emptyList()
+        historicMapMessage = "Saved ${featureDrawType.label.lowercase()}" +
+            if (evidence != null) " (terrain agreement ${(confidence * 100).toInt()}%)." else "."
     }
 
     LaunchedEffect(googleMap, activeHistoricMap?.controlPoints, controlPointMode) {
@@ -795,8 +903,34 @@ fun TerrainGoogleMapScreen(
                 onClose = {
                     historicPanelExpanded = false
                     controlPointMode = false
+                    featureDrawMode = false
+                    featureDrawPoints = emptyList()
                 },
                 modifier = Modifier.align(Alignment.TopEnd).padding(top = 92.dp, end = 12.dp).width(280.dp),
+            )
+        }
+
+        if (historicPanelExpanded && activeHistoricMapId != null) {
+            HistoricMapFeatureBar(
+                drawMode = featureDrawMode,
+                onDrawModeChanged = {
+                    featureDrawMode = it
+                    if (it) controlPointMode = false
+                    if (!it) featureDrawPoints = emptyList()
+                },
+                selectedType = featureDrawType,
+                onTypeSelected = { featureDrawType = it },
+                pointCount = featureDrawPoints.size,
+                savedCount = mapFeatures.size,
+                onUndo = { featureDrawPoints = featureDrawPoints.dropLast(1) },
+                onClear = { featureDrawPoints = emptyList() },
+                onSave = { saveDraftFeature() },
+                onDeleteLastSaved = {
+                    mapFeatures.maxByOrNull { it.createdAtMillis }?.let { feature ->
+                        scope.launch(Dispatchers.IO) { historicMapFeatureDao.deleteById(feature.id) }
+                    }
+                },
+                modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 96.dp).width(300.dp),
             )
         }
 
@@ -1139,6 +1273,111 @@ private fun AlignmentSlider(
         valueRange = range,
         enabled = enabled,
     )
+}
+
+/**
+ * Manual entry for [HistoricMapFeature]: tap points on the map to trace a road, structure, wall,
+ * or boundary off the active historic map's ink, then save it as a polyline tied to that map.
+ * Deletion is coarse (most-recently-saved only) rather than tap-any-feature-to-select, to keep
+ * this control surface small — a real gap if someone needs to delete an older mistaken entry, but
+ * an honest one rather than a half-built per-feature picker.
+ */
+@Composable
+private fun HistoricMapFeatureBar(
+    drawMode: Boolean,
+    onDrawModeChanged: (Boolean) -> Unit,
+    selectedType: MapFeatureType,
+    onTypeSelected: (MapFeatureType) -> Unit,
+    pointCount: Int,
+    savedCount: Int,
+    onUndo: () -> Unit,
+    onClear: () -> Unit,
+    onSave: () -> Unit,
+    onDeleteLastSaved: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.96f),
+        ),
+        shape = RoundedCornerShape(14.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+        modifier = modifier.testTag("historic_map_feature_bar"),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Map features",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "$savedCount saved",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            OutlinedButton(
+                onClick = { onDrawModeChanged(!drawMode) },
+                modifier = Modifier.fillMaxWidth().height(40.dp).testTag("feature_draw_mode_toggle"),
+            ) {
+                Text(if (drawMode) "Tap map to add points — tap here to stop" else "Trace a feature on the map")
+            }
+            if (drawMode) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    MapFeatureType.entries.forEach { type ->
+                        val selected = type == selectedType
+                        if (selected) {
+                            Button(
+                                onClick = { onTypeSelected(type) },
+                                modifier = Modifier.weight(1f).height(36.dp).testTag("feature_type_${type.name}"),
+                                contentPadding = PaddingValues(2.dp),
+                            ) { Text(type.label.substringBefore(" "), style = MaterialTheme.typography.labelSmall, maxLines = 1) }
+                        } else {
+                            OutlinedButton(
+                                onClick = { onTypeSelected(type) },
+                                modifier = Modifier.weight(1f).height(36.dp).testTag("feature_type_${type.name}"),
+                                contentPadding = PaddingValues(2.dp),
+                            ) { Text(type.label.substringBefore(" "), style = MaterialTheme.typography.labelSmall, maxLines = 1) }
+                        }
+                    }
+                }
+                Text(
+                    "$pointCount point${if (pointCount == 1) "" else "s"} tapped" +
+                        if (pointCount < 2) " — need at least 2" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(
+                        onClick = onUndo,
+                        enabled = pointCount > 0,
+                        modifier = Modifier.weight(1f).testTag("feature_undo_point"),
+                    ) { Text("Undo") }
+                    TextButton(
+                        onClick = onClear,
+                        enabled = pointCount > 0,
+                        modifier = Modifier.weight(1f).testTag("feature_clear_points"),
+                    ) { Text("Clear") }
+                    Button(
+                        onClick = onSave,
+                        enabled = pointCount >= 2,
+                        modifier = Modifier.weight(1f).testTag("feature_save_button"),
+                    ) { Text("Save") }
+                }
+            }
+            if (savedCount > 0) {
+                TextButton(
+                    onClick = onDeleteLastSaved,
+                    modifier = Modifier.fillMaxWidth().testTag("feature_delete_last_saved"),
+                ) { Text("Delete most recently saved feature") }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1754,6 +1993,13 @@ private fun GeoSpatialLibrary.GeographicBounds.toAlignment(
         heightScale = (requestedSize.heightMeters / naturalSize.heightMeters).coerceIn(0.2f, 5f),
         bearingDegrees = bearingDegrees,
     )
+}
+
+private fun featureTypeColor(type: MapFeatureType): Int = when (type) {
+    MapFeatureType.ROAD -> 0xFFFFB300.toInt()
+    MapFeatureType.STRUCTURE -> 0xFFE53935.toInt()
+    MapFeatureType.WALL -> 0xFF8D6E63.toInt()
+    MapFeatureType.BOUNDARY -> 0xFF29B6F6.toInt()
 }
 
 private fun nudgeCenter(center: LatLng, eastMeters: Float, northMeters: Float): LatLng {

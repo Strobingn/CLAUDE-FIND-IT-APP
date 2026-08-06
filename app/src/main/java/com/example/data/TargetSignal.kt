@@ -22,6 +22,12 @@ data class TargetSignal(
     val timestamp: Long = System.currentTimeMillis(),
     val notes: String = "",
     val photoUris: List<String> = emptyList(),
+    /**
+     * Compass heading (0-360, degrees from north) at the moment each photo in [photoUris] was
+     * attached, aligned by index. Null for a given photo when no compass fix was available (GPS
+     * off, or the photo was picked from the gallery rather than captured live).
+     */
+    val photoBearingsDegrees: List<Float?> = emptyList(),
     /** App-private audio recordings captured while reviewing this specific target. */
     val voiceNoteUris: List<String> = emptyList(),
     val status: String = "Logged", // "Logged", "Excavated", "Anomalous", "Trash"

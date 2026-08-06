@@ -24,6 +24,7 @@ data class TargetSignalEntity(
     val timestamp: Long,
     val notes: String,
     val photoUris: String,
+    val photoBearingsDegrees: String = "",
     val voiceNoteUris: String = "",
     val status: String,
     val outcome: String = VerificationOutcome.UNVERIFIED.name,
@@ -49,6 +50,9 @@ fun TargetSignal.toEntity() = TargetSignalEntity(
     timestamp = timestamp,
     notes = notes,
     photoUris = photoUris.joinToString("\n") { it.replace("\n", "") },
+    // Blank line = no bearing recorded for that photo; kept aligned by index with photoUris, so
+    // blank lines are NOT filtered out on the way back in (unlike photoUris/voiceNoteUris).
+    photoBearingsDegrees = photoBearingsDegrees.joinToString("\n") { it?.toString().orEmpty() },
     voiceNoteUris = voiceNoteUris.joinToString("\n") { it.replace("\n", "") },
     status = status,
     outcome = outcome.name,
@@ -74,6 +78,11 @@ fun TargetSignalEntity.toDomain() = TargetSignal(
     timestamp = timestamp,
     notes = notes,
     photoUris = photoUris.lineSequence().filter { it.isNotBlank() }.toList(),
+    photoBearingsDegrees = if (photoBearingsDegrees.isEmpty()) {
+        emptyList()
+    } else {
+        photoBearingsDegrees.split("\n").map { it.toFloatOrNull() }
+    },
     voiceNoteUris = voiceNoteUris.lineSequence().filter { it.isNotBlank() }.toList(),
     status = status,
     outcome = enumValueOrDefault(outcome, VerificationOutcome.UNVERIFIED),

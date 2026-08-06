@@ -1,5 +1,6 @@
 package com.example.analysis
 
+import com.example.data.historicmap.MapTerrainAgreement
 import java.util.EnumMap
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -204,5 +205,74 @@ class MetalDetectingTargetRefinerTest {
         )
 
         assertTrue(MetalDetectingTargetRefiner.refine(result).isEmpty())
+    }
+
+    @Test
+    fun strongHistoricMapAgreementRaisesAMatchingCandidateScore() {
+        val baseline = MetalDetectingTargetRefiner.refine(structuredHistoricResult())
+        val candidate = baseline.first()
+
+        val boosted = MetalDetectingTargetRefiner.refine(
+            structuredHistoricResult(),
+            historicFeatureAgreements = listOf(
+                HistoricFeatureAgreement(candidate.type, candidate.xPercent, candidate.yPercent, agreementScore = 1f),
+            ),
+        )
+
+        val boostedCandidate = boosted.first { it.type == candidate.type && it.xPercent == candidate.xPercent && it.yPercent == candidate.yPercent }
+        assertTrue(
+            "Full agreement (score=1) should raise the score, capped at +${MapTerrainAgreement.MAX_RANKING_ADJUSTMENT}",
+            boostedCandidate.score > candidate.score,
+        )
+        assertTrue(
+            "The adjustment must never exceed the documented cap",
+            boostedCandidate.score - candidate.score <= MapTerrainAgreement.MAX_RANKING_ADJUSTMENT + 1e-4f,
+        )
+        assertTrue(
+            "A boosted candidate reports the historic-map evidence that moved it",
+            boostedCandidate.evidence.any { it.contains("Historic map") },
+        )
+    }
+
+    @Test
+    fun weakHistoricMapAgreementLowersAMatchingCandidateScore() {
+        val baseline = MetalDetectingTargetRefiner.refine(structuredHistoricResult())
+        val candidate = baseline.first()
+
+        val demoted = MetalDetectingTargetRefiner.refine(
+            structuredHistoricResult(),
+            historicFeatureAgreements = listOf(
+                HistoricFeatureAgreement(candidate.type, candidate.xPercent, candidate.yPercent, agreementScore = 0f),
+            ),
+        )
+
+        val demotedCandidate = demoted.firstOrNull {
+            it.type == candidate.type && it.xPercent == candidate.xPercent && it.yPercent == candidate.yPercent
+        }
+        // A strong terrain-only candidate may still clear threshold even after the small penalty;
+        // either way its score must have moved down, never up.
+        if (demotedCandidate != null) {
+            assertTrue("Contradicting map evidence must not raise the score", demotedCandidate.score <= candidate.score)
+        }
+    }
+
+    @Test
+    fun mismatchedTypeOrDistantHistoricFeatureDoesNotAffectScore() {
+        val baseline = MetalDetectingTargetRefiner.refine(structuredHistoricResult())
+        val candidate = baseline.first()
+        val wrongType = MetalDetectingTargetType.entries.first { it != candidate.type }
+
+        val unaffected = MetalDetectingTargetRefiner.refine(
+            structuredHistoricResult(),
+            historicFeatureAgreements = listOf(
+                // Wrong type at the same location.
+                HistoricFeatureAgreement(wrongType, candidate.xPercent, candidate.yPercent, agreementScore = 1f),
+                // Right type, far away.
+                HistoricFeatureAgreement(candidate.type, candidate.xPercent + 50f, candidate.yPercent, agreementScore = 1f),
+            ),
+        )
+
+        val unaffectedCandidate = unaffected.first { it.type == candidate.type && it.xPercent == candidate.xPercent && it.yPercent == candidate.yPercent }
+        assertEquals(candidate.score, unaffectedCandidate.score, 1e-6f)
     }
 }

@@ -99,6 +99,7 @@ import com.example.geospatial.GeoSpatialLibrary
 import com.example.geospatial.MeasurementFormat
 import com.example.ui.components.CustomFileLoader
 import com.example.ui.components.HOMESITE_BINS
+import com.example.ui.components.HorizonCard
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarAreaPickerMapScreen
 import com.example.ui.components.LidarControlPanel
@@ -316,6 +317,7 @@ private fun TerrainTab(
     val zoomLevel = rememberSaveable { mutableStateOf(1f) }
     val inspectedCell = remember { mutableStateOf<com.example.analysis.TerrainCellInspection?>(null) }
     val viewshedState = remember { mutableStateOf<com.example.analysis.TerrainViewshed?>(null) }
+    val horizonState = remember { mutableStateOf<com.example.analysis.TerrainHorizon?>(null) }
     var homesiteOverlayEnabled by rememberSaveable { mutableStateOf(false) }
     val homesiteCells = remember { mutableStateOf<FloatArray?>(null) }
     val homesiteStatus = remember { mutableStateOf<String?>(null) }
@@ -365,6 +367,7 @@ private fun TerrainTab(
     }
 
     val viewshedComputing = remember { mutableStateOf(false) }
+    val horizonComputing = remember { mutableStateOf(false) }
     var isSelectingProfile by rememberSaveable { mutableStateOf(false) }
     var profileStartPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
     var profileEndPoint by remember { mutableStateOf<Pair<Float, Float>?>(null) }
@@ -545,6 +548,16 @@ private fun TerrainTab(
                 .padding(top = 84.dp, start = 12.dp),
         )
 
+        // Same never-cover-the-map placement as ViewshedCard, stacked below it when both are open.
+        HorizonCard(
+            horizon = horizonState.value,
+            isComputing = horizonComputing.value,
+            onClear = { horizonState.value = null },
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = if (viewshedState.value != null || viewshedComputing.value) 190.dp else 84.dp, start = 12.dp),
+        )
+
         nearestFind?.let { (find, distanceMeters) ->
             if (gpsEnabled && hasLocationPermission) {
                 val lat = deviceLatitude
@@ -680,6 +693,25 @@ private fun TerrainTab(
                             }
                             viewshedState.value = result
                             viewshedComputing.value = false
+                        }
+                    }
+                },
+                isComputingHorizon = horizonComputing.value,
+                canComputeHorizon = elevationGrid.width > 2 && elevationGrid.height > 2,
+                onComputeHorizon = {
+                    if (!horizonComputing.value) {
+                        horizonComputing.value = true
+                        inspectedCell.value = null
+                        scope.launch {
+                            val result = withContext(Dispatchers.Default) {
+                                TerrainViewshedAnalyzer.horizon(
+                                    grid = elevationGrid,
+                                    observerXPercent = inspection.xPercent,
+                                    observerYPercent = inspection.yPercent,
+                                )
+                            }
+                            horizonState.value = result
+                            horizonComputing.value = false
                         }
                     }
                 },
@@ -1220,6 +1252,7 @@ private fun FindsTab(viewModel: HillshadeViewModel, padding: PaddingValues) {
         onBuildProjectExport = viewModel::buildProjectExportFiles,
         onBuildQgisBundle = viewModel::buildQgisBundleBytes,
         onBuildProjectArchive = viewModel::buildProjectArchiveBytes,
+        onImportProjectArchive = viewModel::importProjectArchive,
         onRoutePlanned = viewModel::setPlannedRoute,
         onSaveExcavationLog = viewModel::saveExcavationLog,
         onDeleteExcavationLog = viewModel::deleteExcavationLog,

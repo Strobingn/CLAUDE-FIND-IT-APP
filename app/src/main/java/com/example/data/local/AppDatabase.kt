@@ -21,7 +21,7 @@ import androidx.room.migration.Migration
         HistoricMapEntity::class,
         HistoricMapFeatureEntity::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -294,6 +294,13 @@ abstract class AppDatabase : RoomDatabase() {
                 )
             }
         }
+        private val migration16To17 = object : Migration(16, 17) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE target_signals ADD COLUMN photoBearingsDegrees TEXT NOT NULL DEFAULT ''",
+                )
+            }
+        }
 
         fun get(context: Context): AppDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(
@@ -317,6 +324,7 @@ abstract class AppDatabase : RoomDatabase() {
                     migration13To14,
                     migration14To15,
                     migration15To16,
+                    migration16To17,
                 )
                 .build()
                 .also { instance = it }

@@ -73,8 +73,13 @@ import com.example.data.local.SettingsRepository
 import com.example.data.local.toDomain
 import com.example.data.local.toEntity
 import com.example.data.export.GeoTiffWriter
+import com.example.data.export.ArchiveImportSummary
 import com.example.data.export.ProjectArchiveFile
 import com.example.data.export.ProjectArchiveWriter
+import com.example.data.export.TargetSignalArchiveCodec
+import com.example.data.export.readZipArchive
+import com.example.data.field.SyncConflictResolution
+import com.example.data.field.SyncConflictResolver
 import com.example.data.export.buildCsv
 import com.example.data.export.buildGeoJson
 import com.example.data.export.buildGpx
@@ -1932,12 +1937,73 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
             ProjectArchiveFile("targets.geojson", buildGeoJson(signals).toByteArray()),
             ProjectArchiveFile("terrain-annotated.png", projectFiles.terrainPng),
             ProjectArchiveFile("field-report.pdf", projectFiles.reportPdf),
+            // Lossless snapshot for re-import on another device — the GIS formats above are
+            // human/tool-facing exports and drop fields a merge needs (photo/voice URIs, keys).
+            TargetSignalArchiveCodec.encode(signals),
         )
         buildQgisBundleBytes()?.let { entries.add(ProjectArchiveFile("qgis-bundle.zip", it)) }
         return ProjectArchiveWriter.write(
             projectName = _activeGeoMetadata.value.siteName,
             files = entries,
             createdAtMillis = System.currentTimeMillis(),
+        )
+    }
+
+    /**
+     * Imports the target-signal snapshot from a portable project archive built by
+     * [buildProjectArchiveBytes] on another device, merging it into the local find list.
+     *
+     * Every incoming signal that doesn't collide with a local id is inserted outright. A
+     * collision runs through [SyncConflictResolver] using each side's [TargetSignal.timestamp] —
+     * there's no shared "base" version to diff against (this app has no live cloud sync yet), so
+     * ties resolve to whichever side is newer and anything genuinely ambiguous is left for the
+     * user to review rather than silently picked, per [ArchiveImportSummary.needsReview].
+     */
+    suspend fun importProjectArchive(archiveBytes: ByteArray): ArchiveImportSummary? {
+        val manifest = ProjectArchiveWriter.readManifest(archiveBytes) ?: return null
+        val entries = readZipArchive(archiveBytes)
+        val entitiesBytes = entries[TargetSignalArchiveCodec.ENTRIES_PATH] ?: return ArchiveImportSummary(
+            projectName = manifest.projectName,
+            imported = 0,
+            updated = 0,
+            keptLocal = 0,
+            needsReview = emptyList(),
+        )
+        val incoming = TargetSignalArchiveCodec.decode(entitiesBytes)
+        val local = _loggedSignals.value.associateBy { it.id }
+        var imported = 0
+        var updated = 0
+        var keptLocal = 0
+        val needsReview = mutableListOf<TargetSignal>()
+        for (signal in incoming) {
+            val existing = local[signal.id]
+            if (existing == null) {
+                signalDao.upsert(signal.toEntity())
+                imported++
+                continue
+            }
+            if (existing == signal) continue
+            val report = SyncConflictResolver.resolve(
+                entityId = signal.id.toString(),
+                baseUpdatedAtMillis = null,
+                localUpdatedAtMillis = existing.timestamp,
+                remoteUpdatedAtMillis = signal.timestamp,
+            )
+            when (report.resolution) {
+                SyncConflictResolution.REMOTE_WINS -> {
+                    signalDao.upsert(signal.toEntity())
+                    updated++
+                }
+                SyncConflictResolution.LOCAL_WINS -> keptLocal++
+                SyncConflictResolution.MERGE_REQUIRED -> needsReview += signal
+            }
+        }
+        return ArchiveImportSummary(
+            projectName = manifest.projectName,
+            imported = imported,
+            updated = updated,
+            keptLocal = keptLocal,
+            needsReview = needsReview,
         )
     }
 

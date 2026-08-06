@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -37,10 +38,13 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.analysis.MetalDetectingTarget
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import com.example.ai.FieldAiSessionPack
+import com.example.analysis.HistoricFeatureAgreement
 import com.example.analysis.LayerVerdict
 import com.example.analysis.MetalDetectingTargetRefiner
+import com.example.analysis.MetalDetectingTargetType
 import com.example.analysis.TerrainDerivedLayer
 import com.example.analysis.TerrainIntelligenceEngine
 import com.example.analysis.VerifiedFeedback
@@ -48,15 +52,19 @@ import com.example.data.DetectionSource
 import com.example.data.MetalType
 import com.example.data.NormalizedRasterBounds
 import com.example.data.TargetSignal
+import com.example.data.historicmap.MapFeatureType
 import com.example.analysis.DigDepthEstimate
 import com.example.analysis.DigDepthEstimator
 import com.example.analysis.HuntZone
 import com.example.analysis.HuntZoneClusterer
 import com.example.data.field.NavigationTarget
+import com.example.data.local.AppDatabase
 import com.example.data.local.SavedTarget
 import com.example.data.local.buildAnalyzedDatasetEntity
 import com.example.data.local.parseTargets
+import com.example.data.local.toDomain
 import com.example.geospatial.GeoSpatialLibrary
+import kotlinx.coroutines.flow.first
 import com.example.ui.components.LidarCanvasMode
 import com.example.ui.components.LidarMapCanvas
 import com.example.ui.components.LidarOverlayTarget
@@ -92,6 +100,10 @@ fun AiAnalysisWorkspace(
     val deviceLatitude by viewModel.deviceLatitude.collectAsStateWithLifecycle()
     val deviceLongitude by viewModel.deviceLongitude.collectAsStateWithLifecycle()
     val terrainKey by viewModel.activeTerrainKey.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val historicMapDao = remember(context) { AppDatabase.get(context).historicMapDao() }
+    val historicMapFeatureDao = remember(context) { AppDatabase.get(context).historicMapFeatureDao() }
+    var historicFeatureAgreements by remember { mutableStateOf<List<HistoricFeatureAgreement>>(emptyList()) }
     val gridSpacing by viewModel.gridSpacing.collectAsStateWithLifecycle()
     val featureTypeCalibration by viewModel.featureTypeCalibration.collectAsStateWithLifecycle()
     val visualizationMode by viewModel.visualizationMode.collectAsStateWithLifecycle()
@@ -101,6 +113,40 @@ fun AiAnalysisWorkspace(
     val secondaryDataset = remember(analyzedDatasets, terrainKey) {
         // Prefer a different dataset than the active terrain key for compare-two-sites.
         analyzedDatasets.firstOrNull { it.datasetKey != terrainKey }
+    }
+
+    // Samples saved HistoricMapFeature geometry (from reliably-georeferenced maps only) into
+    // grid-percent points MetalDetectingTargetRefiner can compare candidates against. One-shot
+    // per terrain/bounds change rather than a live Flow — features are edited from the Map tab,
+    // not this screen, so staying current on tab return is enough.
+    LaunchedEffect(terrainKey, metadata) {
+        val key = terrainKey
+        val bounds = metadata.bounds
+        if (key == null || bounds == null || bounds.maxLon <= bounds.minLon || bounds.maxLat <= bounds.minLat) {
+            historicFeatureAgreements = emptyList()
+            return@LaunchedEffect
+        }
+        val reliableMapIds = historicMapDao.observeByTerrainKey(key).first()
+            .map { it.toDomain() }
+            .filter { it.isReliable }
+            .map { it.id }
+        val features = reliableMapIds.flatMap { mapId ->
+            historicMapFeatureDao.observeByMapId(mapId).first().map { it.toDomain() }
+        }
+        historicFeatureAgreements = features.flatMap { feature ->
+            val targetTypes = feature.type.toMetalDetectingTargetTypes()
+            if (targetTypes.isEmpty()) {
+                emptyList()
+            } else {
+                feature.points.flatMap { vertex ->
+                    val xPercent = ((vertex.longitude - bounds.minLon) / (bounds.maxLon - bounds.minLon) * 100f).toFloat()
+                    val yPercent = ((bounds.maxLat - vertex.latitude) / (bounds.maxLat - bounds.minLat) * 100f).toFloat()
+                    targetTypes.map { targetType ->
+                        HistoricFeatureAgreement(targetType, xPercent, yPercent, feature.confidence)
+                    }
+                }
+            }
+        }
     }
 
     val fieldPack = remember(
@@ -205,10 +251,10 @@ fun AiAnalysisWorkspace(
     // Re-derives live from the current logged finds (not just at "Analyze" time) so marking a
     // find CONFIRMED/REJECTED in the Finds tab immediately re-scores historic targets here too,
     // without needing to re-run the full (much more expensive) derived-layer analysis.
-    val historicTargets = remember(aiState.localResult, signals, featureTypeCalibration) {
+    val historicTargets = remember(aiState.localResult, signals, featureTypeCalibration, historicFeatureAgreements) {
         val result = aiState.localResult ?: return@remember emptyList()
         val feedbackPoints = VerifiedFeedback.derive(signals, result.datasetKey)
-        MetalDetectingTargetRefiner.refine(result, feedbackPoints, featureTypeCalibration)
+        MetalDetectingTargetRefiner.refine(result, feedbackPoints, featureTypeCalibration, historicFeatureAgreements)
     }
     val huntZones = remember(historicTargets, aiState.localResult) {
         val resultLayers = aiState.localResult?.layers ?: return@remember emptyList()
@@ -317,7 +363,10 @@ fun AiAnalysisWorkspace(
     // app moves on to a different import.
     LaunchedEffect(aiState.localResult) {
         val result = aiState.localResult ?: return@LaunchedEffect
-        val rawTargets = MetalDetectingTargetRefiner.refine(result)
+        val rawTargets = MetalDetectingTargetRefiner.refine(
+            result,
+            historicFeatureAgreements = historicFeatureAgreements,
+        )
         viewModel.saveDatasetSnapshot(
             buildAnalyzedDatasetEntity(
                 datasetKey = result.datasetKey,
@@ -756,6 +805,22 @@ fun AiAnalysisWorkspace(
 }
 
 private const val CLOUD_AI_NOTE_PREFIX = "Cloud AI target: "
+
+/**
+ * Which [MetalDetectingTargetType]s a saved historic-map feature can lend ranking support to.
+ * BOUNDARY has no natural detector-type match (property lines aren't a detecting target) and is
+ * deliberately left unmapped rather than forced onto an unrelated type.
+ */
+private fun MapFeatureType.toMetalDetectingTargetTypes(): List<MetalDetectingTargetType> = when (this) {
+    MapFeatureType.ROAD -> listOf(MetalDetectingTargetType.ROAD_TRAIL)
+    MapFeatureType.STRUCTURE -> listOf(
+        MetalDetectingTargetType.FOUNDATION,
+        MetalDetectingTargetType.CELLAR_HOLE,
+        MetalDetectingTargetType.OLD_HOMESITE,
+    )
+    MapFeatureType.WALL -> listOf(MetalDetectingTargetType.STONE_WALL)
+    MapFeatureType.BOUNDARY -> emptyList()
+}
 
 internal fun aiSourceVisualizationLabel(mode: Int): String = when (mode) {
     0 -> "Standard hillshade"

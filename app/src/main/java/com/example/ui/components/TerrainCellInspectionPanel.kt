@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Landscape
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -50,6 +51,9 @@ fun TerrainCellInspectionPanel(
     isComputingViewshed: Boolean = false,
     canComputeViewshed: Boolean = true,
     onComputeViewshed: () -> Unit = {},
+    isComputingHorizon: Boolean = false,
+    canComputeHorizon: Boolean = true,
+    onComputeHorizon: () -> Unit = {},
 ) {
     Card(
         colors = CardDefaults.cardColors(
@@ -143,8 +147,26 @@ fun TerrainCellInspectionPanel(
                     Text("Viewshed from here")
                 }
             }
+            OutlinedButton(
+                onClick = onComputeHorizon,
+                enabled = inspection.valid && canComputeHorizon && !isComputingHorizon,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(44.dp)
+                    .testTag("compute_horizon_button"),
+            ) {
+                if (isComputingHorizon) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Computing…")
+                } else {
+                    Icon(Icons.Default.Landscape, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Horizon from here")
+                }
+            }
             Text(
-                "Result draws on the map; status opens in a small card.",
+                "Results draw on the map; status opens in a small card.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
