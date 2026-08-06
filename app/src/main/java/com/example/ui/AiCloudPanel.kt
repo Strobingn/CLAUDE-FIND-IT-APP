@@ -1,6 +1,14 @@
 package com.example.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +30,8 @@ import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ImageSearch
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -31,6 +41,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -38,6 +49,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +63,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ai.FieldAiFeature
 import com.example.ai.FieldAiSessionPack
@@ -228,6 +241,64 @@ fun AiCloudPanel(
     val viewport by TerrainVisionSession.snapshot.collectAsStateWithLifecycle()
     var packFilter by rememberSaveable { mutableStateOf(AiPackFilter.ALL) }
     var draft by rememberSaveable { mutableStateOf("") }
+    // Dictation feeds the same draft box every other AI feature already sends from — "Voice ->
+    // structured find" isn't a separate pipeline, it's this transcript landing in freeformNotes
+    // like any typed prompt, then flowing through the same FieldAiStructuredTags parser.
+    var isDictating by remember { mutableStateOf(false) }
+    var dictationError by remember { mutableStateOf<String?>(null) }
+    val speechRecognizer = remember {
+        if (SpeechRecognizer.isRecognitionAvailable(context)) SpeechRecognizer.createSpeechRecognizer(context) else null
+    }
+    DisposableEffect(Unit) {
+        onDispose { speechRecognizer?.destroy() }
+    }
+    fun startDictation() {
+        val recognizer = speechRecognizer
+        if (recognizer == null) {
+            dictationError = "Speech recognition isn't available on this device."
+            return
+        }
+        dictationError = null
+        recognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onError(error: Int) {
+                isDictating = false
+                dictationError = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                        "Didn't catch that — try again closer to the microphone."
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is required to dictate."
+                    SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
+                        "Dictation needs a network connection on this device."
+                    else -> "Dictation failed — try typing instead."
+                }
+            }
+            override fun onResults(results: Bundle?) {
+                isDictating = false
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                if (!text.isNullOrBlank()) {
+                    draft = (if (draft.isBlank()) text else "$draft $text").take(4_000)
+                }
+            }
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+        isDictating = true
+        recognizer.startListening(
+            Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            },
+        )
+    }
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) startDictation() else dictationError = "Microphone permission is required to dictate."
+    }
     var openAiKey by rememberSaveable { mutableStateOf("") }
     var geminiKey by rememberSaveable { mutableStateOf("") }
     var showKeys by rememberSaveable { mutableStateOf(!state.openAiConfigured && !state.geminiConfigured) }
@@ -908,6 +979,10 @@ fun AiCloudPanel(
             item { Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         }
 
+        dictationError?.let { error ->
+            item { Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        }
+
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -917,12 +992,34 @@ fun AiCloudPanel(
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it.take(4_000) },
-                    label = { Text("Ask AI to analyze or mark targets") },
+                    label = { Text(if (isDictating) "Listening…" else "Ask AI to analyze or mark targets") },
                     minLines = 1,
                     maxLines = 4,
                     enabled = !state.isSending,
                     modifier = Modifier.weight(1f),
                 )
+                IconButton(
+                    onClick = {
+                        if (isDictating) {
+                            speechRecognizer?.stopListening()
+                            isDictating = false
+                        } else {
+                            val granted = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO,
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (granted) startDictation() else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    enabled = !state.isSending,
+                    modifier = Modifier.height(CompactButtonHeight).testTag("ai_dictate_button"),
+                ) {
+                    Icon(
+                        if (isDictating) Icons.Default.MicOff else Icons.Default.Mic,
+                        contentDescription = if (isDictating) "Stop dictation" else "Dictate a prompt",
+                        tint = if (isDictating) MaterialTheme.colorScheme.error else LocalContentColor.current,
+                    )
+                }
                 Button(
                     onClick = {
                         assistantViewModel.send(

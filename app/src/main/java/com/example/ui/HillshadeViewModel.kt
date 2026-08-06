@@ -8,6 +8,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.analysis.FeatureTypeCalibration
 import com.example.analysis.MetalDetectingTargetType
+import com.example.analysis.ReviewedCandidateExample
+import com.example.analysis.ReviewedExampleStore
 import com.example.analysis.TerrainDerivedLayerCache
 import com.example.analysis.TerrainDerivedLayers
 import com.example.analysis.TerrainIntelligenceEngine
@@ -143,6 +145,11 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     private val excavationLogDao = AppDatabase.get(application).excavationLogDao()
     private val surveyBoundaryDao = AppDatabase.get(application).surveyBoundaryDao()
     private val pendingSyncDao = AppDatabase.get(application).pendingSyncDao()
+    // Append-only training-data trail: every field-verified outcome lands here, not just in the
+    // signal's own outcome column, so future ranking models have a permanent, un-editable record
+    // of what was actually confirmed/rejected/inconclusive — separate from filesDir so it survives
+    // exactly like the rest of the app's durable state (never the cache dir, which Android can purge).
+    private val reviewedExampleStore = ReviewedExampleStore(File(application.filesDir, "reviewed_examples.tsv"))
     private val refinementMemoryCache = LazTerrainMemoryCache()
     private val refinementDiskCache = AppTerrainStorage.decodedTerrainCache(application)
     private val terrainSessionStore = TerrainSessionStore(application)
@@ -1650,6 +1657,9 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun updateLoggedSignal(signal: TargetSignal) {
+        // Read before the coroutine launches: _loggedSignals is about to be overwritten by the
+        // DB round-trip this triggers, so the pre-edit outcome must be captured now or it's gone.
+        val previousOutcome = _loggedSignals.value.firstOrNull { it.id == signal.id }?.outcome
         viewModelScope.launch {
             signalDao.upsert(signal.toEntity())
             enqueuePendingSync(
@@ -1658,6 +1668,14 @@ class HillshadeViewModel(application: Application) : AndroidViewModel(applicatio
                 operation = SyncOperation.UPSERT,
                 payload = "terrain=${signal.terrainKey};status=${signal.status};outcome=${signal.outcome.name}",
             )
+            // Only on an actual verification change, not every notes/photo edit to an
+            // already-reviewed find — the store is append-only, so re-saving unrelated fields
+            // must not flood it with duplicate rows for the same outcome.
+            if (signal.outcome != VerificationOutcome.UNVERIFIED && signal.outcome != previousOutcome) {
+                ReviewedCandidateExample.fromSignal(signal)?.let { example ->
+                    withContext(Dispatchers.IO) { reviewedExampleStore.append(example) }
+                }
+            }
         }
     }
 

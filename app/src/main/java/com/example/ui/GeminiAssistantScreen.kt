@@ -78,11 +78,17 @@ import com.example.analysis.TerrainIntelligenceResult
 import com.example.analysis.VerifiedFeedback
 import com.example.analysis.VerifiedFeedbackPoint
 import com.example.analysis.ml.CandidateFeatures
+import com.example.analysis.ml.ExplainableRanker
 import com.example.analysis.ml.FeatureContribution
+import com.example.analysis.ml.HoldoutEvaluation
 import com.example.analysis.ml.ModelRegistry
+import com.example.analysis.ml.RankerHoldoutEvaluator
 import com.example.analysis.ml.RankerModelStore
 import com.example.analysis.ml.RankerTrainer
 import com.example.analysis.ml.RankerTrainingExample
+import com.example.analysis.ml.SpatialFoldSplitter
+import com.example.analysis.ReviewedExampleStore
+import com.example.analysis.ReviewedVerdict
 import com.example.data.AppMemoryBudget
 import com.example.data.ElevationGrid
 import com.example.data.ai.AnomalyClusterer
@@ -214,6 +220,10 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         TerrainDerivedLayerCache(File(application.cacheDir, "terrain-intelligence-v2")),
     )
     private val rankerStore = RankerModelStore(appContext)
+    // Same file HillshadeViewModel.updateLoggedSignal appends to — every past-session field
+    // verification a user has ever recorded for this dataset, not just what's live in this
+    // session's verifiedFeedback, is available to train against.
+    private val reviewedExampleStore = ReviewedExampleStore(File(application.filesDir, "reviewed_examples.tsv"))
     private var modelRegistry: ModelRegistry = rankerStore.load()
     private val ids = AtomicLong(1L)
     private var localAnalysisJob: Job? = null
@@ -268,11 +278,26 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         }.sortedByDescending { it.probability }
     }
 
+    /** One matched training example plus the location used for spatial fold assignment. */
+    private data class LocatedTrainingExample(
+        val example: RankerTrainingExample,
+        val candidate: TerrainFeatureCandidate,
+        val location: SpatialFoldSplitter.FoldLocation,
+    )
+
     /**
      * Trains a new explainable ranker from this dataset's field-verified outcomes: every confirmed
      * or rejected check within matching distance of a candidate becomes one labeled example, the
      * trained model is activated through the registry, and the registry is persisted so the same
      * ranking survives restarts.
+     *
+     * Training examples come from two sources merged together: this session's live
+     * [AiTerrainState.verifiedFeedback] and every past-session outcome persisted to
+     * [reviewedExampleStore] for this dataset — a find verified last week trains today's model
+     * too, not just what happens to still be in memory. Accuracy is reported two ways: in-sample
+     * (the final model scored on everything it trained on — always optimistic) and held-out,
+     * from a spatially separate fold the final model never saw, when there's enough data to hold
+     * one out meaningfully.
      */
     fun trainRankerFromFeedback() {
         val result = _state.value.localResult
@@ -283,7 +308,13 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
             )
             return
         }
-        val examples = _state.value.verifiedFeedback.mapNotNull { point ->
+        val persistedPoints = reviewedExampleStore.readForDataset(result.datasetKey)
+            .filter { it.verdict != ReviewedVerdict.AMBIGUOUS }
+            .map {
+                VerifiedFeedbackPoint(it.xPercent, it.yPercent, confirmed = it.verdict == ReviewedVerdict.PRODUCTIVE)
+            }
+        val feedbackPoints = (_state.value.verifiedFeedback + persistedPoints).distinct()
+        val located = feedbackPoints.mapNotNull { point ->
             val nearest = result.candidates.minByOrNull { candidate ->
                 val dx = candidate.xPercent - point.xPercent
                 val dy = candidate.yPercent - point.yPercent
@@ -292,13 +323,17 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
             val dx = nearest.xPercent - point.xPercent
             val dy = nearest.yPercent - point.yPercent
             if (dx * dx + dy * dy > VerifiedFeedback.MATCH_DISTANCE_SQUARED) return@mapNotNull null
-            RankerTrainingExample(
-                features = CandidateFeatures.extract(nearest, result.layers).values,
-                productive = point.confirmed,
+            LocatedTrainingExample(
+                example = RankerTrainingExample(
+                    features = CandidateFeatures.extract(nearest, result.layers).values,
+                    productive = point.confirmed,
+                ),
+                candidate = nearest,
+                location = SpatialFoldSplitter.FoldLocation(null, null, nearest.xPercent, nearest.yPercent),
             )
         }
-        val confirmed = examples.count { it.productive }
-        val rejected = examples.size - confirmed
+        val confirmed = located.count { it.example.productive }
+        val rejected = located.size - confirmed
         if (confirmed == 0 || rejected == 0) {
             _state.value = _state.value.copy(
                 rankerMessage = "Need at least one confirmed and one rejected field check near a " +
@@ -308,9 +343,10 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
         }
         _state.value = _state.value.copy(isTrainingRanker = true, rankerMessage = null)
         viewModelScope.launch {
+            val evaluation = withContext(Dispatchers.Default) { evaluateWithSpatialHoldout(located) }
             val training = withContext(Dispatchers.Default) {
                 RankerTrainer.train(
-                    examples = examples,
+                    examples = located.map { it.example },
                     modelVersion = "field-checks-${System.currentTimeMillis()}",
                     featureNames = CandidateFeatures.FEATURE_NAMES,
                 )
@@ -321,12 +357,30 @@ class AiTerrainViewModel(application: Application) : AndroidViewModel(applicatio
                 isTrainingRanker = false,
                 rankerVersion = training.ranker.modelVersion,
                 rankedCandidates = rank(result),
-                rankerMessage = "Trained on ${examples.size} field checks " +
-                    "($confirmed confirmed, $rejected rejected) · accuracy " +
-                    String.format(Locale.US, "%.0f%%", training.accuracy * 100f),
+                rankerMessage = buildString {
+                    append("Trained on ${located.size} field checks ($confirmed confirmed, $rejected rejected)")
+                    append(" · in-sample accuracy ${String.format(Locale.US, "%.0f%%", training.accuracy * 100f)}")
+                    evaluation?.heldOutAccuracy?.let {
+                        append(" · held-out accuracy ${String.format(Locale.US, "%.0f%%", it * 100f)}")
+                    }
+                    if (evaluation != null && evaluation.hardNegativeCount > 0) {
+                        append(
+                            " · ${evaluation.hardNegativeCount} rejected find" +
+                                if (evaluation.hardNegativeCount == 1) "" else "s",
+                        )
+                        append(" still scores high on held-out data — worth a second look")
+                    }
+                },
             )
         }
     }
+
+    private fun evaluateWithSpatialHoldout(located: List<LocatedTrainingExample>): HoldoutEvaluation? =
+        RankerHoldoutEvaluator.evaluate(
+            examples = located.map { it.example },
+            locations = located.map { it.location },
+            featureNames = CandidateFeatures.FEATURE_NAMES,
+        )
 
     /** Deactivates the trained ranker and drops all retained versions from the device. */
     fun clearRanker() {
