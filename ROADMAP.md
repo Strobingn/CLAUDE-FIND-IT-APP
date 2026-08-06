@@ -2,7 +2,7 @@
 
 **Status:** Active  
 **Repository:** <https://github.com/Strobingn/Find-It-App>  
-**Last reviewed:** 2026-08-05
+**Last reviewed:** 2026-08-06
 
 ## Product objective
 
@@ -348,7 +348,7 @@ Exit criteria:
 
 ### Phase 5 — Field verification
 
-- Add breadcrumbs, compass navigation, AR guidance, voice notes, and directional photos. **Mostly implemented.** Breadcrumb tracks, compass/bearing navigation, voice notes, and photos exist; AR guidance remains device-bound future work.
+- Add breadcrumbs, compass navigation, AR guidance, voice notes, and directional photos. **Mostly implemented.** Breadcrumb tracks, compass/bearing navigation, and voice notes exist; photos now carry a per-photo compass bearing (`photoBearingsDegrees`, index-aligned with `photoUris`, migrated in database v17) shown as a facing direction ("Facing NE 47°") in the edit dialog, making them genuinely directional rather than plain attachments; AR guidance remains device-bound future work.
 - Add target states, excavation logs, boundaries, route optimization, and offline sync queue. **Implemented; unit verified; production UI wired (GROKV5).** `TargetVisitStates` validates outcome transitions (checked targets can be corrected, never erased) and maps outcomes to reviewed-example verdicts; `ExcavationLogEntry`, `SurveyBoundary` (with polygon containment), `TargetRouteOptimizer` (nearest-neighbor + 2-opt), and `FieldSyncQueue` (coalescing upserts, delete-wins, ordered replay, no silent drops) ship with Room persistence (`excavation_logs`, `survey_boundaries`, `pending_sync`, database v14). HillshadeViewModel observes and persists digs/boundaries and enqueues every field mutation; Finds tab exposes dig logs, boundary create/delete, and the offline sync queue; Tools tab shows live status cards for each.
 
 Exit criteria:
@@ -361,8 +361,8 @@ Exit criteria:
 
 - Add automatic georeferencing with manual control points. **Implemented; unit verified; production UI wired (GROKV5).** `GeoReferencer` fits a least-squares affine from 3+ control points (exact similarity fit for 2), rejects collinear/duplicate sets, and reports per-point meter residuals. Map tab: image crosshair + map tap adds control points; Fit applies `HistoricMapGeoreference.placementFromFit` to the ground overlay; confidence/RMSE stay on-screen; fits persist to SharedPreferences and Room `historic_maps`.
 - Add opacity, side-by-side, and swipe alignment tools. **Implemented in production UI.** Opacity slider retained; swipe blend multiplies active historic overlay opacity; side-by-side dialog compares terrain hillshade vs historic image.
-- Extract roads, structures, walls, and boundaries. **Data model implemented; unit verified.** `HistoricMapFeature` with typed geometry (`ROAD`, `STRUCTURE`, `WALL`, `BOUNDARY`) persists per map with confidence and notes; automatic image extraction remains future work.
-- Score map-to-terrain agreement and georeferencing confidence. **Implemented; unit verified; UI wired.** `MapTerrainAgreement` blends support coverage and contrast into a bounded 0–1 score whose ranking adjustment is capped at ±0.1 so map evidence informs but never overpowers terrain; `GeoReferenceConfidence` buckets (good / fair / low-confidence / insufficient) are computed from meter-scale RMSE and shown on the historic map panel.
+- Extract roads, structures, walls, and boundaries. **Implemented; unit verified; UI wired.** `HistoricMapFeature` with typed geometry (`ROAD`, `STRUCTURE`, `WALL`, `BOUNDARY`) persists per map with confidence and notes; the historic map panel's feature bar lets a user trace a feature by tapping points on the map, confidence is scored against the real terrain relief via `MapTerrainAgreement.rasterizePolyline`/`.score` at save time (not fabricated), and saved features render as colored polylines. Automatic image-based extraction remains future work.
+- Score map-to-terrain agreement and georeferencing confidence. **Implemented; unit verified; UI wired.** `MapTerrainAgreement` blends support coverage and contrast into a bounded 0–1 score whose ranking adjustment is capped at ±0.1 so map evidence informs but never overpowers terrain; that adjustment now actually feeds `MetalDetectingTargetRefiner` (nearby traced historic-map features nudge a matching candidate's score, with an evidence line noting the terrain-agreement percentage) rather than sitting unused. `GeoReferenceConfidence` buckets (good / fair / low-confidence / insufficient) are computed from meter-scale RMSE and shown on the historic map panel.
 - Preserve source and alignment metadata. **Implemented; unit verified; UI wired.** `GeoReferencedMap` retains source attribution, control points, transform coefficients, RMSE/max residuals, and confidence in the `historic_maps` and `historic_map_features` tables (database v15), so every alignment is reproducible and correctable.
 
 Exit criteria:
@@ -373,11 +373,11 @@ Exit criteria:
 
 ### Phase 7 — Machine-learning ranking
 
-- Define a reviewed-example schema. **Complete** (see Sprint 3): `ReviewedCandidateExample` and its append-only store.
+- Define a reviewed-example schema. **Complete; UI wired.** `ReviewedCandidateExample` and its append-only store. `HillshadeViewModel` now appends a reviewed example every time a logged signal's field-verification outcome actually changes (not on every notes edit), so the store fills from real field use instead of sitting empty.
 - Build Hudson Valley cellar-hole and road datasets. **Field-data dependent; not codeable yet.** Accumulates through the Phase 5 field-verification flow into the reviewed-example store.
 - Train an XGBoost or comparable explainable candidate ranker. **Engine implemented; unit verified.** `RankerTrainer` fits an L2-regularized logistic ranker (the explainable comparator) from feature vectors extracted by `CandidateFeatures`; training is deterministic and reproducible per version.
-- Use spatially separated training and evaluation areas. **Implemented; unit verified.** `SpatialFoldSplitter` assigns folds by ~1 km spatial blocks (grid blocks when coordinates are missing), never at random, so near-duplicates cannot leak across train/eval.
-- Add hard-negative mining, model versioning, calibration, rollback, and explanations. **Implemented; unit verified.** `HardNegativeMiner` surfaces the highest-scoring rejected examples; `ExplainableRanker` carries Platt calibration and per-feature contributions that sum to the raw score; `ModelRegistry` activates versions explicitly and rolls back, so production ranking never changes silently.
+- Use spatially separated training and evaluation areas. **Implemented; unit verified; UI wired.** `SpatialFoldSplitter` assigns folds by ~1 km spatial blocks (grid blocks when coordinates are missing), never at random, so near-duplicates cannot leak across train/eval. The AI tab's "Train ranker" flow now merges live session feedback with every persisted reviewed example for the dataset and reports a real held-out accuracy from `RankerHoldoutEvaluator` alongside the in-sample number, instead of only the in-sample figure.
+- Add hard-negative mining, model versioning, calibration, rollback, and explanations. **Implemented; unit verified; UI wired.** `HardNegativeMiner` surfaces the highest-scoring rejected examples and its count now appears in the same "Train ranker" result message; `ExplainableRanker` carries Platt calibration and per-feature contributions that sum to the raw score; `ModelRegistry` activates versions explicitly and rolls back, so production ranking never changes silently.
 
 Exit criteria:
 
@@ -389,7 +389,7 @@ Exit criteria:
 ### Phase 8 — Advanced terrain tools
 
 - Viewshed analysis. **Implemented; unit verified.** `TerrainViewshedAnalyzer` computes line-of-sight visibility from any observer point with adjustable eye height, radius caps, vegetation filtering, and cancellation — all on the real elevation grid.
-- Horizon-line calculation. **Implemented; unit verified.** Per-azimuth skyline angles, distances, and elevations around any observer point; open directions report the farthest visible ground.
+- Horizon-line calculation. **Implemented; unit verified; UI wired.** Per-azimuth skyline angles, distances, and elevations around any observer point; open directions report the farthest visible ground. The terrain-cell inspection panel's "Horizon from here" button computes it live and displays the most-open/most-blocked directions on a dedicated card.
 - Elevation profile along a selected path. **Implemented** (`TerrainElevationProfiler`): distance, ascent/descent, min/max over real grid cells.
 - Adaptive terrain sampling. **Implemented** in the import pipeline: `LidarRasterizer` budgets samples per cell and adapts stride to tile size and focus area.
 - Multi-threaded ray processing. **Implemented; unit verified.** Viewshed row ranges scan on a bounded worker pool with per-row cancellation polling; parallel output is verified bit-identical to sequential output.
@@ -411,7 +411,7 @@ Exit criteria:
 - QGIS auto-project creation. **Implemented; unit verified.** `QgisProjectWriter` emits a well-formed .qgs referencing exported rasters and vectors with names, relative datasources, and EPSG:4326 preset.
 - Portable project archives. **Implemented; unit verified.** `ProjectArchiveWriter` bundles a project into one self-describing zip with a manifest that round-trips and rejects malformed archives.
 - Optional cloud backup and multi-device synchronization. **Not started** (external service); the Phase 5 offline sync queue and the conflict resolver below are its local prerequisites. Field use never requires connectivity.
-- Conflict detection and resolution. **Implemented; unit verified.** `SyncConflictResolver`: both-sides-changed conflicts are reported for review instead of guessed, single-side changes win, and ties break deterministically on timestamps.
+- Conflict detection and resolution. **Implemented; unit verified; UI wired.** `SyncConflictResolver`: both-sides-changed conflicts are reported for review instead of guessed, single-side changes win, and ties break deterministically on timestamps. It now runs for real on the portable-archive import path (Tools tab → "Import portable archive"): each incoming target signal is resolved against the local copy by timestamp, applied as LOCAL_WINS/REMOTE_WINS, or — when both sides changed — held out for the user to review rather than silently overwritten, with an import summary (imported / updated / kept-local / needs-review counts).
 
 Exit criteria:
 
@@ -668,6 +668,7 @@ Ten fully wired product features on branch `KIMIV6`. See [docs/FEATURES_SITE_PAC
 
 ## Decision log
 
+- **2026-08-06:** Closed out every dead-code gap the roadmap audit found: historic-map ranking adjustment, horizon-line UI, sync-conflict resolution (via portable-archive import/merge), directional photo bearings, manual historic-map feature tracing, reviewed-example capture from field verification, the spatial-holdout/hard-negative ML training pipeline, and real on-device voice dictation are now all reachable from the production UI, not just unit-tested in isolation.
 - **2026-08-05:** Site Package Pack ships dual-surface re-decode, boundary clip refine, relative Z-under-find, class filters, mosaic open UX, clipped LAS, site package zip, field PDF enhancements, boundary GPS alerts, and AI confirm-write — never auto-write finds; LiDAR still never claims metal or dig depth.
 - **2026-07-26:** Historic human-activity detection remains the central product objective.
 - **2026-07-26:** Performance work must preserve working features and analytical accuracy.
@@ -680,7 +681,7 @@ Ten fully wired product features on branch `KIMIV6`. See [docs/FEATURES_SITE_PAC
 
 ## GROKV5 feature pipeline (2026-08)
 
-Branch `GROKV5` only — not merge to `main` until green. Prefer **parallel agents** for independent domains (no shared-file collisions).
+Merged to `main` (green). Prefer **parallel agents** for independent domains (no shared-file collisions).
 
 ### AI pack 1 — shipped (10)
 
@@ -695,7 +696,7 @@ See [docs/FEATURES_AI_PACK.md](docs/FEATURES_AI_PACK.md).
 3. Compare-two-sites  
 4. Question the cell  
 5. Evidence chain  
-6. Voice → structured find  
+6. Voice → structured find (real on-device dictation, 2026-08-06)  
 7. Photo catalog assist  
 8. Coverage gap AI  
 9. Partner handoff brief  
