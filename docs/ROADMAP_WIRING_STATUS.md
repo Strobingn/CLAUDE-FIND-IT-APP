@@ -77,9 +77,15 @@ coordinates). Proposals render on the map in a distinct color via a new
 Save on each one individually — an accepted proposal is converted from image pixels to lat/lon via the
 map's real `GeoReferenceTransform` and scored against real terrain relief with the same
 `MapTerrainAgreement` path manual tracing already used, so an AI-accepted feature is indistinguishable in
-quality from a hand-traced one. Requires the map to be georeferenced first (a transform must exist to place
-the proposals) and a cloud AI provider configured; both are surfaced as disabled-state/error messages, not
-silent failures.
+quality from a hand-traced one. Requires the map to be georeferenced first and a cloud AI provider
+configured; both are surfaced as disabled-state/error messages, not silent failures.
+
+**Follow-up fix, same day:** both this button and manual tracing originally gated only on a transform
+*existing*, not on georeference *confidence* — a 2-point similarity fit is always `LOW_CONFIDENCE` per
+`GeoReferencer`'s own logic (it cannot detect its own error), so a feature could be traced or AI-accepted
+against a known-unreliable alignment. Both `HistoricMapFeatureBar`'s trace toggle and the AI-extract button
+now gate on `HistoricMapOverlay.hasReliableGeoreference` (`GOOD`/`FAIR` confidence only), with an inline
+message explaining why the controls are disabled when they aren't.
 
 ## Still open (not code gaps — flagged, not yet acted on)
 

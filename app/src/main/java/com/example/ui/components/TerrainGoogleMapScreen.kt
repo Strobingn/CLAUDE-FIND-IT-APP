@@ -635,6 +635,10 @@ fun TerrainGoogleMapScreen(
             historicMapMessage = "Select a historic map first."
             return
         }
+        if (activeHistoricMap?.hasReliableGeoreference != true) {
+            historicMapMessage = "Fit control points with good or fair confidence before saving a feature."
+            return
+        }
         if (featureDrawPoints.size < 2) {
             historicMapMessage = "Tap at least two points on the map to trace a feature."
             return
@@ -661,8 +665,8 @@ fun TerrainGoogleMapScreen(
             historicMapMessage = "Select a historic map first."
             return
         }
-        if (activeHistoricTransform == null) {
-            historicMapMessage = "Fit control points before AI extraction — proposed features need a georeference to place them."
+        if (activeHistoricMap?.hasReliableGeoreference != true) {
+            historicMapMessage = "Fit control points with good or fair confidence before AI extraction — proposed features need a trustworthy georeference to place them."
             return
         }
         aiFeatureExtracting = true
@@ -1037,6 +1041,7 @@ fun TerrainGoogleMapScreen(
                         scope.launch(Dispatchers.IO) { historicMapFeatureDao.deleteById(feature.id) }
                     }
                 },
+                canTraceFeatures = activeHistoricMap?.hasReliableGeoreference == true,
                 aiExtracting = aiFeatureExtracting,
                 canExtractWithAi = activeHistoricBitmap != null && activeHistoricTransform != null,
                 onExtractWithAi = { extractFeaturesWithAi() },
@@ -1411,6 +1416,7 @@ private fun HistoricMapFeatureBar(
     onClear: () -> Unit,
     onSave: () -> Unit,
     onDeleteLastSaved: () -> Unit,
+    canTraceFeatures: Boolean,
     aiExtracting: Boolean,
     canExtractWithAi: Boolean,
     onExtractWithAi: () -> Unit,
@@ -1443,16 +1449,24 @@ private fun HistoricMapFeatureBar(
             }
             OutlinedButton(
                 onClick = { onDrawModeChanged(!drawMode) },
+                enabled = canTraceFeatures || drawMode,
                 modifier = Modifier.fillMaxWidth().height(40.dp).testTag("feature_draw_mode_toggle"),
             ) {
                 Text(if (drawMode) "Tap map to add points — tap here to stop" else "Trace a feature on the map")
             }
             OutlinedButton(
                 onClick = onExtractWithAi,
-                enabled = canExtractWithAi && !aiExtracting,
+                enabled = canTraceFeatures && canExtractWithAi && !aiExtracting,
                 modifier = Modifier.fillMaxWidth().height(40.dp).testTag("feature_ai_extract_button"),
             ) {
                 Text(if (aiExtracting) "Asking AI…" else "Auto-detect features (AI)")
+            }
+            if (!canTraceFeatures) {
+                Text(
+                    "Fit control points with good or fair confidence before tracing features — a feature placed against an unreliable georeference can't be trusted.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
             if (drawMode) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
